@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Banka Hesapları - Muhasebe Sistemi{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-bank"></i> Banka Hesapları</h2>
+        <button class="btn btn-primary">
+            <i class="bi bi-plus-lg"></i> Yeni Hesap
+        </button>
+    </div>
+    
+    <div class="row mb-4">
+        {% for bank in banks %}
+        <div class="col-md-4 mb-3">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="bi bi-bank2"></i> {{ bank.bank_name }}
+                    </h5>
+                    <p class="text-muted mb-2">{{ bank.account_number }}</p>
+                    {% if bank.iban %}
+                    <p class="text-muted small mb-3">IBAN: {{ bank.iban }}</p>
+                    {% endif %}
+                    <h3 class="mb-0">
+                        {% if bank.balance >= 0 %}
+                        <span class="text-success">{{ "%.2f"|format(bank.balance) }} {{ bank.currency }}</span>
+                        {% else %}
+                        <span class="text-danger">{{ "%.2f"|format(bank.balance) }} {{ bank.currency }}</span>
+                        {% endif %}
+                    </h3>
+                    <div class="mt-3">
+                        <button class="btn btn-sm btn-info">
+                            <i class="bi bi-eye"></i> Detay
+                        </button>
+                        <button class="btn btn-sm btn-warning">
+                            <i class="bi bi-pencil"></i> Düzenle
+                        </button>
+                    </div>
+                </div>
+                {% if bank.is_active %}
+                <div class="card-footer bg-success text-white">
+                    <small><i class="bi bi-check-circle"></i> Aktif</small>
+                </div>
+                {% else %}
+                <div class="card-footer bg-secondary text-white">
+                    <small><i class="bi bi-x-circle"></i> Pasif</small>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+        
+        {% if not banks %}
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body text-center text-muted py-5">
+                    <i class="bi bi-inbox" style="font-size: 72px;"></i>
+                    <p class="mt-3">Henüz banka hesabı bulunmuyor.</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

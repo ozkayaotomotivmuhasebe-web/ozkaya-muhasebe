@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Kullanıcı Yönetimi - Muhasebe Sistemi{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-person-lock"></i> Kullanıcı Yönetimi</h2>
+        <button class="btn btn-primary">
+            <i class="bi bi-plus-lg"></i> Yeni Kullanıcı
+        </button>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Kullanıcı Adı</th>
+                            <th>Ad Soyad</th>
+                            <th>E-posta</th>
+                            <th>Rol</th>
+                            <th>Durum</th>
+                            <th>Yetkiler</th>
+                            <th>İşlem</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in users %}
+                        <tr>
+                            <td>{{ u.id }}</td>
+                            <td><strong>{{ u.username }}</strong></td>
+                            <td>{{ u.full_name }}</td>
+                            <td>{{ u.email }}</td>
+                            <td>
+                                {% if u.role == 'admin' %}
+                                <span class="badge bg-danger">Admin</span>
+                                {% else %}
+                                <span class="badge bg-info">Kullanıcı</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if u.is_active %}
+                                <span class="badge bg-success">Aktif</span>
+                                {% else %}
+                                <span class="badge bg-secondary">Pasif</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <small>
+                                    {% if u.can_view_dashboard %}<i class="bi bi-check-circle text-success" title="Dashboard"></i>{% endif %}
+                                    {% if u.can_view_invoices %}<i class="bi bi-check-circle text-success" title="Faturalar"></i>{% endif %}
+                                    {% if u.can_view_caris %}<i class="bi bi-check-circle text-success" title="Cari"></i>{% endif %}
+                                    {% if u.can_view_banks %}<i class="bi bi-check-circle text-success" title="Banka"></i>{% endif %}
+                                    {% if u.can_view_reports %}<i class="bi bi-check-circle text-success" title="Raporlar"></i>{% endif %}
+                                </small>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-warning" title="Yetkileri Düzenle">
+                                    <i class="bi bi-shield-lock"></i>
+                                </button>
+                                <button class="btn btn-sm btn-info" title="Düzenle">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                {% if u.username != 'admin' %}
+                                <button class="btn btn-sm btn-danger" title="Sil">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Yetki Açıklaması -->
+    <div class="card mt-3">
+        <div class="card-body">
+            <h5><i class="bi bi-info-circle"></i> Yetki Sistemi Hakkında</h5>
+            <p class="mb-0">
+                Her kullanıcı için ayrı ayrı sayfa yetkileri belirleyebilirsiniz. 
+                Kullanıcılar sadece kendilerine verilen yetkilere sahip sayfaları görebilir.
+                Admin rolündeki kullanıcılar varsayılan olarak tüm yetkilere sahiptir.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

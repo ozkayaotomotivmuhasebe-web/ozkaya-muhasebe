@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Muhasebe Sistemi{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --primary-color: #667eea;
+            --secondary-color: #764ba2;
+            --success-color: #4CAF50;
+            --danger-color: #f44336;
+            --warning-color: #FF9800;
+            --info-color: #2196F3;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .navbar {
+            background: white !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+            color: var(--primary-color) !important;
+        }
+        
+        .card {
+            border: none;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .card-header {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+            border-radius: 10px 10px 0 0 !important;
+            font-weight: bold;
+        }
+        
+        .stat-card {
+            border-left: 4px solid;
+            transition: transform 0.2s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-card.primary {
+            border-left-color: var(--primary-color);
+        }
+        
+        .stat-card.success {
+            border-left-color: var(--success-color);
+        }
+        
+        .stat-card.warning {
+            border-left-color: var(--warning-color);
+        }
+        
+        .stat-card.info {
+            border-left-color: var(--info-color);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            border: none;
+        }
+        
+        .btn-primary:hover {
+            background: linear-gradient(135deg, var(--secondary-color) 0%, var(--primary-color) 100%);
+        }
+        
+        .table {
+            background: white;
+        }
+        
+        .content-wrapper {
+            margin-top: 80px;
+            padding-bottom: 50px;
+        }
+        
+        .sidebar {
+            background: white;
+            min-height: calc(100vh - 80px);
+            box-shadow: 2px 0 4px rgba(0,0,0,0.1);
+        }
+        
+        .sidebar .nav-link {
+            color: #333;
+            padding: 12px 20px;
+            margin: 5px 10px;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+        }
+        
+        .sidebar .nav-link i {
+            margin-right: 10px;
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Navbar -->
+    {% if user %}
+    <nav class="navbar navbar-expand-lg navbar-light fixed-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/dashboard">
+                <i class="bi bi-calculator"></i> {{ app_name if app_name else "Muhasebe Sistemi" }}
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> {{ user.full_name }}
+                            {% if user.role == 'admin' %}
+                            <span class="badge bg-danger">Admin</span>
+                            {% endif %}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="/settings"><i class="bi bi-gear"></i> Ayarlar</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/logout"><i class="bi bi-box-arrow-right"></i> Çıkış</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+
+    <!-- Main Content -->
+    <div class="content-wrapper">
+        <div class="container-fluid">
+            {% if user %}
+            <div class="row">
+                <!-- Sidebar -->
+                <div class="col-md-2 sidebar d-none d-md-block">
+                    <nav class="nav flex-column mt-3">
+                        {% if user.can_view_dashboard %}
+                        <a class="nav-link {% if request.url.path == '/dashboard' %}active{% endif %}" href="/dashboard">
+                            <i class="bi bi-speedometer2"></i> Dashboard
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.can_view_invoices %}
+                        <a class="nav-link {% if request.url.path == '/invoices' %}active{% endif %}" href="/invoices">
+                            <i class="bi bi-file-text"></i> Faturalar
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.can_view_caris %}
+                        <a class="nav-link {% if request.url.path == '/caris' %}active{% endif %}" href="/caris">
+                            <i class="bi bi-people"></i> Cari Hesaplar
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.can_view_banks %}
+                        <a class="nav-link {% if request.url.path == '/banks' %}active{% endif %}" href="/banks">
+                            <i class="bi bi-bank"></i> Banka Hesapları
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.can_view_credit_cards %}
+                        <a class="nav-link {% if request.url.path == '/credit-cards' %}active{% endif %}" href="/credit-cards">
+                            <i class="bi bi-credit-card"></i> Kredi Kartları
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.can_view_reports %}
+                        <a class="nav-link {% if request.url.path == '/reports' %}active{% endif %}" href="/reports">
+                            <i class="bi bi-graph-up"></i> Raporlar
+                        </a>
+                        {% endif %}
+                        
+                        {% if user.role == 'admin' %}
+                        <hr>
+                        <a class="nav-link {% if request.url.path == '/admin/users' %}active{% endif %}" href="/admin/users">
+                            <i class="bi bi-person-lock"></i> Kullanıcı Yönetimi
+                        </a>
+                        {% endif %}
+                    </nav>
+                </div>
+
+                <!-- Main Content Area -->
+                <div class="col-md-10">
+                    {% block content %}{% endblock %}
+                </div>
+            </div>
+            {% else %}
+            <div class="row">
+                <div class="col-12">
+                    {% block content %}{% endblock %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
