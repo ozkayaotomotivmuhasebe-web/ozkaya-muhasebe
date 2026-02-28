@@ -6142,6 +6142,26 @@ Pasif Kullanıcı: {total_users - active_users}
             ("🏷️", "Konu Adedi",   str(len(konu_totals)),    "#37474F"),
         ])
 
+        # Konu başlıklı toplam tutar KPI kartları
+        if konu_totals:
+            KONU_COLORS = [
+                "#1565C0", "#2E7D32", "#6A1B9A", "#E65100",
+                "#00695C", "#AD1457", "#4527A0", "#283593",
+                "#558B2F", "#BF360C",
+            ]
+            sorted_konular = sorted(konu_totals.items(), key=lambda x: -x[1]["tutar"])
+            chunk_size = 4
+            for chunk_start in range(0, len(sorted_konular), chunk_size):
+                chunk = sorted_konular[chunk_start:chunk_start + chunk_size]
+                kpi_items = []
+                for ci, (konu, info) in enumerate(chunk):
+                    color = KONU_COLORS[(chunk_start + ci) % len(KONU_COLORS)]
+                    konu_label = konu if len(konu) <= 22 else konu[:20] + "…"
+                    kpi_items.append(
+                        ("🏷️", konu_label, f"{info['tutar']:,.2f} ₺", color)
+                    )
+                html += self._kpi_row(kpi_items)
+
         # Konu bazında özet tablo
         html += self._section("🏷️ Konu Bazında Özet", "#B71C1C")
         html += self._table_header(["Konu", "İşlem Sayısı", "Toplam Tutar (₺)", "Oran"])
