@@ -27,5 +27,5 @@ SESSION_TIMEOUT = 1800  # 30 dakika
 # ─── Otomatik Güncelleme ───────────────────────────────────────────────────────
 # GitHub'da repo oluşturduktan sonra aşağıdaki URL'yi güncelleyin:
 # https://raw.githubusercontent.com/GITHUB_KULLANICI/REPO_ADI/main/version.json
-UPDATE_CHECK_URL = "https://raw.githubusercontent.com/buraktekin060-glitch/ozkaya-muhasebe/main/version.json"
+UPDATE_CHECK_URL = "https://raw.githubusercontent.com/buraktekin060-glitch/ozkaya-muhasebe/master/version.json"
 UPDATE_ENABLED   = True  # GitHub URL ayarlandıktan sonra True yapıldı
