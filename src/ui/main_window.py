@@ -85,10 +85,11 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("""
             QMainWindow { background-color: #fafafa; }
             QTabWidget::pane { border: 1px solid #ddd; }
-            QTabBar::tab { background-color: #e0e0e0; padding: 8px 10px; min-height: 28px; max-width: 140px; }
+            QTabBar::tab { background-color: #e0e0e0; padding: 8px 12px; min-width: 70px; min-height: 28px; }
             QTabBar::tab:selected { background-color: white; }
-            QTabBar::scroller { width: 24px; }
-            QTabBar QToolButton { background-color: #e0e0e0; border: 1px solid #ccc; }
+            QTabBar::scroller { width: 28px; }
+            QTabBar QToolButton { background-color: #d0d0d0; border: 1px solid #bbb; border-radius: 2px; }
+            QTabBar QToolButton:hover { background-color: #b0b0b0; }
             QLabel { font-size: 10pt; }
             QLineEdit, QComboBox, QDateEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
                 padding: 6px 8px;
@@ -160,7 +161,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setUsesScrollButtons(True)
         self.tabs.tabBar().setExpanding(False)
-        self.tabs.tabBar().setElideMode(Qt.ElideRight)
+        self.tabs.tabBar().setElideMode(Qt.ElideNone)
         self.dashboard_tab = None
         
         # Dashboard (izinli ise)
