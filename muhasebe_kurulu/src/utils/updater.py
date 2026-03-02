@@ -263,20 +263,21 @@ def _do_update(parent, download_url, new_ver):
 echo Guncelleme basliyor...
 REM Eski process tamamen kapanana kadar bekle
 taskkill /f /im Muhasebe.exe >nul 2>&1
-timeout /t 5 /nobreak >nul
-REM Eski PyInstaller temp klasorlerini temizle (DLL catismasi onler)
-for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
-timeout /t 2 /nobreak >nul
+timeout /t 6 /nobreak >nul
 REM Yeni EXE'yi yerleştir
 move /y "{new_exe}" "{current_exe}"
 if errorlevel 1 (
-    echo HATA: Dosya tasinamadi, yonetici olarak calistirin!
+    echo HATA: Dosya tasinamadi!
     pause
     del "%~f0"
     exit /b 1
 )
-timeout /t 2 /nobreak >nul
+REM Eski PyInstaller temp klasorlerini temizle - EXE baslamadan ONCE
+for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
+timeout /t 1 /nobreak >nul
+REM Yeni EXE'yi baslat
 start "" "{current_exe}"
+REM Bat'i sil ve cik
 del "%~f0"
 """
             with open(bat_path, "w", encoding="cp1254") as f:
