@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
-  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.2/Muhasebe.exe",
-  "notes": "- Raporlar sayfası güncellendi\n- Konuya Göre Giderler raporu eklendi\n- Her konu başlığı için ayrı toplam tutar KPI kartları eklendi\n- Tarih aralığı ve konu filtresi birlikte çalışıyor"
+  "version": "1.0.3",
+  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.3/Muhasebe.exe",
+  "notes": "- Çözünürlük ayarlaması: üst sekme çubuğu kaydırmalı yapıldı\n- Sol kenar çubuğu esnek genişlik ile farklı ekranlara uyum sağlıyor\n- Sekme yazıları sığmayan ekranlarda otomatik kısaltma eklendi"
 }
