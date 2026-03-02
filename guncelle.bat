@@ -9,7 +9,7 @@ echo.
 echo Yeni sürüm indiriliyor, lütfen bekleyin...
 echo.
 
-set "EXE_URL=https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.2/Muhasebe.exe"
+set "EXE_URL=https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.3/Muhasebe.exe"
 set "DEST=%TEMP%\Muhasebe_yeni.exe"
 
 REM Mevcut EXE'nin konumunu bul
@@ -42,7 +42,7 @@ if not exist "%TARGET%" (
 
 echo.
 echo ================================================
-echo   Güncelleme tamamlandı!  Sürüm: v1.0.2
+echo   Güncelleme tamamlandı!  Sürüm: v1.0.3
 echo ================================================
 echo.
 echo Uygulama başlatılıyor...
