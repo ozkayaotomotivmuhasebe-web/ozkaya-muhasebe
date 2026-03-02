@@ -235,8 +235,8 @@ def _show_update_dialog(parent, current, new_ver, notes, download_url):
             if dlg.exec_() == QDialog.Accepted:
                 _do_update(parent, download_url, new_ver)
 
-        # Ana event loop'tan tetikle
-        QTimer.singleShot(1500, show)
+        # parent context ile ana event loop'tan tetikle (thread-safe)
+        QTimer.singleShot(1500, parent, show)
 
     except Exception as e:
         print(f"[Güncelleme] Dialog hatası: {e}")
