@@ -185,61 +185,61 @@ class UpdateDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────
+# Versiyon kontrol thread'i (QThread + signal - tam thread-safe)
+# ─────────────────────────────────────────────────────────
+class _VersionCheckThread(QThread):
+    update_found = pyqtSignal(str, str, str, str)  # current, remote, notes, url
+
+    def __init__(self, url, current):
+        super().__init__()
+        self._url = url
+        self._current = current
+
+    def run(self):
+        try:
+            with urllib.request.urlopen(self._url, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            remote_ver   = data.get("version", "0.0.0")
+            download_url = data.get("download_url", "")
+            notes        = data.get("notes", "")
+            if _is_newer(remote_ver, self._current) and download_url:
+                self.update_found.emit(self._current, remote_ver, notes, download_url)
+        except Exception as e:
+            print(f"[Güncelleme] Kontrol hatası: {e}")
+
+
+# ─────────────────────────────────────────────────────────
 # Ana kontrol fonksiyonu
 # ─────────────────────────────────────────────────────────
 def check_and_update(parent=None):
     """
-    Arka planda versiyon kontrolü yapar.
-    Yeni sürüm varsa kullanıcıya sorar ve günceller.
-    config.py içinde UPDATE_CHECK_URL tanımlı olmalıdır.
+    Arka planda versiyon kontrolü yapar (QThread + signal - tam thread-safe).
+    Yeni sürüm varsa ana thread'de dialog gösterir.
     """
     try:
         import config
-        url = getattr(config, "UPDATE_CHECK_URL", "")
+        url     = getattr(config, "UPDATE_CHECK_URL", "")
         enabled = getattr(config, "UPDATE_ENABLED", False)
         current = getattr(config, "APP_VERSION", "0.0.0")
 
         if not enabled or not url or url.startswith("https://GITHUB_KULLANICI"):
-            return  # Yapılandırılmamış, sessizce geç
+            return
 
-        def _run():
-            try:
-                with urllib.request.urlopen(url, timeout=8) as resp:
-                    data = json.loads(resp.read().decode())
-                remote_ver   = data.get("version", "0.0.0")
-                download_url = data.get("download_url", "")
-                notes        = data.get("notes", "")
+        thread = _VersionCheckThread(url, current)
 
-                if _is_newer(remote_ver, current) and download_url:
-                    # GUI işlemi ana thread'de yapılmalı
-                    from PyQt5.QtCore import QMetaObject, Qt as Qt2
-                    _show_update_dialog(parent, current, remote_ver, notes, download_url)
+        def _on_update_found(cur, remote, notes, dl_url):
+            dlg = UpdateDialog(cur, remote, notes, parent)
+            if dlg.exec_() == QDialog.Accepted:
+                _do_update(parent, dl_url, remote)
 
-            except Exception as e:
-                print(f"[Güncelleme] Kontrol hatası: {e}")
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
+        thread.update_found.connect(_on_update_found)
+        # parent'e referans tutturarak GC'den korunur
+        if parent is not None:
+            parent._updater_thread = thread
+        thread.start()
 
     except Exception as e:
         print(f"[Güncelleme] Başlatma hatası: {e}")
-
-
-def _show_update_dialog(parent, current, new_ver, notes, download_url):
-    """Güncelleme dialogunu göster (ana thread'de çağrılmalı)"""
-    try:
-        from PyQt5.QtCore import QTimer
-
-        def show():
-            dlg = UpdateDialog(current, new_ver, notes, parent)
-            if dlg.exec_() == QDialog.Accepted:
-                _do_update(parent, download_url, new_ver)
-
-        # parent context ile ana event loop'tan tetikle (thread-safe)
-        QTimer.singleShot(1500, parent, show)
-
-    except Exception as e:
-        print(f"[Güncelleme] Dialog hatası: {e}")
 
 
 def _do_update(parent, download_url, new_ver):
