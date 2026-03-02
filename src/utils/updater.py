@@ -272,12 +272,22 @@ if errorlevel 1 (
     del "%~f0"
     exit /b 1
 )
+REM Dosyanin tamamen yazilmasini bekle (OneDrive sync icin)
+timeout /t 4 /nobreak >nul
+REM Dosya var mi kontrol et
+if not exist "{current_exe}" (
+    echo HATA: EXE bulunamadi!
+    pause
+    del "%~f0"
+    exit /b 1
+)
 REM Eski PyInstaller temp klasorlerini temizle - EXE baslamadan ONCE
 for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
-timeout /t 1 /nobreak >nul
+timeout /t 2 /nobreak >nul
 REM Yeni EXE'yi baslat
 start "" "{current_exe}"
 REM Bat'i sil ve cik
+timeout /t 2 /nobreak >nul
 del "%~f0"
 """
             with open(bat_path, "w", encoding="cp1254") as f:
