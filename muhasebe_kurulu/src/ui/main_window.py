@@ -1,19 +1,71 @@
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, 
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, 
                            QLabel, QPushButton, QMessageBox, QTableWidget, QTableWidgetItem,
                            QFrame, QHeaderView, QComboBox, QDateEdit, QLineEdit, QTextBrowser,
-                           QScrollArea)
-from PyQt5.QtCore import Qt, QDate
-from PyQt5.QtGui import QFont
-from src.database.models import User, TransactionType, PaymentMethod
+                           QScrollArea, QSizePolicy, QCheckBox, QGroupBox, QSpinBox, QDialog,
+                           QSplitter, QTextEdit)
+from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
+from PyQt5.QtCore import Qt, QDate, QTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QColor
+from src.database.models import User, TransactionType, PaymentMethod, Transaction
 from src.services.invoice_service import InvoiceService
 from src.services.cari_service import CariService
 from src.services.bank_service import BankService
 from src.services.transaction_service import TransactionService
 from src.services.credit_card_service import CreditCardService
+from src.services.loan_service import LoanService
 from src.services.report_service import ReportService
 from src.ui.dialogs.user_management_dialog import UserManagementDialog
 from src.services.auth_service import AuthService
+from src.services.user_settings_service import UserSettingsService
+from src.services.google_sheets_service import GoogleSheetsService
+from src.utils.app_icon import get_app_icon
+from src.utils.helpers import format_currency_tr, format_tr
+from datetime import datetime, date, timedelta
+from collections import defaultdict
+from pathlib import Path
+import shutil
+import json
 import config
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    Workbook = None
+    Font = Alignment = PatternFill = Border = Side = get_column_letter = None
+
+
+class GoogleSheetsWorker(QThread):
+    finished_signal = pyqtSignal(str, bool, str, dict)
+
+    def __init__(self, operation: str, user_id: int, spreadsheet_id: str, sheet_mappings=None):
+        super().__init__()
+        self.operation = operation
+        self.user_id = user_id
+        self.spreadsheet_id = spreadsheet_id
+        self.sheet_mappings = sheet_mappings or {}
+
+    def run(self):
+        try:
+            service = GoogleSheetsService()
+            if self.operation == 'test':
+                success, message = service.test_connection(self.spreadsheet_id)
+                self.finished_signal.emit(self.operation, success, message, {})
+                return
+
+            if self.operation == 'sync':
+                success, message, stats = service.sync_from_sheets(
+                    self.user_id,
+                    self.spreadsheet_id,
+                    self.sheet_mappings
+                )
+                self.finished_signal.emit(self.operation, success, message, stats or {})
+                return
+
+            self.finished_signal.emit(self.operation, False, "Geçersiz işlem türü", {})
+        except Exception as e:
+            self.finished_signal.emit(self.operation, False, str(e), {})
 
 
 class MainWindow(QMainWindow):
@@ -22,6 +74,11 @@ class MainWindow(QMainWindow):
     def __init__(self, user: User):
         super().__init__()
         self.user = user
+        self.auto_backup_timer = None
+        self.gsheets_worker = None
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.setWindowTitle(f"{config.APP_NAME} - {user.full_name} ({user.role.upper()})")
         self.setGeometry(0, 0, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
         
@@ -58,6 +115,9 @@ class MainWindow(QMainWindow):
         """)
         
         self.init_ui()
+        self.setup_auto_backup_scheduler()
+        self.setup_google_sheets_timer()
+        self.setup_dashboard_refresh_timer()
     
     def init_ui(self):
         """Arayüz öğelerini başlat"""
@@ -67,55 +127,203 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         
+        # Üst yenileme çubuğu
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(8)
+
+        btn_refresh = QPushButton("🔄 Yenile")
+        btn_refresh.setMinimumHeight(30)
+        btn_refresh.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #546E7A; }
+        """)
+        btn_refresh.clicked.connect(self.manual_refresh_all)
+        top_bar.addWidget(btn_refresh)
+
+        self.last_refresh_label = QLabel("Son yenileme: -")
+        self.last_refresh_label.setStyleSheet("color: #666;")
+        top_bar.addWidget(self.last_refresh_label)
+        top_bar.addStretch()
+
+        layout.addLayout(top_bar)
+
         # Tab widget
         self.tabs = QTabWidget()
+        self.dashboard_tab = None
         
-        # Her zaman Dashboard göster
-        self.tabs.addTab(self.create_dashboard_tab(), "📊 Dashboard")
+        # Dashboard (izinli ise)
+        if self.user.can_view_dashboard:
+            self.dashboard_tab = self.create_dashboard_tab()
+            self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
         
         # Rol bazlı sekmeler
         if self.user.role == 'admin':
-            self.tabs.addTab(self.create_transactions_tab(), "💰 İşlemler")
+            if self.user.can_view_transactions:
+                self.tabs.addTab(self.create_transactions_tab(), "💰 İşlemler")
             if self.user.can_view_invoices:
                 self.tabs.addTab(self.create_invoices_tab(), "📄 Faturalar")
             if self.user.can_view_caris:
                 self.tabs.addTab(self.create_caris_tab(), "📋 Cari Hesaplar")
+            if self.user.can_view_cari_extract:
                 self.tabs.addTab(self.create_cari_extract_tab(), "📑 Cari Ekstre")
             if self.user.can_view_banks:
                 self.tabs.addTab(self.create_bank_tab(), "🏦 Banka Hesapları")
-            self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
-            self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
-            self.tabs.addTab(self.create_admin_panel_tab(), "👨‍💼 Admin Panel")
-        else:
-            # Normal kullanıcılar sadece izin verilenleri görebilir
-            self.tabs.addTab(self.create_transactions_tab(), "💰 İşlemler")
-            if self.user.can_view_invoices:
-                self.tabs.addTab(self.create_invoices_tab(), "📄 Faturalar")
-            if self.user.can_view_caris:
-                self.tabs.addTab(self.create_caris_tab(), "📋 Cari Hesaplar")
-                self.tabs.addTab(self.create_cari_extract_tab(), "📑 Cari Ekstre")
-            if self.user.can_view_banks:
-                self.tabs.addTab(self.create_bank_tab(), "🏦 Banka Hesapları")
-            self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
+            if self.user.can_view_credit_cards:
+                self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
+            if self.user.can_view_loans:
+                self.tabs.addTab(self.create_loans_tab(), "📊 Krediler")
             if self.user.can_view_reports:
                 self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
+            if self.user.can_view_payroll:
+                self.tabs.addTab(self.create_payroll_tab(), "💼 Maaş Bordro")
+            if self.user.can_view_employees:
+                self.tabs.addTab(self.create_employees_tab(), "👥 Çalışanlar")
+            if self.user.can_view_bulk_payroll:
+                self.tabs.addTab(self.create_bulk_payroll_tab(), "⚙️ Toplu Bordro Hesapla")
+            if self.user.can_view_payroll_records:
+                self.tabs.addTab(self.create_payroll_records_tab(), "📚 Bordro Kayıtları")
+            if self.user.can_view_admin_panel:
+                self.tabs.addTab(self.create_admin_panel_tab(), "👨‍💼 Admin Panel")
+        else:
+            # Normal kullanıcılar sadece izin verilenleri görebilir
+            if self.user.can_view_transactions:
+                self.tabs.addTab(self.create_transactions_tab(), "💰 İşlemler")
+            if self.user.can_view_invoices:
+                self.tabs.addTab(self.create_invoices_tab(), "📄 Faturalar")
+            if self.user.can_view_caris:
+                self.tabs.addTab(self.create_caris_tab(), "📋 Cari Hesaplar")
+            if self.user.can_view_cari_extract:
+                self.tabs.addTab(self.create_cari_extract_tab(), "📑 Cari Ekstre")
+            if self.user.can_view_banks:
+                self.tabs.addTab(self.create_bank_tab(), "🏦 Banka Hesapları")
+            if self.user.can_view_credit_cards:
+                self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
+            if self.user.can_view_loans:
+                self.tabs.addTab(self.create_loans_tab(), "📊 Krediler")
+            if self.user.can_view_reports:
+                self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
+            if self.user.can_view_payroll:
+                self.tabs.addTab(self.create_payroll_tab(), "💼 Maaş Bordro")
+            if self.user.can_view_employees:
+                self.tabs.addTab(self.create_employees_tab(), "👥 Çalışanlar")
+            if self.user.can_view_bulk_payroll:
+                self.tabs.addTab(self.create_bulk_payroll_tab(), "⚙️ Toplu Bordro Hesapla")
+            if self.user.can_view_payroll_records:
+                self.tabs.addTab(self.create_payroll_records_tab(), "📚 Bordro Kayıtları")
         
-        self.tabs.addTab(self.create_settings_tab(), "⚙️ Ayarlar")
+        if self.user.can_view_settings:
+            self.tabs.addTab(self.create_settings_tab(), "⚙️ Ayarlar")
         
         layout.addWidget(self.tabs)
         central_widget.setLayout(layout)
         
         self.showMaximized()
 
-    def _resize_table(self, table):
-        """Tablo kolon/satırlarını içerige göre ayarla"""
+    def _resize_table(self, table, stretch_col: int = None):
+        """Tablo kolon/satırlarını içeriğe göre ayarla.
+        stretch_col: geri kalan boşluğu dolduracak sütun indexi (None = son sütun uzar)
+        """
         if table is None:
             return
         table.setWordWrap(True)
         table.resizeColumnsToContents()
         table.resizeRowsToContents()
-        table.horizontalHeader().setStretchLastSection(True)
-        table.verticalHeader().setDefaultSectionSize(28)
+        table.verticalHeader().setDefaultSectionSize(45)
+
+        header = table.horizontalHeader()
+        if stretch_col is not None:
+            header.setStretchLastSection(False)
+            for col in range(table.columnCount()):
+                if col == stretch_col:
+                    header.setSectionResizeMode(col, QHeaderView.Stretch)
+                else:
+                    header.setSectionResizeMode(col, QHeaderView.Interactive)
+        else:
+            header.setStretchLastSection(True)
+
+    def manual_refresh_all(self):
+        """Butonla tum verileri yenile"""
+        self.refresh_all_data()
+        if hasattr(self, "last_refresh_label"):
+            self.last_refresh_label.setText(
+                f"Son yenileme: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+            )
+
+    def _auto_refresh_dashboard(self):
+        """Dashboard'u arka planda yenile"""
+        if not getattr(self.user, "can_view_dashboard", False):
+            return
+        try:
+            self.refresh_dashboard()
+            if hasattr(self, "last_refresh_label"):
+                self.last_refresh_label.setText(
+                    f"Son yenileme: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+                )
+        except Exception as e:
+            print(f"Dashboard otomatik yenileme hatasi: {e}")
+
+    def setup_dashboard_refresh_timer(self):
+        """Dashboard icin otomatik yenileme zamanlayicisi"""
+        self.dashboard_refresh_timer = QTimer(self)
+        self.dashboard_refresh_timer.timeout.connect(self._auto_refresh_dashboard)
+        self.dashboard_refresh_timer.start(60 * 1000)
+    
+    def _get_payment_method_display_text(self, payment_method_value, payment_type=None):
+        """Ödeme metodu için görüntü metni döndür - önce payment_type'a bak, yoksa enum'a"""
+        # Eğer payment_type varsa (orijinal değer Excel'den), onu göster
+        if payment_type and payment_type.strip():
+            return payment_type.strip()
+        
+        # Yoksa payment_method enum'unu Türçkleştir
+        payment_display = {
+            'NAKIT': 'Nakit',
+            'BANKA': 'Banka Hesabı',
+            'KREDI_KARTI': 'Kredi Kartları',
+            'CARI': 'Cari Hesap',
+            'TRANSFER': 'Transfer'
+        }
+        return payment_display.get(payment_method_value, payment_method_value)
+
+    def _get_dashboard_card_defs(self):
+        return [
+            ("total_invoices", "Toplam Fatura", "#2196F3"),
+            ("total_cari", "Toplam Cari", "#4CAF50"),
+            ("total_income", "Toplam Gelir", "#009688"),
+            ("total_expense", "Toplam Gider", "#f44336"),
+            ("bank_total_balance", "Banka Toplam Bakiye", "#3F51B5"),
+            ("credit_card_total_debt", "Kredi Kartı Toplam Borç", "#FF9800"),
+            ("loan_total_debt", "Kredi Toplam Borç", "#E91E63"),
+            ("borrow_total_debt", "Ödünç Borçlar Toplamı", "#795548"),
+        ]
+
+    def _get_dashboard_card_keys(self):
+        default_keys = [key for key, _, _ in self._get_dashboard_card_defs()]
+        keys = UserSettingsService.get_json_setting(self.user.id, "dashboard_cards", None)
+        if not keys:
+            UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", default_keys)
+            return default_keys
+        # Kullanıcının kayıtlı seçimini olduğu gibi döndir.
+        # (Eski kod burada "eksik" gördüğü kartları otomatik ekliyor ve
+        # kullanıcının kaldırdığı kartları geri getiriyordu.)
+        valid_keys = [k for k in default_keys]  # tanımlı sıralamayı koru
+        return [k for k in keys if k in valid_keys]
+
+    def _set_dashboard_card_value(self, key, value):
+        if not hasattr(self, "dashboard_cards"):
+            return
+        card = self.dashboard_cards.get(key)
+        if not card:
+            return
+        labels = card.findChildren(QLabel)
+        if len(labels) > 1:
+            labels[1].setText(value)
     
     def create_dashboard_tab(self) -> QWidget:
         """Dashboard sekmesi"""
@@ -130,71 +338,98 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("color: #333;")
         layout.addWidget(title)
         
+        # Hızlı Eylem Butonları
+        quick_actions_layout = QHBoxLayout()
+        
+        # Google Sheets Sync Butonu
+        gsheets_url = UserSettingsService.get_setting(self.user.id, "google_sheets_url", None)
+        if gsheets_url:
+            btn_gsheets_sync = QPushButton("🔄 Google Sheets Senkronize")
+            btn_gsheets_sync.setMinimumHeight(32)
+            btn_gsheets_sync.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                    font-size: 10pt;
+                }
+                QPushButton:hover { background-color: #45a049; }
+            """)
+            btn_gsheets_sync.clicked.connect(self.sync_from_google_sheets)
+            quick_actions_layout.addWidget(btn_gsheets_sync)
+        
+        quick_actions_layout.addStretch()
+        layout.addLayout(quick_actions_layout)
+        
+        layout.addSpacing(10)
+        
         # Dashboard cards
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(15)
-        
-        self.lbl_total_invoices = self.create_stat_card("Toplam Fatura", "0", "#2196F3")
-        cards_layout.addWidget(self.lbl_total_invoices)
-        
-        self.lbl_total_cari = self.create_stat_card("Toplam Cari", "0", "#4CAF50")
-        cards_layout.addWidget(self.lbl_total_cari)
-        
-        self.lbl_paid_invoices = self.create_stat_card("Ödenen Fatura", "0", "#FF9800")
-        cards_layout.addWidget(self.lbl_paid_invoices)
-        
-        self.lbl_pending_invoices = self.create_stat_card("Bekleyen Fatura", "0", "#F44336")
-        cards_layout.addWidget(self.lbl_pending_invoices)
-        
+
+        self.dashboard_cards = {}
+        selected_keys = set(self._get_dashboard_card_keys())
+        for key, title_text, color in self._get_dashboard_card_defs():
+            if key not in selected_keys:
+                continue
+            card = self.create_stat_card(title_text, "0", color)
+            self.dashboard_cards[key] = card
+            cards_layout.addWidget(card)
+
         layout.addLayout(cards_layout)
         
         # İki tablo yan yana
         tables_layout = QHBoxLayout()
         tables_layout.setSpacing(20)
         
-        # Sol: Son Faturalar
+        # Sol: Bugün Yapılacak Ödemeler
         left_layout = QVBoxLayout()
-        left_title = QLabel("Son Faturalar (Son 10)")
+        left_title = QLabel("📅 Bugün Yapılacak Ödemeler")
         left_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        left_title.setStyleSheet("color: #333; margin-bottom: 5px;")
+        left_title.setStyleSheet("color: #d32f2f; margin-bottom: 5px;")
         left_layout.addWidget(left_title)
         
         self.table_recent = QTableWidget()
-        self.table_recent.setColumnCount(5)
-        self.table_recent.setHorizontalHeaderLabels(["Tarih", "Müşteri", "Ürün", "İşlem", "Miktar"])
+        self.table_recent.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_recent.setColumnCount(6)
+        self.table_recent.setHorizontalHeaderLabels(["Tarih", "Müşteri", "Ürün", "İşlem", "Miktar", "İşlemler"])
         self.table_recent.horizontalHeader().setStretchLastSection(False)
         self.table_recent.setColumnWidth(0, 90)
         self.table_recent.setColumnWidth(1, 180)
         self.table_recent.setColumnWidth(2, 180)
         self.table_recent.setColumnWidth(3, 120)
         self.table_recent.setColumnWidth(4, 100)
+        self.table_recent.setColumnWidth(5, 140)
         self.table_recent.setStyleSheet("QTableWidget { border: 1px solid #ddd; border-radius: 4px; }")
+        self.table_recent.setMinimumHeight(400)
         left_layout.addWidget(self.table_recent)
         
-        # Sağ: Bekleyen Faturalar
+        # Sağ: Ödünç Borçlar
         right_layout = QVBoxLayout()
-        right_title = QLabel("Bekleyen Ödemeler")
+        right_title = QLabel("Ödünç Borçlar")
         right_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
         right_title.setStyleSheet("color: #d32f2f; margin-bottom: 5px;")
         right_layout.addWidget(right_title)
         
         self.table_pending = QTableWidget()
-        self.table_pending.setColumnCount(5)
-        self.table_pending.setHorizontalHeaderLabels(["Müşteri", "Ürün", "İşlem", "Miktar", "Birim"])
+        self.table_pending.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_pending.setColumnCount(3)
+        self.table_pending.setHorizontalHeaderLabels(["Cari", "Kalan Borç", "İşlemler"])
         self.table_pending.horizontalHeader().setStretchLastSection(False)
-        self.table_pending.setColumnWidth(0, 180)
-        self.table_pending.setColumnWidth(1, 180)
-        self.table_pending.setColumnWidth(2, 120)
-        self.table_pending.setColumnWidth(3, 100)
-        self.table_pending.setColumnWidth(4, 80)
+        self.table_pending.setColumnWidth(0, 260)
+        self.table_pending.setColumnWidth(1, 140)
+        self.table_pending.setColumnWidth(2, 160)
         self.table_pending.setStyleSheet("QTableWidget { border: 2px solid #ffcdd2; border-radius: 4px; }")
+        self.table_pending.setMinimumHeight(400)
         right_layout.addWidget(self.table_pending)
         
         tables_layout.addLayout(left_layout, 1)
         tables_layout.addLayout(right_layout, 1)
         
-        layout.addLayout(tables_layout)
-        layout.addStretch()
+        layout.addLayout(tables_layout, 1)
         widget.setLayout(layout)
         
         self.refresh_dashboard()
@@ -233,7 +468,8 @@ class MainWindow(QMainWindow):
         """Dashboard verileri yenile"""
         try:
             from src.database.db import SessionLocal
-            from src.database.models import Transaction, TransactionType
+            from src.database.models import Transaction, TransactionType, BankAccount, CreditCard, Loan, Cari
+            from sqlalchemy import func
             
             session = SessionLocal()
             
@@ -252,75 +488,307 @@ class MainWindow(QMainWindow):
             # İstatistikleri güncelle
             total_invoices = len(invoice_transactions)
             total_cari = len(caris) if caris else 0
+
+            total_income = sum(
+                t.amount for t in all_transactions
+                if t.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]
+            )
+            total_expense = sum(
+                t.amount for t in all_transactions
+                if t.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]
+            )
+
+            bank_total_balance = session.query(BankAccount).filter(
+                BankAccount.user_id == self.user.id,
+                BankAccount.is_active == True
+            ).with_entities(func.sum(BankAccount.balance)).scalar() or 0.0
+
+            credit_card_total_debt = session.query(CreditCard).filter(
+                CreditCard.user_id == self.user.id,
+                CreditCard.is_active == True
+            ).with_entities(func.sum(CreditCard.current_debt)).scalar() or 0.0
+
+            loan_summary = LoanService.get_loans_summary(self.user.id) or {}
+            loan_total_debt = loan_summary.get('toplam_kalan', 0.0)
+
+            borrow_candidates = session.query(Cari).filter(
+                Cari.user_id == self.user.id,
+                Cari.is_active == True
+            ).all()
+            borrow_total_debt = sum(c.balance for c in borrow_candidates if self._is_borrow_cari(c))
+
+            self._set_dashboard_card_value("total_invoices", str(total_invoices))
+            self._set_dashboard_card_value("total_cari", str(total_cari))
+            self._set_dashboard_card_value("total_income", format_currency_tr(total_income))
+            self._set_dashboard_card_value("total_expense", format_currency_tr(total_expense))
+            self._set_dashboard_card_value("bank_total_balance", format_currency_tr(bank_total_balance))
+            self._set_dashboard_card_value("credit_card_total_debt", format_currency_tr(credit_card_total_debt))
+            self._set_dashboard_card_value("loan_total_debt", format_currency_tr(loan_total_debt))
+            self._set_dashboard_card_value("borrow_total_debt", format_currency_tr(borrow_total_debt))
             
-            # Ödenen = Tüm işlemler (basitleştirilmiş)
-            paid_invoices = total_invoices
-            pending_invoices = 0  # Şimdilik bekleyen yok (statü yok Transaction'da)
+            # Bugün yapılacak ödemeleri göster (yalnızca bugün tarihli işlemler + vadesi bugün olan krediler)
+            from datetime import date
+            today = date.today()
+
+            def _normalize_date(value):
+                if value is None:
+                    return None
+                if isinstance(value, datetime):
+                    return value.date()
+                if isinstance(value, date):
+                    return value
+                if hasattr(value, "toPyDate"):
+                    return value.toPyDate()
+                if isinstance(value, str):
+                    text = value.strip()
+                    if not text:
+                        return None
+                    try:
+                        return datetime.fromisoformat(text).date()
+                    except ValueError:
+                        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                            try:
+                                return datetime.strptime(text, fmt).date()
+                            except ValueError:
+                                continue
+                return None
+
+            def _parse_due_day(value):
+                if value is None:
+                    return None
+                if isinstance(value, int):
+                    return value
+                if isinstance(value, float):
+                    return int(value)
+                text = str(value).strip()
+                if not text:
+                    return None
+                if text.endswith(".0"):
+                    text = text[:-2]
+                digits = "".join(ch for ch in text if ch.isdigit())
+                if not digits:
+                    return None
+                try:
+                    return int(digits)
+                except ValueError:
+                    return None
             
-            # Kartları güncelle
-            self.lbl_total_invoices.findChildren(QLabel)[1].setText(str(total_invoices))
-            self.lbl_total_cari.findChildren(QLabel)[1].setText(str(total_cari))
-            self.lbl_paid_invoices.findChildren(QLabel)[1].setText(str(paid_invoices))
-            self.lbl_pending_invoices.findChildren(QLabel)[1].setText(str(pending_invoices))
-            
-            # Son 10 işlemi göster (tüm işlemler)
-            recent = sorted(all_transactions, key=lambda x: x.transaction_date, reverse=True)[:10]
+            pending_rows = []
+
+            transaction_pending_payments = [
+                t for t in all_transactions
+                if t.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]
+                and _normalize_date(t.transaction_date) == today
+            ]
+            for trans in transaction_pending_payments:
+                trans_date = _normalize_date(trans.transaction_date) or today
+                pending_rows.append({
+                    'row_type': 'transaction',
+                    'date': trans_date,
+                    'customer': trans.cari.name if trans.cari else '-',
+                    'product': trans.description[:30] if trans.description else '-',
+                    'operation': {
+                        'GELIR': 'Gelir',
+                        'GIDER': 'Gider',
+                        'KESILEN_FATURA': 'Kesilen Fatura',
+                        'GELEN_FATURA': 'Gelen Fatura',
+                        'KREDI_ODEME': 'Kredi Ödeme',
+                        'KREDI_KARTI_ODEME': 'KK Ödeme'
+                    }.get(trans.transaction_type.value, trans.transaction_type.value),
+                    'amount': trans.amount,
+                    'transaction_id': trans.id,
+                    'loan_id': None
+                })
+
+            loans_due_today = session.query(Loan).filter(
+                Loan.user_id == self.user.id,
+                Loan.is_active == True,
+                Loan.status == 'AKTIF'
+            ).all()
+            for loan in loans_due_today:
+                due_day = _parse_due_day(loan.due_day)
+                if due_day is None or due_day != today.day:
+                    continue
+                remaining_amount = self._get_loan_remaining_amount(loan)
+                if remaining_amount <= 0:
+                    continue
+                installment_amount = loan.monthly_payment if loan.monthly_payment and loan.monthly_payment > 0 else remaining_amount
+                installment_amount = min(installment_amount, remaining_amount)
+                pending_rows.append({
+                    'row_type': 'loan_due',
+                    'date': today,
+                    'customer': loan.loan_name,
+                    'product': f"{loan.bank_name} - {loan.loan_type}",
+                    'operation': 'Kredi Taksidi',
+                    'amount': installment_amount,
+                    'transaction_id': None,
+                    'loan_id': loan.id,
+                    'credit_card_id': None
+                })
+
+            credit_cards_due_today = session.query(CreditCard).filter(
+                CreditCard.user_id == self.user.id,
+                CreditCard.is_active == True,
+                CreditCard.current_debt > 0
+            ).all()
+            for card in credit_cards_due_today:
+                due_day = _parse_due_day(card.due_day)
+                if due_day is None or due_day != today.day:
+                    continue
+                pending_rows.append({
+                    'row_type': 'credit_card_due',
+                    'date': today,
+                    'customer': card.card_name,
+                    'product': card.bank_name,
+                    'operation': 'Kredi Kartı Ödeme',
+                    'amount': card.current_debt,
+                    'transaction_id': None,
+                    'loan_id': None,
+                    'credit_card_id': card.id
+                })
+
+            # Tarihe göre sırala (en yakın önce)
+            recent = sorted(pending_rows, key=lambda x: x['date'])[:15]
             self.table_recent.setRowCount(len(recent))
             
-            for i, trans in enumerate(recent):
-                # Tarih
-                self.table_recent.setItem(i, 0, QTableWidgetItem(str(trans.transaction_date)))
+            for i, row in enumerate(recent):
+                # Tarih - bugünse vurgula
+                date_item = QTableWidgetItem(str(row['date']))
+                if row['date'] == today:
+                    date_item.setBackground(Qt.yellow)
+                elif row['date'] < today:
+                    date_item.setBackground(QColor(255, 200, 200))  # Açık kırmızı - gecikmiş
+                self.table_recent.setItem(i, 0, date_item)
                 
                 # Müşteri (Cari)
-                cari_name = trans.cari.name if trans.cari else "-"
-                self.table_recent.setItem(i, 1, QTableWidgetItem(cari_name))
+                self.table_recent.setItem(i, 1, QTableWidgetItem(row['customer']))
                 
                 # Ürün (Açıklama)
-                product = trans.description[:30] if trans.description else "-"
-                self.table_recent.setItem(i, 2, QTableWidgetItem(product))
+                self.table_recent.setItem(i, 2, QTableWidgetItem(row['product']))
                 
                 # İşlem (İşlem Türü)
-                islem_tr = {
-                    'GELIR': 'Gelir',
-                    'GIDER': 'Gider',
-                    'KESILEN_FATURA': 'Kesilen Fatura',
-                    'GELEN_FATURA': 'Gelen Fatura',
-                    'KREDI_ODEME': 'Kredi Ödeme',
-                    'KREDI_KARTI_ODEME': 'KK Ödeme'
-                }.get(trans.transaction_type.value, trans.transaction_type.value)
-                self.table_recent.setItem(i, 3, QTableWidgetItem(islem_tr))
+                self.table_recent.setItem(i, 3, QTableWidgetItem(row['operation']))
                 
                 # Miktar
-                self.table_recent.setItem(i, 4, QTableWidgetItem(f"{trans.amount:,.2f} ₺"))
+                self.table_recent.setItem(i, 4, QTableWidgetItem(f"{format_tr(row['amount'])} ₺"))
+
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                if row['row_type'] == 'transaction':
+                    btn_edit = QPushButton("✏️ Düzenle")
+                    btn_edit.setMinimumHeight(24)
+                    btn_edit.setStyleSheet("""
+                        QPushButton {
+                            background-color: #2196F3;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #1976D2; }
+                    """)
+                    btn_edit.clicked.connect(lambda checked, tid=row['transaction_id']: self.edit_transaction(tid))
+                    action_layout.addWidget(btn_edit)
+
+                    btn_delete = QPushButton("🗑️ Sil")
+                    btn_delete.setMinimumHeight(24)
+                    btn_delete.setStyleSheet("""
+                        QPushButton {
+                            background-color: #f44336;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #da190b; }
+                    """)
+                    btn_delete.clicked.connect(lambda checked, tid=row['transaction_id']: self.delete_transaction(tid))
+                    action_layout.addWidget(btn_delete)
+                elif row['row_type'] == 'loan_due':
+                    btn_preview = QPushButton("📑 Dökümü Aç")
+                    btn_preview.setMinimumHeight(24)
+                    btn_preview.setStyleSheet("""
+                        QPushButton {
+                            background-color: #4CAF50;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #45a049; }
+                    """)
+                    btn_preview.clicked.connect(lambda checked, lid=row['loan_id']: self.show_loan_statement(lid))
+                    action_layout.addWidget(btn_preview)
+                elif row['row_type'] == 'credit_card_due':
+                    btn_preview = QPushButton("📑 Dökümü Aç")
+                    btn_preview.setMinimumHeight(24)
+                    btn_preview.setStyleSheet("""
+                        QPushButton {
+                            background-color: #4CAF50;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #45a049; }
+                    """)
+                    btn_preview.clicked.connect(
+                        lambda checked, cid=row['credit_card_id']: self.show_credit_card_statement(cid)
+                    )
+                    action_layout.addWidget(btn_preview)
+
+                self.table_recent.setCellWidget(i, 5, action_widget)
             
-            # Bekleyen işlemler - son 10 fatura işlemi
-            recent_invoices = sorted(invoice_transactions, key=lambda x: x.transaction_date, reverse=True)[:10]
-            self.table_pending.setRowCount(len(recent_invoices))
-            
-            for i, trans in enumerate(recent_invoices):
-                # Müşteri
-                cari_name = trans.cari.name if trans.cari else "-"
-                self.table_pending.setItem(i, 0, QTableWidgetItem(cari_name))
-                
-                # Ürün (Açıklama)
-                product = trans.description[:30] if trans.description else "-"
-                self.table_pending.setItem(i, 1, QTableWidgetItem(product))
-                
-                # İşlem
-                islem_type = "Kesilen" if trans.transaction_type == TransactionType.KESILEN_FATURA else "Gelen"
-                self.table_pending.setItem(i, 2, QTableWidgetItem(islem_type))
-                
-                # Miktar
-                self.table_pending.setItem(i, 3, QTableWidgetItem(f"{trans.amount:,.2f} ₺"))
-                
-                # Birim (Ödeme Yöntemi)
-                payment = {
-                    'NAKIT': 'Nakit',
-                    'BANKA': 'Banka',
-                    'KREDI_KARTI': 'Kredi Kartı',
-                    'CARI': 'Cari'
-                }.get(trans.payment_method.value, trans.payment_method.value)
-                self.table_pending.setItem(i, 4, QTableWidgetItem(payment))
+            # Ödünç borçlar - cari tipi "ÖDÜNÇ PARA"
+            borrow_candidates = session.query(Cari).filter(
+                Cari.user_id == self.user.id,
+                Cari.is_active == True
+            ).order_by(Cari.name.asc()).all()
+            borrow_caris = [c for c in borrow_candidates if self._is_borrow_cari(c)]
+            self.table_pending.setRowCount(len(borrow_caris))
+
+            for i, cari in enumerate(borrow_caris):
+                self.table_pending.setItem(i, 0, QTableWidgetItem(cari.name))
+                self.table_pending.setItem(i, 1, QTableWidgetItem(f"{format_tr(cari.balance)} ₺"))
+
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                btn_statement = QPushButton("📑 Dökümü Aç")
+                btn_statement.setMinimumHeight(24)
+                btn_statement.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #45a049; }
+                """)
+                btn_statement.clicked.connect(lambda checked, cid=cari.id: self.show_cari_extract_for(cid))
+                action_layout.addWidget(btn_statement)
+
+                self.table_pending.setCellWidget(i, 2, action_widget)
             
             self._resize_table(self.table_recent)
             self._resize_table(self.table_pending)
@@ -329,6 +797,58 @@ class MainWindow(QMainWindow):
             print(f"Dashboard hata: {e}")
             import traceback
             traceback.print_exc()
+
+    def _is_borrow_cari(self, cari):
+        """Cari tipinin ödünç para olup olmadığını kontrol et"""
+        raw = (getattr(cari, "cari_type", "") or "").casefold().strip()
+        compact = "".join(ch for ch in raw if not ch.isspace())
+        if compact == "ödünçpara" or compact == "oduncpara":
+            return True
+        return "ödünçpara" in compact or "oduncpara" in compact
+
+    def show_cari_extract_for(self, cari_id):
+        """Cari ekstresi ekranını seçili cari ile aç"""
+        try:
+            target_index = None
+            if hasattr(self, "tabs"):
+                for i in range(self.tabs.count()):
+                    if "Cari Ekstre" in self.tabs.tabText(i):
+                        target_index = i
+                        break
+                if target_index is not None:
+                    self.tabs.setCurrentIndex(target_index)
+
+            if hasattr(self, "_reload_cari_extract_combo"):
+                self._reload_cari_extract_combo()
+
+            idx = -1
+            if hasattr(self, "cari_extract_combo"):
+                idx = self.cari_extract_combo.findData(cari_id)
+                if idx < 0:
+                    idx = self.cari_extract_combo.findData(str(cari_id))
+                if idx < 0:
+                    try:
+                        from src.database.db import SessionLocal
+                        from src.database.models import Cari
+
+                        session = SessionLocal()
+                        cari = session.query(Cari).filter(Cari.id == cari_id).first()
+                        session.close()
+                        if cari and cari.name:
+                            for i in range(self.cari_extract_combo.count()):
+                                if cari.name in self.cari_extract_combo.itemText(i):
+                                    idx = i
+                                    break
+                    except Exception:
+                        pass
+
+                if idx >= 0:
+                    self.cari_extract_combo.setCurrentIndex(idx)
+
+            if hasattr(self, "show_cari_extract"):
+                self.show_cari_extract()
+        except Exception as e:
+            QMessageBox.warning(self, "Uyarı", f"Cari ekstre açılamadı: {e}")
     
     def create_transactions_tab(self) -> QWidget:
         """İşlemler sekmesi - Excel tarzı"""
@@ -345,7 +865,25 @@ class MainWindow(QMainWindow):
         # Filtre ve buton paneli
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(10)
-        
+
+        # Sütun genişliklerini kaydet butonu
+        btn_save_columns = QPushButton("💾 Kaydet")
+        btn_save_columns.setMinimumHeight(30)
+        btn_save_columns.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_columns.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_columns.clicked.connect(self.save_transaction_column_widths)
+        filter_layout.addWidget(btn_save_columns)
+
         # Tarih filtreleri
         filter_layout.addWidget(QLabel("Başlangıç:"))
         self.start_date_filter = QDateEdit()
@@ -366,6 +904,15 @@ class MainWindow(QMainWindow):
         btn_filter.setMinimumHeight(30)
         btn_filter.clicked.connect(self.apply_transaction_filter)
         filter_layout.addWidget(btn_filter)
+        
+        # Arama alanı - Müşteri adı ile ara
+        filter_layout.addWidget(QLabel("Müşteri Ara:"))
+        self.search_customer_input = QLineEdit()
+        self.search_customer_input.setPlaceholderText("Müşteri adı yazın...")
+        self.search_customer_input.setMinimumHeight(30)
+        self.search_customer_input.setMaximumWidth(200)
+        self.search_customer_input.textChanged.connect(self.search_customer_transactions)
+        filter_layout.addWidget(self.search_customer_input)
         
         filter_layout.addStretch()
         
@@ -412,6 +959,7 @@ class MainWindow(QMainWindow):
         
         # İşlemler tablosu - Excel tarzı
         self.table_transactions = QTableWidget()
+        self.table_transactions.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_transactions.setColumnCount(9)
         self.table_transactions.setHorizontalHeaderLabels([
             "TARİH", "TÜR", "MÜŞTERİ ÜNVANI", "AÇIKLAMA", 
@@ -433,8 +981,11 @@ class MainWindow(QMainWindow):
         self.table_transactions.setColumnWidth(5, 100)  # Konu
         self.table_transactions.setColumnWidth(6, 100)  # Ödeyen
         self.table_transactions.setColumnWidth(7, 110)  # Tutar
-        self.table_transactions.setColumnWidth(8, 160)  # İşlemler
-        
+        self.table_transactions.setColumnWidth(8, 200)  # İşlemler
+
+        # Kayıtlı sütun genişliklerini uygula
+        self.load_transaction_column_widths()
+
         self.table_transactions.setStyleSheet("""
             QTableWidget {
                 border: 1px solid #ddd;
@@ -464,11 +1015,75 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         self.refresh_transactions_table()
         return widget
-    
+
+    # ── Genel sütun genişliği kaydet / yükle ──────────────────────────────
+    def save_column_widths(self, table: QTableWidget, key: str, silent: bool = False):
+        """Herhangi bir tablonun sütun genişliklerini JSON dosyasına kaydet."""
+        try:
+            save_path = Path("data") / "column_widths.json"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if save_path.exists():
+                with open(save_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            widths = {str(col): table.columnWidth(col) for col in range(table.columnCount())}
+            data[key] = widths
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            if not silent:
+                QMessageBox.information(self, "Kaydet", "Sütun genişlikleri başarıyla kaydedildi.")
+        except Exception as e:
+            if not silent:
+                QMessageBox.warning(self, "Hata", f"Kayıt sırasında hata oluştu:\n{e}")
+
+    def load_column_widths(self, table: QTableWidget, key: str):
+        """JSON dosyasından kaydedilmiş sütun genişliklerini tabloya uygula."""
+        try:
+            save_path = Path("data") / "column_widths.json"
+            if not save_path.exists():
+                return
+            with open(save_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            widths = data.get(key, {})
+            for col_str, width in widths.items():
+                col = int(col_str)
+                if 0 <= col < table.columnCount():
+                    table.setColumnWidth(col, width)
+        except Exception:
+            pass
+
+    def _make_save_col_btn(self, table: QTableWidget, key: str) -> QPushButton:
+        """Sütun genişliği kaydet butonu oluştur (tekrar kullanılabilir)."""
+        btn = QPushButton("💾 Kaydet")
+        btn.setMinimumHeight(30)
+        btn.setToolTip("Sütun genişliklerini kaydet")
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn.clicked.connect(lambda: self.save_column_widths(table, key))
+        return btn
+
+    # ── transactions (eski uyumluluk sarmalayıcılar) ────────────────────
+    def save_transaction_column_widths(self):
+        self.save_column_widths(self.table_transactions, "transactions")
+
+    def load_transaction_column_widths(self):
+        self.load_column_widths(self.table_transactions, "transactions")
+
     def refresh_transactions_table(self):
         """İşlemler tablosunu yenile"""
         try:
             transactions = TransactionService.get_all_transactions(self.user.id)
+            # Yeni işlemler üstte olsun (descending sort)
+            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
             self.table_transactions.setRowCount(len(transactions))
             
             for i, trans in enumerate(transactions):
@@ -493,7 +1108,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
                 
                 # Ödeme Şekli
-                payment_text = trans.payment_method.value if trans.payment_method else ""
+                payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type) if trans.payment_method else ""
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 
                 # Konu
@@ -503,27 +1118,31 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
                 
                 # Tutar
-                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
                 
                 # İşlemler butonları - Düzenle ve Sil
                 action_widget = QWidget()
                 action_layout = QHBoxLayout(action_widget)
-                action_layout.setContentsMargins(5, 2, 5, 2)
-                action_layout.setSpacing(5)
+                action_layout.setContentsMargins(4, 3, 4, 3)
+                action_layout.setSpacing(6)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 
                 # Düzenle butonu
-                btn_edit = QPushButton("✏️ Düzenle")
-                btn_edit.setMinimumHeight(25)
+                btn_edit = QPushButton("Düzenle")
+                btn_edit.setMinimumWidth(130)
+                btn_edit.setMinimumHeight(36)
+                btn_edit.setMaximumWidth(140)
                 btn_edit.setStyleSheet("""
                     QPushButton {
                         background-color: #2196F3;
                         color: white;
                         border: none;
-                        border-radius: 3px;
-                        padding: 4px 8px;
-                        font-size: 9pt;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #1976D2; }
@@ -533,16 +1152,18 @@ class MainWindow(QMainWindow):
                 action_layout.addWidget(btn_edit)
                 
                 # Sil butonu
-                btn_delete = QPushButton("🗑️ Sil")
-                btn_delete.setMinimumHeight(25)
+                btn_delete = QPushButton("Sil")
+                btn_delete.setMinimumWidth(100)
+                btn_delete.setMinimumHeight(36)
+                btn_delete.setMaximumWidth(110)
                 btn_delete.setStyleSheet("""
                     QPushButton {
                         background-color: #f44336;
                         color: white;
                         border: none;
-                        border-radius: 3px;
-                        padding: 4px 8px;
-                        font-size: 9pt;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #da190b; }
@@ -553,7 +1174,9 @@ class MainWindow(QMainWindow):
                 
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
-            self._resize_table(self.table_transactions)
+            self._resize_table(self.table_transactions, stretch_col=3)
+            self.table_transactions.setColumnWidth(8, 200)
+            self.load_transaction_column_widths()
                 
         except Exception as e:
             print(f"İşlemler yükleme hatası: {e}")
@@ -568,6 +1191,8 @@ class MainWindow(QMainWindow):
             transactions = TransactionService.get_all_transactions(
                 self.user.id, start_date, end_date
             )
+            # Yeni işlemler üstte olsun (descending sort)
+            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
             
             # Tabloyu güncelle (aynı kod yukarıdaki gibi)
             self.table_transactions.setRowCount(len(transactions))
@@ -581,7 +1206,8 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 1, type_item)
                 self.table_transactions.setItem(i, 2, QTableWidgetItem(trans.customer_name))
                 self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
-                self.table_transactions.setItem(i, 4, QTableWidgetItem(trans.payment_method.value))
+                payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type)
+                self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
                 amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
@@ -591,19 +1217,23 @@ class MainWindow(QMainWindow):
                 # İşlemler butonları
                 action_widget = QWidget()
                 action_layout = QHBoxLayout(action_widget)
-                action_layout.setContentsMargins(5, 2, 5, 2)
-                action_layout.setSpacing(5)
+                action_layout.setContentsMargins(4, 3, 4, 3)
+                action_layout.setSpacing(6)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 
-                btn_edit = QPushButton("✏️ Düzenle")
-                btn_edit.setMinimumHeight(25)
+                btn_edit = QPushButton("Düzenle")
+                btn_edit.setMinimumWidth(130)
+                btn_edit.setMinimumHeight(36)
+                btn_edit.setMaximumWidth(140)
                 btn_edit.setStyleSheet("""
                     QPushButton {
                         background-color: #2196F3;
                         color: white;
                         border: none;
-                        border-radius: 3px;
-                        padding: 4px 8px;
-                        font-size: 9pt;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #1976D2; }
@@ -611,16 +1241,18 @@ class MainWindow(QMainWindow):
                 btn_edit.clicked.connect(lambda checked, tid=trans.id: self.edit_transaction(tid))
                 action_layout.addWidget(btn_edit)
                 
-                btn_delete = QPushButton("🗑️ Sil")
-                btn_delete.setMinimumHeight(25)
+                btn_delete = QPushButton("Sil")
+                btn_delete.setMinimumWidth(100)
+                btn_delete.setMinimumHeight(36)
+                btn_delete.setMaximumWidth(110)
                 btn_delete.setStyleSheet("""
                     QPushButton {
                         background-color: #f44336;
                         color: white;
                         border: none;
-                        border-radius: 3px;
-                        padding: 4px 8px;
-                        font-size: 9pt;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #da190b; }
@@ -630,9 +1262,103 @@ class MainWindow(QMainWindow):
                 
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
-            self._resize_table(self.table_transactions)
+            self._resize_table(self.table_transactions, stretch_col=3)
+            self.table_transactions.setColumnWidth(8, 200)
+            self.load_transaction_column_widths()
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
+    
+    def search_customer_transactions(self):
+        """Müşteri adına göre ara"""
+        search_text = self.search_customer_input.text().strip().lower()
+        
+        if not search_text:
+            # Eğer arama boşsa tümünü göster
+            self.refresh_transactions_table()
+            return
+        
+        try:
+            transactions = TransactionService.get_all_transactions(self.user.id)
+            # Yeni işlemler üstte olsun (descending sort)
+            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
+            
+            # Müşteri adına göre filtrele
+            filtered = [t for t in transactions if search_text in (t.customer_name or "").lower()]
+            
+            # Tabloyu güncelle
+            self.table_transactions.setRowCount(len(filtered))
+            for i, trans in enumerate(filtered):
+                self.table_transactions.setItem(i, 0, QTableWidgetItem(str(trans.transaction_date)))
+                type_item = QTableWidgetItem(trans.transaction_type.value)
+                if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
+                    type_item.setBackground(Qt.green)
+                elif trans.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
+                    type_item.setBackground(Qt.red)
+                self.table_transactions.setItem(i, 1, type_item)
+                self.table_transactions.setItem(i, 2, QTableWidgetItem(trans.customer_name))
+                self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
+                payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type)
+                self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
+                self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
+                self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
+                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table_transactions.setItem(i, 7, amount_item)
+                
+                # İşlemler butonları
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(4, 3, 4, 3)
+                action_layout.setSpacing(6)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                
+                btn_edit = QPushButton("Düzenle")
+                btn_edit.setMinimumWidth(130)
+                btn_edit.setMinimumHeight(36)
+                btn_edit.setMaximumWidth(140)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #1976D2; }
+                """)
+                btn_edit.setProperty('transaction_id', trans.id)
+                btn_edit.clicked.connect(lambda checked, tid=trans.id: self.edit_transaction(tid))
+                action_layout.addWidget(btn_edit)
+                
+                btn_delete = QPushButton("Sil")
+                btn_delete.setMinimumWidth(100)
+                btn_delete.setMinimumHeight(36)
+                btn_delete.setMaximumWidth(110)
+                btn_delete.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 7px 14px;
+                        font-size: 12pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #da190b; }
+                """)
+                btn_delete.setProperty('transaction_id', trans.id)
+                btn_delete.clicked.connect(lambda checked, tid=trans.id: self.delete_transaction(tid))
+                action_layout.addWidget(btn_delete)
+                
+                self.table_transactions.setCellWidget(i, 8, action_widget)
+            
+            self._resize_table(self.table_transactions, stretch_col=3)
+            self.table_transactions.setColumnWidth(8, 200)
+        except Exception as e:
+            QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
     
     def show_new_transaction_dialog(self):
         """Yeni işlem ekleme dialog'unu göster"""
@@ -681,11 +1407,31 @@ class MainWindow(QMainWindow):
         btn_refresh = QPushButton("🔄 Yenile")
         btn_refresh.clicked.connect(self.refresh_invoice_table)
         btn_layout.addWidget(btn_refresh)
+
+        btn_save_inv = QPushButton("💾 Kaydet")
+        btn_save_inv.setMinimumHeight(30)
+        btn_save_inv.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_inv.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_inv.clicked.connect(lambda: self.save_column_widths(self.table_invoices, "invoices"))
+        btn_layout.addWidget(btn_save_inv)
+
+        self.invoice_search_input = QLineEdit()
+        self.invoice_search_input.setPlaceholderText("Fatura no veya cari adı ara...")
+        self.invoice_search_input.textChanged.connect(self.filter_invoice_table)
+        btn_layout.addWidget(self.invoice_search_input)
         
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
         self.table_invoices = QTableWidget()
+        self.table_invoices.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_invoices.setColumnCount(5)
         self.table_invoices.setHorizontalHeaderLabels(["Fatura No", "Cari", "Tutar", "Durum", "Tarih"])
         self.table_invoices.horizontalHeader().setStretchLastSection(False)
@@ -694,9 +1440,9 @@ class MainWindow(QMainWindow):
         self.table_invoices.setColumnWidth(2, 120)
         self.table_invoices.setColumnWidth(3, 100)
         self.table_invoices.setColumnWidth(4, 100)
+        self.load_column_widths(self.table_invoices, "invoices")
         layout.addWidget(self.table_invoices)
         
-        layout.addStretch()
         widget.setLayout(layout)
         
         self.refresh_invoice_table()
@@ -728,7 +1474,7 @@ class MainWindow(QMainWindow):
                 self.table_invoices.setItem(i, 1, QTableWidgetItem(cari_name))
                 
                 # Tutar
-                self.table_invoices.setItem(i, 2, QTableWidgetItem(f"{inv.amount:.2f} TL"))
+                self.table_invoices.setItem(i, 2, QTableWidgetItem(f"{format_tr(inv.amount)} TL"))
                 
                 # Durum (Fatura türü)
                 status = "Kesilen" if inv.transaction_type == TransactionType.KESILEN_FATURA else "Gelen"
@@ -737,12 +1483,29 @@ class MainWindow(QMainWindow):
                 # Tarih
                 self.table_invoices.setItem(i, 4, QTableWidgetItem(str(inv.transaction_date)))
             
-            self._resize_table(self.table_invoices)
+            self._resize_table(self.table_invoices, stretch_col=1)
+            self.load_column_widths(self.table_invoices, "invoices")
             session.close()
+            self.filter_invoice_table()
         except Exception as e:
             print(f"Fatura yükleme hatası: {e}")
             import traceback
             traceback.print_exc()
+
+    def filter_invoice_table(self):
+        if not hasattr(self, 'table_invoices'):
+            return
+        query = ""
+        if hasattr(self, 'invoice_search_input'):
+            query = self.invoice_search_input.text().casefold().strip()
+
+        for row in range(self.table_invoices.rowCount()):
+            invoice_item = self.table_invoices.item(row, 0)
+            cari_item = self.table_invoices.item(row, 1)
+            invoice_no = invoice_item.text().casefold() if invoice_item else ""
+            cari_name = cari_item.text().casefold() if cari_item else ""
+            match = not query or query in invoice_no or query in cari_name
+            self.table_invoices.setRowHidden(row, not match)
     
     def show_new_invoice_dialog(self):
         """Yeni fatura dialog'u - İşlemler sekmesine yönlendir"""
@@ -769,6 +1532,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         
         btn_layout = QHBoxLayout()
+        
+        # Arama kutusu
+        btn_layout.addWidget(QLabel("🔍 Ara:"))
+        self.cari_list_search_input = QLineEdit()
+        self.cari_list_search_input.setPlaceholderText("Cari adı veya telefon ara...")
+        self.cari_list_search_input.setMinimumHeight(30)
+        self.cari_list_search_input.setMaximumWidth(250)
+        self.cari_list_search_input.textChanged.connect(self.filter_cari_table)
+        btn_layout.addWidget(self.cari_list_search_input)
+        
+        btn_layout.addSpacing(20)
+        
         btn_new = QPushButton("➕ Yeni Cari")
         btn_new.clicked.connect(self.show_new_cari_dialog)
         btn_layout.addWidget(btn_new)
@@ -780,25 +1555,90 @@ class MainWindow(QMainWindow):
         btn_import_caris = QPushButton("📥 Excel'den Aktar")
         btn_import_caris.clicked.connect(self.import_caris_from_excel)
         btn_layout.addWidget(btn_import_caris)
-        
+
+        btn_save_cari = QPushButton("💾 Kaydet")
+        btn_save_cari.setMinimumHeight(30)
+        btn_save_cari.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_cari.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_cari.clicked.connect(lambda: self.save_column_widths(self.table_caris, "caris"))
+        btn_layout.addWidget(btn_save_cari)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
         self.table_caris = QTableWidget()
-        self.table_caris.setColumnCount(4)
-        self.table_caris.setHorizontalHeaderLabels(["Ad", "Tip", "Bakiye", "Telefon"])
+        self.table_caris.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_caris.setColumnCount(5)
+        self.table_caris.setHorizontalHeaderLabels(["Ad", "Tip", "Bakiye", "Telefon", "İşlemler"])
         self.table_caris.horizontalHeader().setStretchLastSection(False)
         self.table_caris.setColumnWidth(0, 300)
         self.table_caris.setColumnWidth(1, 150)
         self.table_caris.setColumnWidth(2, 130)
         self.table_caris.setColumnWidth(3, 150)
+        self.table_caris.setColumnWidth(4, 140)
+        self.load_column_widths(self.table_caris, "caris")
         layout.addWidget(self.table_caris)
+
+        borrow_title = QLabel("💳 Ödünç Para Carileri")
+        borrow_title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        layout.addWidget(borrow_title)
+
+        borrow_btn_layout = QHBoxLayout()
+        btn_new_borrow = QPushButton("➕ Ödünç Cari")
+        btn_new_borrow.clicked.connect(self.show_new_borrow_cari_dialog)
+        borrow_btn_layout.addWidget(btn_new_borrow)
+
+        btn_refresh_borrow = QPushButton("🔄 Yenile")
+        btn_refresh_borrow.clicked.connect(self.refresh_borrow_cari_table)
+        borrow_btn_layout.addWidget(btn_refresh_borrow)
+
+        btn_save_borrow = QPushButton("💾 Kaydet")
+        btn_save_borrow.setMinimumHeight(30)
+        btn_save_borrow.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_borrow.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_borrow.clicked.connect(lambda: self.save_column_widths(self.table_caris_borrow, "caris_borrow"))
+        borrow_btn_layout.addWidget(btn_save_borrow)
+        borrow_btn_layout.addStretch()
+        layout.addLayout(borrow_btn_layout)
+
+        self.table_caris_borrow = QTableWidget()
+        self.table_caris_borrow.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_caris_borrow.setColumnCount(5)
+        self.table_caris_borrow.setHorizontalHeaderLabels(["Ad", "Tip", "Bakiye", "Telefon", "İşlemler"])
+        self.table_caris_borrow.horizontalHeader().setStretchLastSection(False)
+        self.table_caris_borrow.setColumnWidth(0, 300)
+        self.table_caris_borrow.setColumnWidth(1, 150)
+        self.table_caris_borrow.setColumnWidth(2, 130)
+        self.table_caris_borrow.setColumnWidth(3, 150)
+        self.table_caris_borrow.setColumnWidth(4, 140)
+        self.load_column_widths(self.table_caris_borrow, "caris_borrow")
+        layout.addWidget(self.table_caris_borrow)
         
-        layout.addStretch()
         widget.setLayout(layout)
         
         self.refresh_cari_table()
         return widget
+
+    def show_new_borrow_cari_dialog(self):
+        """Yeni ödünç cari dialog'u"""
+        from src.ui.dialogs.cari_dialog import CariDialog
+        dialog = CariDialog(self.user.id, self, default_type="ÖDÜNÇ PARA")
+        if dialog.exec_():
+            self.refresh_cari_table()
     
     def refresh_cari_table(self):
         """Cari tablosunu yenile"""
@@ -812,13 +1652,57 @@ class MainWindow(QMainWindow):
                     print(f"Cari {i}: {cari.name} - {cari.cari_type}")
                     self.table_caris.setItem(i, 0, QTableWidgetItem(cari.name))
                     self.table_caris.setItem(i, 1, QTableWidgetItem(cari.cari_type))
-                    self.table_caris.setItem(i, 2, QTableWidgetItem(f"{cari.balance:.2f}"))
+                    self.table_caris.setItem(i, 2, QTableWidgetItem(format_tr(cari.balance)))
                     self.table_caris.setItem(i, 3, QTableWidgetItem(cari.phone or ""))
+
+                    action_widget = QWidget()
+                    action_layout = QHBoxLayout(action_widget)
+                    action_layout.setContentsMargins(5, 2, 5, 2)
+                    action_layout.setSpacing(5)
+                    action_layout.setAlignment(Qt.AlignCenter)
+                    action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                    btn_edit = QPushButton("✏️ Düzenle")
+                    btn_edit.setMinimumHeight(24)
+                    btn_edit.setStyleSheet("""
+                        QPushButton {
+                            background-color: #2196F3;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #0b7dda; }
+                    """)
+                    btn_edit.clicked.connect(lambda checked, cid=cari.id: self.show_edit_cari_dialog(cid))
+                    action_layout.addWidget(btn_edit)
+
+                    btn_delete = QPushButton("🗑️ Sil")
+                    btn_delete.setMinimumHeight(24)
+                    btn_delete.setStyleSheet("""
+                        QPushButton {
+                            background-color: #f44336;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #da190b; }
+                    """)
+                    btn_delete.clicked.connect(lambda checked, cid=cari.id: self.delete_cari(cid))
+                    action_layout.addWidget(btn_delete)
+
+                    self.table_caris.setCellWidget(i, 4, action_widget)
                 print("Cari tablosu başarıyla güncellendi")
             else:
                 print("Hiç cari hesap bulunamadı!")
             
-            self._resize_table(self.table_caris)
+            self._resize_table(self.table_caris, stretch_col=0)
+            self.load_column_widths(self.table_caris, "caris")
             
             # Cari Ekstre dropdown'ını da güncelle
             if hasattr(self, 'cari_extract_combo'):
@@ -828,10 +1712,106 @@ class MainWindow(QMainWindow):
                     for cari in caris:
                         self.cari_extract_combo.addItem(f"{cari.name} ({cari.cari_type})", cari.id)
                 print("Cari Ekstre dropdown güncellendi")
+
+            if hasattr(self, 'cari_list_search_input'):
+                self.filter_cari_table(self.cari_list_search_input.text())
+
+            if hasattr(self, 'cari_extract_combo'):
+                self._reload_cari_extract_combo()
+
+            self.refresh_borrow_cari_table(caris)
         except Exception as e:
             print(f"Cari yükleme hatası: {e}")
             import traceback
             traceback.print_exc()
+
+    def refresh_borrow_cari_table(self, caris=None):
+        """Ödünç cari tablosunu yenile"""
+        try:
+            if caris is None:
+                caris = CariService.get_caris(self.user.id)
+            borrow_caris = [c for c in (caris or []) if c.cari_type == "ÖDÜNÇ PARA"]
+            if not hasattr(self, "table_caris_borrow"):
+                return
+
+            self.table_caris_borrow.setRowCount(len(borrow_caris))
+            for i, cari in enumerate(borrow_caris):
+                self.table_caris_borrow.setItem(i, 0, QTableWidgetItem(cari.name))
+                self.table_caris_borrow.setItem(i, 1, QTableWidgetItem(cari.cari_type))
+                self.table_caris_borrow.setItem(i, 2, QTableWidgetItem(format_tr(cari.balance)))
+                self.table_caris_borrow.setItem(i, 3, QTableWidgetItem(cari.phone or ""))
+
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                btn_edit = QPushButton("✏️ Düzenle")
+                btn_edit.setMinimumHeight(24)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #0b7dda; }
+                """)
+                btn_edit.clicked.connect(lambda checked, cid=cari.id: self.show_edit_cari_dialog(cid))
+                action_layout.addWidget(btn_edit)
+
+                btn_delete = QPushButton("🗑️ Sil")
+                btn_delete.setMinimumHeight(24)
+                btn_delete.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #da190b; }
+                """)
+                btn_delete.clicked.connect(lambda checked, cid=cari.id: self.delete_cari(cid))
+                action_layout.addWidget(btn_delete)
+
+                self.table_caris_borrow.setCellWidget(i, 4, action_widget)
+
+            self._resize_table(self.table_caris_borrow, stretch_col=0)
+            self.load_column_widths(self.table_caris_borrow, "caris_borrow")
+        except Exception as e:
+            print(f"Ödünç cari yükleme hatası: {e}")
+    
+    def filter_cari_table(self, search_text=None):
+        """Cari tablosunu arama metnine göre filtrele"""
+        if search_text is None:
+            search_text = self.cari_list_search_input.text() if hasattr(self, 'cari_list_search_input') else ""
+
+        search_text = str(search_text).casefold().strip()
+        
+        for row in range(self.table_caris.rowCount()):
+            # Ad ve telefon kolonlarını kontrol et
+            name_item = self.table_caris.item(row, 0)
+            phone_item = self.table_caris.item(row, 3)
+            
+            name_text = name_item.text().casefold() if name_item else ""
+            phone_text = phone_item.text().casefold() if phone_item else ""
+
+            name_match = search_text in name_text
+            phone_match = search_text in phone_text
+            
+            # Eğer arama metni boşsa veya eşleşme varsa göster
+            if not search_text or name_match or phone_match:
+                self.table_caris.setRowHidden(row, False)
+            else:
+                self.table_caris.setRowHidden(row, True)
     
     def show_new_cari_dialog(self):
         """Yeni cari dialog'u"""
@@ -839,44 +1819,114 @@ class MainWindow(QMainWindow):
         dialog = CariDialog(self.user.id, self)
         if dialog.exec_():
             self.refresh_all_data()
+
+    def show_edit_cari_dialog(self, cari_id):
+        """Cari düzenleme dialog'u"""
+        from src.ui.dialogs.cari_dialog import CariDialog
+        dialog = CariDialog(self.user.id, self, cari_id=cari_id)
+        if dialog.exec_():
+            self.refresh_all_data()
+
+    def delete_cari(self, cari_id):
+        """Cari sil (pasif et)"""
+        reply = QMessageBox.question(
+            self,
+            "Onay",
+            "Bu cariyi silmek istediğinize emin misiniz?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            success, msg = CariService.delete_cari(cari_id)
+            if success:
+                QMessageBox.information(self, "Başarılı", "Cari silindi")
+                self.refresh_all_data()
+            else:
+                QMessageBox.critical(self, "Hata", msg)
     
     def create_bank_tab(self) -> QWidget:
         """Banka Hesapları sekmesi"""
         widget = QWidget()
         layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15)
         
         title = QLabel("🏦 Banka Hesapları")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         layout.addWidget(title)
         
+        # İstatistikler
+        stats_layout = QHBoxLayout()
+        try:
+            stats = BankService.get_bank_statistics(self.user.id)
+            
+            stats_layout.addWidget(self.create_stat_card("Toplam Hesap", str(stats['total_accounts']), "#1976D2"))
+            stats_layout.addWidget(self.create_stat_card("Toplam Bakiye", f"{stats['total_balance']:,.0f} ₺", "#4CAF50"))
+            stats_layout.addWidget(self.create_stat_card("Ek Hesap Limiti", f"{stats['total_overdraft']:,.0f} ₺", "#FF9800"))
+            stats_layout.addWidget(self.create_stat_card("Kullanılabilir", f"{stats['total_available']:,.0f} ₺", "#9C27B0"))
+        except Exception as e:
+            print(f"Banka stats hatası: {e}")
+        
+        layout.addLayout(stats_layout)
+        layout.addSpacing(15)
+        
+        # Butonlar
         btn_layout = QHBoxLayout()
         btn_new = QPushButton("➕ Yeni Hesap")
+        btn_new.setMinimumHeight(35)
+        btn_new.setStyleSheet("""
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #1565C0; }
+        """)
         btn_new.clicked.connect(self.show_new_bank_dialog)
         btn_layout.addWidget(btn_new)
         
         btn_refresh = QPushButton("🔄 Yenile")
+        btn_refresh.setMinimumHeight(35)
         btn_refresh.clicked.connect(self.refresh_bank_table)
         btn_layout.addWidget(btn_refresh)
         
         btn_import_banks = QPushButton("📥 Excel'den Aktar")
+        btn_import_banks.setMinimumHeight(35)
         btn_import_banks.clicked.connect(self.import_banks_from_excel)
         btn_layout.addWidget(btn_import_banks)
-        
+
+        btn_save_banks = QPushButton("💾 Kaydet")
+        btn_save_banks.setMinimumHeight(35)
+        btn_save_banks.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_banks.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_banks.clicked.connect(lambda: self.save_column_widths(self.table_banks, "banks"))
+        btn_layout.addWidget(btn_save_banks)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
         self.table_banks = QTableWidget()
-        self.table_banks.setColumnCount(5)
-        self.table_banks.setHorizontalHeaderLabels(["Banka", "Hesap No", "Bakiye", "Ek Hesap Limiti", "Para Birimi"])
+        self.table_banks.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_banks.setColumnCount(6)
+        self.table_banks.setHorizontalHeaderLabels(["Banka", "Hesap No", "Bakiye", "Ek Hesap Limiti", "Para Birimi", "İşlemler"])
         self.table_banks.horizontalHeader().setStretchLastSection(False)
         self.table_banks.setColumnWidth(0, 180)
         self.table_banks.setColumnWidth(1, 220)
         self.table_banks.setColumnWidth(2, 120)
         self.table_banks.setColumnWidth(3, 130)
         self.table_banks.setColumnWidth(4, 100)
+        self.table_banks.setColumnWidth(5, 220)
+        self.load_column_widths(self.table_banks, "banks")
         layout.addWidget(self.table_banks)
         
-        layout.addStretch()
         widget.setLayout(layout)
         
         self.refresh_bank_table()
@@ -892,15 +1942,76 @@ class MainWindow(QMainWindow):
                 for i, acc in enumerate(accounts):
                     self.table_banks.setItem(i, 0, QTableWidgetItem(acc.bank_name))
                     self.table_banks.setItem(i, 1, QTableWidgetItem(acc.account_number))
-                    self.table_banks.setItem(i, 2, QTableWidgetItem(f"{acc.balance:,.2f} ₺"))
+                    self.table_banks.setItem(i, 2, QTableWidgetItem(f"{format_tr(acc.balance)} ₺"))
                     
                     # Ek hesap limiti
                     overdraft = getattr(acc, 'overdraft_limit', 0.0)
-                    self.table_banks.setItem(i, 3, QTableWidgetItem(f"{overdraft:,.2f} ₺"))
+                    self.table_banks.setItem(i, 3, QTableWidgetItem(f"{format_tr(overdraft)} ₺"))
                     
                     self.table_banks.setItem(i, 4, QTableWidgetItem(acc.currency))
+
+                    action_widget = QWidget()
+                    action_layout = QHBoxLayout(action_widget)
+                    action_layout.setContentsMargins(5, 2, 5, 2)
+                    action_layout.setSpacing(5)
+                    action_layout.setAlignment(Qt.AlignCenter)
+                    action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                    btn_edit = QPushButton("✏️ Düzenle")
+                    btn_edit.setMinimumHeight(24)
+                    btn_edit.setStyleSheet("""
+                        QPushButton {
+                            background-color: #2196F3;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #0b7dda; }
+                    """)
+                    btn_edit.clicked.connect(lambda checked, bid=acc.id: self.show_edit_bank_dialog(bid))
+                    action_layout.addWidget(btn_edit)
+
+                    btn_delete = QPushButton("🗑️ Sil")
+                    btn_delete.setMinimumHeight(24)
+                    btn_delete.setStyleSheet("""
+                        QPushButton {
+                            background-color: #f44336;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #da190b; }
+                    """)
+                    btn_delete.clicked.connect(lambda checked, bid=acc.id: self.delete_bank(bid))
+                    action_layout.addWidget(btn_delete)
+
+                    btn_statement = QPushButton("📑 Dökümü Aç")
+                    btn_statement.setMinimumHeight(24)
+                    btn_statement.setStyleSheet("""
+                        QPushButton {
+                            background-color: #607D8B;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #546E7A; }
+                    """)
+                    btn_statement.clicked.connect(lambda checked, bid=acc.id: self.show_bank_statement(bid))
+                    action_layout.addWidget(btn_statement)
+
+                    self.table_banks.setCellWidget(i, 5, action_widget)
             
-            self._resize_table(self.table_banks)
+            self._resize_table(self.table_banks, stretch_col=1)
+            self.load_column_widths(self.table_banks, "banks")
         except Exception as e:
             print(f"Banka yükleme hatası: {e}")
     
@@ -910,6 +2021,29 @@ class MainWindow(QMainWindow):
         dialog = BankDialog(self.user.id, self)
         if dialog.exec_():
             self.refresh_all_data()
+
+    def show_edit_bank_dialog(self, account_id):
+        """Banka hesabı düzenleme dialog'u"""
+        from src.ui.dialogs.bank_dialog import BankDialog
+        dialog = BankDialog(self.user.id, self, account_id=account_id)
+        if dialog.exec_():
+            self.refresh_all_data()
+
+    def delete_bank(self, account_id):
+        """Banka hesabı sil (pasif et)"""
+        reply = QMessageBox.question(
+            self,
+            "Onay",
+            "Bu banka hesabını silmek istediğinize emin misiniz?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            success, msg = BankService.delete_account(account_id)
+            if success:
+                QMessageBox.information(self, "Başarılı", "Banka hesabı silindi")
+                self.refresh_all_data()
+            else:
+                QMessageBox.critical(self, "Hata", msg)
     
     def create_admin_panel_tab(self) -> QWidget:
         """Admin Panel sekmesi"""
@@ -981,6 +2115,11 @@ Pasif Kullanıcı: {total_users - active_users}
     
     def create_settings_tab(self) -> QWidget:
         """Ayarlar sekmesi"""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
@@ -992,14 +2131,61 @@ Pasif Kullanıcı: {total_users - active_users}
         
         layout.addWidget(QLabel("━━━━━━━━━━━━━━━━━"))
         
-        # Kullanıcı Bilgileri
+        # Kullanıcı Bilgileri ve Dashboard Kutucukları yan yana
+        user_dashboard_layout = QHBoxLayout()
+        user_dashboard_layout.setSpacing(30)
+        
+        # Sol: Kullanıcı Bilgileri
+        user_info_layout = QVBoxLayout()
         info_title = QLabel("👤 Kullanıcı Bilgileri")
         info_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        layout.addWidget(info_title)
+        user_info_layout.addWidget(info_title)
         
-        layout.addWidget(QLabel(f"Ad: {self.user.full_name}"))
-        layout.addWidget(QLabel(f"Email: {self.user.email}"))
-        layout.addWidget(QLabel(f"Kullanıcı Adı: {self.user.username}"))
+        user_info_layout.addSpacing(5)
+        user_info_layout.addWidget(QLabel(f"Ad: {self.user.full_name}"))
+        user_info_layout.addWidget(QLabel(f"Email: {self.user.email}"))
+        user_info_layout.addWidget(QLabel(f"Kullanıcı Adı: {self.user.username}"))
+        user_info_layout.addStretch()
+        
+        user_dashboard_layout.addLayout(user_info_layout)
+        
+        # Sağ: Dashboard Kutucukları
+        dashboard_layout = QVBoxLayout()
+        dashboard_title = QLabel("📊 Dashboard Kutucukları")
+        dashboard_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        dashboard_layout.addWidget(dashboard_title)
+
+        dashboard_layout.addSpacing(5)
+        
+        self.dashboard_card_checks = {}
+        selected_keys = set(self._get_dashboard_card_keys())
+        for key, title_text, _ in self._get_dashboard_card_defs():
+            chk = QCheckBox(title_text)
+            chk.setChecked(key in selected_keys)
+            self.dashboard_card_checks[key] = chk
+            dashboard_layout.addWidget(chk)
+
+        dashboard_layout.addSpacing(10)
+        
+        btn_save_dashboard = QPushButton("💾 Dashboard Ayarlarını Kaydet")
+        btn_save_dashboard.setMinimumHeight(36)
+        btn_save_dashboard.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #546E7A; }
+        """)
+        btn_save_dashboard.clicked.connect(self.save_dashboard_preferences)
+        dashboard_layout.addWidget(btn_save_dashboard)
+        
+        user_dashboard_layout.addLayout(dashboard_layout)
+        
+        layout.addLayout(user_dashboard_layout)
         
         layout.addSpacing(15)
         layout.addWidget(QLabel("━━━━━━━━━━━━━━━━━"))
@@ -1019,10 +2205,227 @@ Pasif Kullanıcı: {total_users - active_users}
         btn_excel_backup.setMinimumHeight(40)
         btn_excel_backup.clicked.connect(self.export_all_data_to_excel)
         layout.addWidget(btn_excel_backup)
+
+        self.auto_backup_enabled_check = QCheckBox("🔁 Otomatik Yedekleme Aç")
+        self.auto_backup_enabled_check.setChecked(
+            UserSettingsService.get_json_setting(self.user.id, "auto_backup_enabled", False)
+        )
+        layout.addWidget(self.auto_backup_enabled_check)
+
+        self.auto_backup_period_combo = QComboBox()
+        self.auto_backup_period_combo.addItem("Gün", "day")
+        self.auto_backup_period_combo.addItem("Hafta", "week")
+        self.auto_backup_period_combo.addItem("Ay", "month")
+        self.auto_backup_period_combo.addItem("Yıl", "year")
+
+        saved_period = UserSettingsService.get_setting(self.user.id, "auto_backup_period", "day")
+        period_index = max(0, self.auto_backup_period_combo.findData(saved_period))
+        self.auto_backup_period_combo.setCurrentIndex(period_index)
+
+        auto_backup_period_layout = QHBoxLayout()
+        auto_backup_period_layout.addWidget(QLabel("Periyot:"))
+        auto_backup_period_layout.addWidget(self.auto_backup_period_combo)
+        auto_backup_period_layout.addStretch()
+        layout.addLayout(auto_backup_period_layout)
+
+        btn_save_auto_backup = QPushButton("💾 Otomatik Yedeklemeyi Kaydet")
+        btn_save_auto_backup.setMinimumHeight(36)
+        btn_save_auto_backup.clicked.connect(self.save_auto_backup_preferences)
+        layout.addWidget(btn_save_auto_backup)
         
-        layout.addSpacing(15)
+        layout.addSpacing(20)
         layout.addWidget(QLabel("━━━━━━━━━━━━━━━━━"))
-        layout.addSpacing(15)
+        layout.addSpacing(20)
+        
+        # Google Sheets Senkronizasyonu
+        gsheets_title = QLabel("📊 Google Sheets Senkronizasyonu")
+        gsheets_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        layout.addWidget(gsheets_title)
+        
+        layout.addSpacing(5)
+        
+        gsheets_info = QLabel("Google Sheets'ten tek yönlü veri çekme özelliği")
+        gsheets_info.setStyleSheet("color: #666; font-size: 10pt;")
+        layout.addWidget(gsheets_info)
+        
+        layout.addSpacing(10)
+        
+        # Google Sheets URL input
+        url_label = QLabel("Sheets URL:")
+        url_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(url_label)
+        
+        self.gsheets_url_input = QLineEdit()
+        self.gsheets_url_input.setPlaceholderText("https://docs.google.com/spreadsheets/d/...")
+        self.gsheets_url_input.setMinimumHeight(32)
+        saved_url = UserSettingsService.get_setting(self.user.id, "google_sheets_url", "")
+        self.gsheets_url_input.setText(saved_url or "")
+        layout.addWidget(self.gsheets_url_input)
+        
+
+        layout.addSpacing(10)
+
+        # Sayfa isimleri
+        sheets_label = QLabel("Sayfa İsimleri:")
+        sheets_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(sheets_label)
+
+        # Cari Sayfası
+        cari_sheet_layout = QHBoxLayout()
+        cari_sheet_layout.addWidget(QLabel("Cari Sayfası:"))
+        self.gsheets_caris_sheet_input = QLineEdit()
+        self.gsheets_caris_sheet_input.setPlaceholderText("Cariler")
+        self.gsheets_caris_sheet_input.setMinimumHeight(32)
+        saved_caris = UserSettingsService.get_setting(self.user.id, "google_sheets_caris_sheet", "Cariler")
+        self.gsheets_caris_sheet_input.setText(saved_caris or "Cariler")
+        cari_sheet_layout.addWidget(self.gsheets_caris_sheet_input)
+        layout.addLayout(cari_sheet_layout)
+
+        # İşlem Sayfası
+        trans_sheet_layout = QHBoxLayout()
+        trans_sheet_layout.addWidget(QLabel("İşlem Sayfası:"))
+        self.gsheets_trans_sheet_input = QLineEdit()
+        self.gsheets_trans_sheet_input.setPlaceholderText("İşlemler")
+        self.gsheets_trans_sheet_input.setMinimumHeight(32)
+        saved_trans = UserSettingsService.get_setting(self.user.id, "google_sheets_trans_sheet", "İşlemler")
+        self.gsheets_trans_sheet_input.setText(saved_trans or "İşlemler")
+        trans_sheet_layout.addWidget(self.gsheets_trans_sheet_input)
+        layout.addLayout(trans_sheet_layout)
+
+        # Gelen Fatura
+        gelen_fatura_layout = QHBoxLayout()
+        gelen_fatura_layout.addWidget(QLabel("Gelen Fatura Sayfası:"))
+        self.gsheets_gelen_fatura_sheet_input = QLineEdit()
+        self.gsheets_gelen_fatura_sheet_input.setPlaceholderText("Gelen Fatura")
+        self.gsheets_gelen_fatura_sheet_input.setMinimumHeight(32)
+        saved_gelen_fatura = UserSettingsService.get_setting(self.user.id, "google_sheets_gelen_fatura_sheet", "Gelen Fatura")
+        self.gsheets_gelen_fatura_sheet_input.setText(saved_gelen_fatura or "Gelen Fatura")
+        gelen_fatura_layout.addWidget(self.gsheets_gelen_fatura_sheet_input)
+        layout.addLayout(gelen_fatura_layout)
+
+        # Kesilen Fatura
+        kesilen_fatura_layout = QHBoxLayout()
+        kesilen_fatura_layout.addWidget(QLabel("Kesilen Fatura Sayfası:"))
+        self.gsheets_kesilen_fatura_sheet_input = QLineEdit()
+        self.gsheets_kesilen_fatura_sheet_input.setPlaceholderText("Kesilen Fatura")
+        self.gsheets_kesilen_fatura_sheet_input.setMinimumHeight(32)
+        saved_kesilen_fatura = UserSettingsService.get_setting(self.user.id, "google_sheets_kesilen_fatura_sheet", "Kesilen Fatura")
+        self.gsheets_kesilen_fatura_sheet_input.setText(saved_kesilen_fatura or "Kesilen Fatura")
+        kesilen_fatura_layout.addWidget(self.gsheets_kesilen_fatura_sheet_input)
+        layout.addLayout(kesilen_fatura_layout)
+
+        # Gider
+        gider_layout = QHBoxLayout()
+        gider_layout.addWidget(QLabel("Gider Sayfası:"))
+        self.gsheets_gider_sheet_input = QLineEdit()
+        self.gsheets_gider_sheet_input.setPlaceholderText("Gider")
+        self.gsheets_gider_sheet_input.setMinimumHeight(32)
+        saved_gider = UserSettingsService.get_setting(self.user.id, "google_sheets_gider_sheet", "Gider")
+        self.gsheets_gider_sheet_input.setText(saved_gider or "Gider")
+        gider_layout.addWidget(self.gsheets_gider_sheet_input)
+        layout.addLayout(gider_layout)
+
+        # Gelir
+        gelir_layout = QHBoxLayout()
+        gelir_layout.addWidget(QLabel("Gelir Sayfası:"))
+        self.gsheets_gelir_sheet_input = QLineEdit()
+        self.gsheets_gelir_sheet_input.setPlaceholderText("Gelir")
+        self.gsheets_gelir_sheet_input.setMinimumHeight(32)
+        saved_gelir = UserSettingsService.get_setting(self.user.id, "google_sheets_gelir_sheet", "Gelir")
+        self.gsheets_gelir_sheet_input.setText(saved_gelir or "Gelir")
+        gelir_layout.addWidget(self.gsheets_gelir_sheet_input)
+        layout.addLayout(gelir_layout)
+
+        layout.addSpacing(10)
+        
+        # Otomatik senkronizasyon
+        self.gsheets_auto_sync_check = QCheckBox("🔄 Otomatik Aktarım (Her 10 dakikada)")
+        self.gsheets_auto_sync_check.setChecked(
+            UserSettingsService.get_json_setting(self.user.id, "google_sheets_auto_sync", False)
+        )
+        layout.addWidget(self.gsheets_auto_sync_check)
+        
+        layout.addSpacing(10)
+        
+        # Butonlar
+        gsheets_buttons_layout = QHBoxLayout()
+        gsheets_buttons_layout.setSpacing(10)
+        
+        btn_gsheets_test = QPushButton("🔗 Bağlantıyı Test Et")
+        btn_gsheets_test.setMinimumHeight(38)
+        btn_gsheets_test.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        btn_gsheets_test.clicked.connect(self.test_google_sheets_connection)
+        self.gsheets_test_button = btn_gsheets_test
+        gsheets_buttons_layout.addWidget(btn_gsheets_test)
+        
+        btn_gsheets_sync = QPushButton("🔄 Şimdi Google Sheets'ten Aktar")
+        btn_gsheets_sync.setMinimumHeight(38)
+        btn_gsheets_sync.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #45a049; }
+        """)
+        btn_gsheets_sync.clicked.connect(self.sync_from_google_sheets)
+        self.gsheets_sync_button = btn_gsheets_sync
+        gsheets_buttons_layout.addWidget(btn_gsheets_sync)
+        
+        layout.addLayout(gsheets_buttons_layout)
+        
+        layout.addSpacing(10)
+        
+        btn_gsheets_save = QPushButton("💾 Google Sheets Ayarlarını Kaydet")
+        btn_gsheets_save.setMinimumHeight(40)
+        btn_gsheets_save.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 16px;
+                font-weight: bold;
+                font-size: 11pt;
+            }
+            QPushButton:hover { background-color: #546E7A; }
+        """)
+        btn_gsheets_save.clicked.connect(self.save_google_sheets_settings)
+        layout.addWidget(btn_gsheets_save)
+        
+        layout.addSpacing(10)
+        
+        # Son senkronizasyon zamanı
+        last_sync = UserSettingsService.get_setting(self.user.id, "google_sheets_last_sync", None)
+        if last_sync:
+            try:
+                last_sync_dt = datetime.fromisoformat(last_sync)
+                last_sync_text = f"Son senkronizasyon: {last_sync_dt.strftime('%d.%m.%Y %H:%M')}"
+            except:
+                last_sync_text = "Son senkronizasyon: -"
+        else:
+            last_sync_text = "Son senkronizasyon: Henüz yapılmadı"
+        
+        self.gsheets_last_sync_label = QLabel(last_sync_text)
+        self.gsheets_last_sync_label.setStyleSheet("color: #888; font-size: 9pt; font-style: italic; padding: 5px;")
+        layout.addWidget(self.gsheets_last_sync_label)
+        
+        layout.addSpacing(20)
+        layout.addWidget(QLabel("━━━━━━━━━━━━━━━━━"))
+        layout.addSpacing(20)
         
         # Butonlar
         btn_change_pwd = QPushButton("🔒 Şifre Değiştir")
@@ -1045,20 +2448,135 @@ Pasif Kullanıcı: {total_users - active_users}
         
         layout.addStretch()
         widget.setLayout(layout)
-        return widget
+        scroll.setWidget(widget)
+        return scroll
+
+    def save_dashboard_preferences(self):
+        """Dashboard kutucuk tercihlerini kaydet"""
+        if not hasattr(self, "dashboard_card_checks"):
+            return
+
+        selected = [
+            key for key, chk in self.dashboard_card_checks.items()
+            if chk.isChecked()
+        ]
+
+        if not selected:
+            QMessageBox.warning(self, "Uyari", "En az bir kutucuk secmelisiniz!")
+            return
+
+        UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", selected)
+        self.rebuild_dashboard_tab()
+        QMessageBox.information(self, "Basarili", "Dashboard ayarlari guncellendi")
+
+    def rebuild_dashboard_tab(self):
+        """Dashboard sekmesini yeniden olustur"""
+        if not self.user.can_view_dashboard:
+            return
+
+        index = self.tabs.indexOf(self.dashboard_tab) if self.dashboard_tab else -1
+        if index == -1:
+            index = 0
+        else:
+            self.tabs.removeTab(index)
+
+        self.dashboard_tab = self.create_dashboard_tab()
+        self.tabs.insertTab(index, self.dashboard_tab, "📊 Dashboard")
+        self.tabs.setCurrentIndex(index)
     
     def show_change_password_dialog(self):
         """Şifre değiştir dialog'u"""
         QMessageBox.information(self, "Bilgi", "Şifre değiştirme özelliği yakında eklenecek")
+
+    def save_auto_backup_preferences(self):
+        """Otomatik yedekleme ayarlarini kaydet"""
+        enabled = self.auto_backup_enabled_check.isChecked()
+        period = self.auto_backup_period_combo.currentData() or "day"
+
+        UserSettingsService.set_json_setting(self.user.id, "auto_backup_enabled", enabled)
+        UserSettingsService.set_setting(self.user.id, "auto_backup_period", period)
+
+        self.setup_auto_backup_scheduler()
+        QMessageBox.information(self, "Basarili", "Otomatik yedekleme ayarlari kaydedildi")
+
+    def _get_auto_backup_delta(self):
+        period = UserSettingsService.get_setting(self.user.id, "auto_backup_period", "day")
+        period_map = {
+            "day": timedelta(days=1),
+            "week": timedelta(weeks=1),
+            "month": timedelta(days=30),
+            "year": timedelta(days=365)
+        }
+        return period_map.get(period, timedelta(days=1))
+
+    def _get_auto_backup_dir(self) -> Path:
+        backup_dir = Path(config.DATABASE_DIR) / "auto_backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        return backup_dir
+
+    def _create_automatic_db_backup(self):
+        db_path = Path(config.DATABASE_DIR) / "muhasebe.db"
+        if not db_path.exists():
+            raise FileNotFoundError("Veritabani dosyasi bulunamadi")
+
+        backup_dir = self._get_auto_backup_dir()
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        target_path = backup_dir / f"muhasebe_auto_backup_{timestamp}.db"
+
+        shutil.copy2(db_path, target_path)
+
+        for suffix in ["-wal", "-shm"]:
+            extra_src = Path(str(db_path) + suffix)
+            if extra_src.exists():
+                extra_dst = backup_dir / f"{target_path.name}{suffix}"
+                shutil.copy2(extra_src, extra_dst)
+
+        return target_path
+
+    def _is_auto_backup_due(self, now: datetime) -> bool:
+        last_run_raw = UserSettingsService.get_setting(self.user.id, "auto_backup_last_run", None)
+        if not last_run_raw:
+            return True
+
+        try:
+            last_run = datetime.fromisoformat(last_run_raw)
+        except Exception:
+            return True
+
+        return (now - last_run) >= self._get_auto_backup_delta()
+
+    def run_auto_backup_if_due(self):
+        enabled = UserSettingsService.get_json_setting(self.user.id, "auto_backup_enabled", False)
+        if not enabled:
+            return
+
+        now = datetime.now()
+        if not self._is_auto_backup_due(now):
+            return
+
+        try:
+            backup_path = self._create_automatic_db_backup()
+            UserSettingsService.set_setting(self.user.id, "auto_backup_last_run", now.isoformat())
+            self.statusBar().showMessage(f"Otomatik yedek alindi: {backup_path.name}", 5000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Otomatik yedekleme hatasi: {e}", 7000)
+
+    def setup_auto_backup_scheduler(self):
+        if self.auto_backup_timer is None:
+            self.auto_backup_timer = QTimer(self)
+            self.auto_backup_timer.timeout.connect(self.run_auto_backup_if_due)
+
+        enabled = UserSettingsService.get_json_setting(self.user.id, "auto_backup_enabled", False)
+        if enabled:
+            self.run_auto_backup_if_due()
+            self.auto_backup_timer.start(60 * 60 * 1000)
+        else:
+            self.auto_backup_timer.stop()
     
     def backup_database(self):
         """Veritabanini dosya olarak yedekle"""
         try:
-            from pathlib import Path
-            from datetime import datetime
             from PyQt5.QtWidgets import QFileDialog
-            import shutil
-            import config
             
             db_path = Path(config.DATABASE_DIR) / "muhasebe.db"
             if not db_path.exists():
@@ -1157,14 +2675,22 @@ Pasif Kullanıcı: {total_users - active_users}
             for u in users:
                 rows.append([
                     u.id, u.username, u.email, u.full_name, u.role,
-                    u.can_view_dashboard, u.can_view_invoices, u.can_view_caris,
-                    u.can_view_banks, u.can_view_reports, u.is_active,
+                    u.can_view_dashboard, u.can_view_transactions, u.can_view_invoices,
+                    u.can_view_caris, u.can_view_cari_extract, u.can_view_banks,
+                    u.can_view_credit_cards, u.can_view_loans, u.can_view_reports,
+                    u.can_view_payroll, u.can_view_employees, u.can_view_bulk_payroll,
+                    u.can_view_payroll_records, u.can_view_settings, u.can_view_admin_panel,
+                    u.is_active,
                     u.created_at, u.last_login
                 ])
             self._write_sheet(ws, [
                 "id", "username", "email", "full_name", "role",
-                "can_view_dashboard", "can_view_invoices", "can_view_caris",
-                "can_view_banks", "can_view_reports", "is_active",
+                "can_view_dashboard", "can_view_transactions", "can_view_invoices",
+                "can_view_caris", "can_view_cari_extract", "can_view_banks",
+                "can_view_credit_cards", "can_view_loans", "can_view_reports",
+                "can_view_payroll", "can_view_employees", "can_view_bulk_payroll",
+                "can_view_payroll_records", "can_view_settings", "can_view_admin_panel",
+                "is_active",
                 "created_at", "last_login"
             ], rows)
             
@@ -1315,21 +2841,47 @@ Pasif Kullanıcı: {total_users - active_users}
 
     def _read_excel_rows(self, file_path):
         from openpyxl import load_workbook
-        wb = load_workbook(file_path, data_only=True)
-        ws = wb.active
         headers = []
         rows = []
-        for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
-            if i == 1:
-                headers = [self._normalize_header(h) for h in row]
-                continue
-            if not row or all(cell is None for cell in row):
-                continue
-            row_dict = {}
-            for idx, cell in enumerate(row):
-                if idx < len(headers) and headers[idx]:
-                    row_dict[headers[idx]] = cell
-            rows.append(row_dict)
+        if file_path.lower().endswith('.xls'):
+            try:
+                import xlrd
+            except ImportError:
+                QMessageBox.critical(self, "Hata", "'xlrd' kütüphanesi bulunamadı. Lütfen 'pip install xlrd' komutunu çalıştırın.")
+                return []
+            wb = xlrd.open_workbook(file_path, on_demand=True)
+            ws = wb.sheet_by_index(0)
+            for i in range(ws.nrows):
+                row = ws.row_values(i)
+                if i == 0:
+                    headers = [self._normalize_header(h) for h in row]
+                    continue
+                if not row or all(cell == '' or cell is None for cell in row):
+                    continue
+                row_dict = {}
+                for idx, cell in enumerate(row):
+                    if idx < len(headers) and headers[idx]:
+                        row_dict[headers[idx]] = cell
+                rows.append(row_dict)
+        else:
+            try:
+                from openpyxl import load_workbook
+            except ImportError:
+                QMessageBox.critical(self, "Hata", "openpyxl kütüphanesi bulunamadı. Lütfen 'pip install openpyxl' komutunu çalıştırın.")
+                return []
+            wb = load_workbook(file_path, data_only=True)
+            ws = wb.active
+            for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                if i == 1:
+                    headers = [self._normalize_header(h) for h in row]
+                    continue
+                if not row or all(cell is None for cell in row):
+                    continue
+                row_dict = {}
+                for idx, cell in enumerate(row):
+                    if idx < len(headers) and headers[idx]:
+                        row_dict[headers[idx]] = cell
+                rows.append(row_dict)
         return rows
 
     def _get_row_value(self, row, keys, default=None):
@@ -1368,100 +2920,17 @@ Pasif Kullanıcı: {total_users - active_users}
         return None
 
     def import_transactions_from_excel(self):
-        """Excel'den toplu islem aktar"""
-        try:
-            from PyQt5.QtWidgets import QFileDialog
-            from src.database.models import TransactionType, PaymentMethod
-            
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Islemler Excel Dosyasi Sec",
-                "",
-                "Excel Dosyasi (*.xlsx)"
-            )
-            if not file_path:
-                return
-            
-            rows = self._read_excel_rows(file_path)
-            if not rows:
-                QMessageBox.warning(self, "Uyari", "Excel dosyasinda veri bulunamadi")
-                return
-            
-            success = 0
-            errors = []
-            for idx, row in enumerate(rows, start=2):
-                tarih = self._get_row_value(row, ["tarih", "transaction_date", "islem_tarihi"])
-                islem_turu = self._get_row_value(row, ["islem_turu", "transaction_type", "tur"])
-                odeme = self._get_row_value(row, ["odeme_yontemi", "payment_method", "odeme"])
-                musteri = self._get_row_value(row, ["musteri_unvani", "customer_name", "musteri"])
-                aciklama = self._get_row_value(row, ["aciklama", "description"]) 
-                tutar = self._get_row_value(row, ["tutar", "amount"])
-                
-                if not (tarih and islem_turu and odeme and musteri and aciklama and tutar is not None):
-                    errors.append(f"Satir {idx}: zorunlu alan eksik")
-                    continue
-                
-                date_value = self._parse_date(tarih)
-                if not date_value:
-                    errors.append(f"Satir {idx}: tarih formati hatali")
-                    continue
-                
-                amount = self._parse_float(tutar, None)
-                if amount is None:
-                    errors.append(f"Satir {idx}: tutar hatali")
-                    continue
-                
-                ttype_raw = str(islem_turu).strip().upper().replace(" ", "_")
-                ptype_raw = str(odeme).strip().upper().replace(" ", "_")
-                
-                if ttype_raw not in TransactionType.__members__:
-                    errors.append(f"Satir {idx}: islem_turu gecersiz")
-                    continue
-                if ptype_raw not in PaymentMethod.__members__:
-                    errors.append(f"Satir {idx}: odeme_yontemi gecersiz")
-                    continue
-                
-                subject = self._get_row_value(row, ["konu", "subject"], None)
-                person = self._get_row_value(row, ["odeyen_kisi", "person"], None)
-                cari_id = self._get_row_value(row, ["cari_id"], None)
-                bank_account_id = self._get_row_value(row, ["bank_account_id"], None)
-                credit_card_id = self._get_row_value(row, ["credit_card_id"], None)
-                
-                kwargs = {
-                    "subject": subject,
-                    "person": person,
-                }
-                if cari_id:
-                    kwargs["cari_id"] = int(cari_id)
-                if bank_account_id:
-                    kwargs["bank_account_id"] = int(bank_account_id)
-                if credit_card_id:
-                    kwargs["credit_card_id"] = int(credit_card_id)
-                
-                result, msg = TransactionService.create_transaction(
-                    self.user.id,
-                    date_value,
-                    TransactionType[ttype_raw],
-                    PaymentMethod[ptype_raw],
-                    str(musteri),
-                    str(aciklama),
-                    amount,
-                    **kwargs
-                )
-                if result:
-                    success += 1
-                else:
-                    errors.append(f"Satir {idx}: {msg}")
-            
-            self.refresh_all_data()
-            msg = f"Aktarim tamamlandi. Basarili: {success}"
-            if errors:
-                msg += f"\nHata: {len(errors)} (ilk 5)\n" + "\n".join(errors[:5])
-            QMessageBox.information(self, "Bilgi", msg)
-        except ImportError:
-            QMessageBox.critical(self, "Hata", "openpyxl kutuphanesi bulunamadi. Lutfen 'pip install openpyxl' komutunu calistirin.")
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Excel aktarim hatasi:\n{str(e)}")
+        """Gelişmiş Banka/Kredi Kartı ekstresini ithal et - Sütun eşleştirmesi, hızlı kurallar, vb."""
+        from src.ui.dialogs.advanced_bank_import_dialog import AdvancedBankImportDialog
+        
+        dialog = AdvancedBankImportDialog(self.user.id, self)
+        if dialog.exec_():
+            self.refresh_transactions_table()
+            # Otomatik oluşturulan banka hesaplarını ve kredi kartlarını göster
+            if hasattr(self, 'table_banks'):
+                self.refresh_bank_table()
+            if hasattr(self, 'table_credit_cards'):
+                self.refresh_credit_cards_table()
 
     def import_caris_from_excel(self):
         """Excel'den toplu cari aktar"""
@@ -1472,7 +2941,7 @@ Pasif Kullanıcı: {total_users - active_users}
                 self,
                 "Cari Excel Dosyasi Sec",
                 "",
-                "Excel Dosyasi (*.xlsx)"
+                "Excel Dosyasi (*.xls *.xlsx"
             )
             if not file_path:
                 return
@@ -1528,7 +2997,7 @@ Pasif Kullanıcı: {total_users - active_users}
                 self,
                 "Banka Excel Dosyasi Sec",
                 "",
-                "Excel Dosyasi (*.xlsx)"
+                "Excel Dosyasi (*.xls *.xlsx)"
             )
             if not file_path:
                 return
@@ -1587,7 +3056,7 @@ Pasif Kullanıcı: {total_users - active_users}
                 self,
                 "Kredi Karti Excel Dosyasi Sec",
                 "",
-                "Excel Dosyasi (*.xlsx)"
+                "Excel Dosyasi (*.xls *.xlsx)"
             )
             if not file_path:
                 return
@@ -1664,6 +3133,10 @@ Pasif Kullanıcı: {total_users - active_users}
             # Kredi kartı tablosu varsa yenile
             if hasattr(self, 'table_credit_cards'):
                 self.refresh_credit_cards_table()
+
+            # Kredi tablosu varsa yenile
+            if hasattr(self, 'table_loans'):
+                self.refresh_loans_table()
         except Exception as e:
             print(f"Veri yenileme hatası: {e}")
             import traceback
@@ -1728,11 +3201,26 @@ Pasif Kullanıcı: {total_users - active_users}
         btn_import_cards.setMinimumHeight(35)
         btn_import_cards.clicked.connect(self.import_credit_cards_from_excel)
         btn_layout.addWidget(btn_import_cards)
+
+        btn_save_cards = QPushButton("💾 Kaydet")
+        btn_save_cards.setMinimumHeight(35)
+        btn_save_cards.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_cards.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_cards.clicked.connect(lambda: self.save_column_widths(self.table_credit_cards, "credit_cards"))
+        btn_layout.addWidget(btn_save_cards)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
         # Tablo
         self.table_credit_cards = QTableWidget()
+        self.table_credit_cards.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_credit_cards.setColumnCount(8)
         self.table_credit_cards.setHorizontalHeaderLabels([
             "Kart Adı", "Banka", "Son 4 Hane", "Limit", "Borç", "Kullanılabilir", "Durum", "İşlemler"
@@ -1745,7 +3233,8 @@ Pasif Kullanıcı: {total_users - active_users}
         self.table_credit_cards.setColumnWidth(4, 110)
         self.table_credit_cards.setColumnWidth(5, 110)
         self.table_credit_cards.setColumnWidth(6, 80)
-        self.table_credit_cards.setColumnWidth(7, 140)
+        self.table_credit_cards.setColumnWidth(7, 180)
+        self.load_column_widths(self.table_credit_cards, "credit_cards")
         layout.addWidget(self.table_credit_cards)
         
         widget.setLayout(layout)
@@ -1762,9 +3251,9 @@ Pasif Kullanıcı: {total_users - active_users}
                 self.table_credit_cards.setItem(i, 0, QTableWidgetItem(card.card_name))
                 self.table_credit_cards.setItem(i, 1, QTableWidgetItem(card.bank_name))
                 self.table_credit_cards.setItem(i, 2, QTableWidgetItem(f"****{card.card_number_last4}"))
-                self.table_credit_cards.setItem(i, 3, QTableWidgetItem(f"{card.card_limit:,.2f} ₺"))
-                self.table_credit_cards.setItem(i, 4, QTableWidgetItem(f"{card.current_debt:,.2f} ₺"))
-                self.table_credit_cards.setItem(i, 5, QTableWidgetItem(f"{card.available_limit:,.2f} ₺"))
+                self.table_credit_cards.setItem(i, 3, QTableWidgetItem(f"{format_tr(card.card_limit)} ₺"))
+                self.table_credit_cards.setItem(i, 4, QTableWidgetItem(f"{format_tr(card.current_debt)} ₺"))
+                self.table_credit_cards.setItem(i, 5, QTableWidgetItem(f"{format_tr(card.available_limit)} ₺"))
                 
                 status = "Aktif" if card.is_active else "Pasif"
                 self.table_credit_cards.setItem(i, 6, QTableWidgetItem(status))
@@ -1774,6 +3263,42 @@ Pasif Kullanıcı: {total_users - active_users}
                 action_layout = QHBoxLayout(action_widget)
                 action_layout.setContentsMargins(5, 2, 5, 2)
                 action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                btn_extract = QPushButton("📑 Dökümü Aç")
+                btn_extract.setMinimumHeight(25)
+                btn_extract.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #45a049; }
+                """)
+                btn_extract.clicked.connect(lambda checked, cid=card.id: self.show_credit_card_statement(cid))
+                action_layout.addWidget(btn_extract)
+
+                btn_edit = QPushButton("✏️ Düzenle")
+                btn_edit.setMinimumHeight(25)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #0b7dda; }
+                """)
+                btn_edit.clicked.connect(lambda checked, cid=card.id: self.show_edit_credit_card_dialog(cid))
+                action_layout.addWidget(btn_edit)
                 
                 btn_delete = QPushButton("🗑️ Sil")
                 btn_delete.setMinimumHeight(25)
@@ -1794,7 +3319,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 
                 self.table_credit_cards.setCellWidget(i, 7, action_widget)
             
-            self._resize_table(self.table_credit_cards)
+            self._resize_table(self.table_credit_cards, stretch_col=0)
+            self.load_column_widths(self.table_credit_cards, "credit_cards")
         except Exception as e:
             print(f"Kredi kartı yükleme hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Kredi kartları yüklenirken hata: {str(e)}")
@@ -1803,6 +3329,13 @@ Pasif Kullanıcı: {total_users - active_users}
         """Yeni kredi kartı dialog"""
         from src.ui.dialogs.credit_card_dialog import CreditCardDialog
         dialog = CreditCardDialog(self.user.id, self)
+        if dialog.exec_():
+            self.refresh_all_data()
+
+    def show_edit_credit_card_dialog(self, card_id):
+        """Kredi kartı düzenleme dialog"""
+        from src.ui.dialogs.credit_card_dialog import CreditCardDialog
+        dialog = CreditCardDialog(self.user.id, self, card_id=card_id)
         if dialog.exec_():
             self.refresh_all_data()
     
@@ -1818,6 +3351,805 @@ Pasif Kullanıcı: {total_users - active_users}
             else:
                 QMessageBox.critical(self, "Hata", msg)
     
+    def create_loans_tab(self) -> QWidget:
+        """Krediler sekmesi"""
+        from src.services.loan_service import LoanService
+        from src.ui.dialogs.loan_dialog import LoanDialog
+        
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        title = QLabel("📊 Kredi Yönetimi")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        layout.addWidget(title)
+        
+        # İstatistikler
+        stats_layout = QHBoxLayout()
+        self.loan_stats_cards = {}
+
+        total_card = self.create_stat_card("Toplam Kredi", "0 ₺", "#FF9800")
+        paid_card = self.create_stat_card("Toplam Ödenen", "0 ₺", "#4CAF50")
+        remaining_card = self.create_stat_card("Kalan Borç", "0 ₺", "#f44336")
+        active_card = self.create_stat_card("Aktif Krediler", "0", "#2196F3")
+
+        self.loan_stats_cards['toplam_kredi'] = total_card
+        self.loan_stats_cards['toplam_odenen'] = paid_card
+        self.loan_stats_cards['toplam_kalan'] = remaining_card
+        self.loan_stats_cards['akif_kredi_sayisi'] = active_card
+
+        stats_layout.addWidget(total_card)
+        stats_layout.addWidget(paid_card)
+        stats_layout.addWidget(remaining_card)
+        stats_layout.addWidget(active_card)
+        
+        layout.addLayout(stats_layout)
+        layout.addSpacing(15)
+        
+        # Butonlar
+        btn_layout = QHBoxLayout()
+        btn_new = QPushButton("➕ Yeni Kredi")
+        btn_new.setMinimumHeight(35)
+        btn_new.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #E68900; }
+        """)
+        btn_new.clicked.connect(lambda: self.show_new_loan_dialog())
+        btn_layout.addWidget(btn_new)
+
+        btn_preview = QPushButton("🔍 Ön İzleme")
+        btn_preview.setMinimumHeight(35)
+        btn_preview.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #45a049; }
+        """)
+        btn_preview.clicked.connect(self.show_selected_loan_statement)
+        btn_layout.addWidget(btn_preview)
+
+        btn_import_excel = QPushButton("📥 Excelden Aktar")
+        btn_import_excel.setMinimumHeight(35)
+        btn_import_excel.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #546E7A; }
+        """)
+        btn_import_excel.clicked.connect(self.import_loans_from_excel)
+        btn_layout.addWidget(btn_import_excel)
+
+        btn_sample_excel = QPushButton("🧾 Örnek Excel")
+        btn_sample_excel.setMinimumHeight(35)
+        btn_sample_excel.setStyleSheet("""
+            QPushButton {
+                background-color: #795548;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #6D4C41; }
+        """)
+        btn_sample_excel.clicked.connect(self.export_loan_template_excel)
+        btn_layout.addWidget(btn_sample_excel)
+        
+        btn_refresh = QPushButton("🔄 Yenile")
+        btn_refresh.setMinimumHeight(35)
+        btn_refresh.clicked.connect(self.refresh_loans_table)
+        btn_layout.addWidget(btn_refresh)
+
+        btn_save_loans = QPushButton("💾 Kaydet")
+        btn_save_loans.setMinimumHeight(35)
+        btn_save_loans.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_loans.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_loans.clicked.connect(lambda: self.save_column_widths(self.table_loans, "loans"))
+        btn_layout.addWidget(btn_save_loans)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        # Tablo
+        self.table_loans = QTableWidget()
+        self.table_loans.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_loans.setColumnCount(10)
+        self.table_loans.setHorizontalHeaderLabels([
+            "Kredi Adı", "Banka", "Tip", "Çekilen Tutar", "Toplam", "Ödenen", "Kalan", "Aylık", "Durum", "İşlemler"
+        ])
+        self.table_loans.horizontalHeader().setStretchLastSection(False)
+        self.table_loans.setColumnWidth(0, 160)
+        self.table_loans.setColumnWidth(1, 120)
+        self.table_loans.setColumnWidth(2, 100)
+        self.table_loans.setColumnWidth(3, 120)
+        self.table_loans.setColumnWidth(4, 110)
+        self.table_loans.setColumnWidth(5, 110)
+        self.table_loans.setColumnWidth(6, 110)
+        self.table_loans.setColumnWidth(7, 100)
+        self.table_loans.setColumnWidth(8, 100)
+        self.table_loans.setColumnWidth(9, 260)
+        self.table_loans.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table_loans.setSelectionMode(QTableWidget.SingleSelection)
+        self.load_column_widths(self.table_loans, "loans")
+        layout.addWidget(self.table_loans)
+        
+        widget.setLayout(layout)
+        self.refresh_loan_stats()
+        self.refresh_loans_table()
+        return widget
+
+    def _set_loan_stat_card_value(self, key, value):
+        if not hasattr(self, "loan_stats_cards"):
+            return
+        card = self.loan_stats_cards.get(key)
+        if not card:
+            return
+        labels = card.findChildren(QLabel)
+        if len(labels) > 1:
+            labels[1].setText(value)
+
+    def refresh_loan_stats(self):
+        """Krediler sekmesi üst istatistik kartlarını yenile"""
+        from src.services.loan_service import LoanService
+
+        try:
+            stats = LoanService.get_loans_summary(self.user.id) or {}
+            self._set_loan_stat_card_value('toplam_kredi', f"{stats.get('toplam_kredi', 0):,.0f} ₺")
+            self._set_loan_stat_card_value('toplam_odenen', f"{stats.get('toplam_odenen', 0):,.0f} ₺")
+            self._set_loan_stat_card_value('toplam_kalan', f"{stats.get('toplam_kalan', 0):,.0f} ₺")
+            self._set_loan_stat_card_value('akif_kredi_sayisi', str(stats.get('akif_kredi_sayisi', 0)))
+        except Exception as e:
+            print(f"Kredi stats yenileme hatası: {e}")
+
+    def _get_loan_total_repayment(self, loan):
+        total_repayment = float(getattr(loan, 'remaining_balance', 0) or 0)
+        loan_amount = float(getattr(loan, 'loan_amount', 0) or 0)
+        return max(total_repayment, loan_amount)
+
+    def _get_loan_remaining_amount(self, loan):
+        """Kalan borcu formülle hesapla: geri ödenecek - ödenen"""
+        total_repayment = self._get_loan_total_repayment(loan)
+        total_paid = float(getattr(loan, 'total_paid', 0) or 0)
+        return max(0.0, total_repayment - total_paid)
+    
+    def refresh_loans_table(self):
+        """Kredi tablosunu yenile"""
+        from src.services.loan_service import LoanService
+        
+        try:
+            loans = LoanService.get_loans(self.user.id, active_only=True)
+            self.table_loans.setRowCount(len(loans))
+            self.refresh_loan_stats()
+            
+            for i, loan in enumerate(loans):
+                remaining_amount = self._get_loan_remaining_amount(loan)
+                name_item = QTableWidgetItem(loan.loan_name)
+                name_item.setData(Qt.UserRole, loan.id)
+                self.table_loans.setItem(i, 0, name_item)
+                self.table_loans.setItem(i, 1, QTableWidgetItem(loan.bank_name))
+                self.table_loans.setItem(i, 2, QTableWidgetItem(loan.loan_type))
+                self.table_loans.setItem(i, 3, QTableWidgetItem(f"{format_tr(loan.loan_amount)}"))
+                total_repayment = self._get_loan_total_repayment(loan)
+                self.table_loans.setItem(i, 4, QTableWidgetItem(f"{format_tr(total_repayment)} ₺"))
+                self.table_loans.setItem(i, 5, QTableWidgetItem(f"{format_tr(loan.total_paid)} ₺"))
+                self.table_loans.setItem(i, 6, QTableWidgetItem(f"{format_tr(remaining_amount)} ₺"))
+                self.table_loans.setItem(i, 7, QTableWidgetItem(f"{format_tr(loan.monthly_payment)} ₺"))
+                
+                status = loan.status
+                self.table_loans.setItem(i, 8, QTableWidgetItem(status))
+                
+                # Butonlar
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                
+                btn_edit = QPushButton("✏️ Düzenle")
+                btn_edit.setMinimumHeight(25)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #0b7dda; }
+                """)
+                btn_edit.clicked.connect(lambda checked, lid=loan.id: self.show_edit_loan_dialog(lid))
+                action_layout.addWidget(btn_edit)
+                
+                btn_delete = QPushButton("🗑️ Sil")
+                btn_delete.setMinimumHeight(25)
+                btn_delete.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #da190b; }
+                """)
+                btn_delete.clicked.connect(lambda checked, lid=loan.id: self.delete_loan(lid))
+                action_layout.addWidget(btn_delete)
+
+                btn_statement = QPushButton("📑 Dökümü Aç")
+                btn_statement.setMinimumHeight(25)
+                btn_statement.setStyleSheet("""
+                    QPushButton {
+                        background-color: #607D8B;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #546E7A; }
+                """)
+                btn_statement.clicked.connect(lambda checked, lid=loan.id: self.show_loan_statement(lid))
+                action_layout.addWidget(btn_statement)
+                
+                self.table_loans.setCellWidget(i, 9, action_widget)
+            
+            self._resize_table(self.table_loans, stretch_col=0)
+            self.load_column_widths(self.table_loans, "loans")
+        except Exception as e:
+            print(f"Kredi yükleme hatası: {e}")
+            QMessageBox.critical(self, "Hata", f"Krediler yüklenirken hata: {str(e)}")
+
+    def get_selected_loan_id(self):
+        """Seçili kredi satırının ID bilgisini getir"""
+        if not hasattr(self, 'table_loans'):
+            return None
+        row = self.table_loans.currentRow()
+        if row < 0:
+            return None
+        item = self.table_loans.item(row, 0)
+        if not item:
+            return None
+        return item.data(Qt.UserRole)
+
+    def _parse_excel_float(self, value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip().replace(" ", "")
+        if not text:
+            return None
+        if "," in text and "." in text:
+            if text.rfind(",") > text.rfind("."):
+                normalized = text.replace(".", "").replace(",", ".")
+            else:
+                normalized = text.replace(",", "")
+        elif "," in text:
+            normalized = text.replace(",", ".")
+        else:
+            normalized = text
+        return float(normalized)
+
+    def _parse_excel_date(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text).date()
+        except ValueError:
+            return None
+
+    def export_loan_template_excel(self):
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from openpyxl import Workbook
+
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Örnek Kredi Excel",
+                "kredi_ornek.xlsx",
+                "Excel Dosyası (*.xlsx)"
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".xlsx"):
+                file_path += ".xlsx"
+
+            headers = [
+                "Kredi Adı", "Banka", "Tip", "Çekilen Tutar", "Toplam Borç",
+                "Başlangıç Tarihi", "Ödeme Günü", "Aylık Taksit", "Faiz Oranı",
+                "Bitiş Tarihi", "Toplam Taksit", "Not"
+            ]
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Krediler"
+            ws.append(headers)
+            ws.append([
+                "İş Bankası Konut Kredisi", "İş Bankası", "KONUT", 1500000, 1650000,
+                "01.02.2026", 15, 25000, 2.85,
+                "01.02.2036", 120, "Örnek kredi kaydı"
+            ])
+
+            wb.save(file_path)
+            QMessageBox.information(self, "Başarılı", f"Örnek Excel oluşturuldu:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Örnek Excel oluşturulamadı:\n{str(e)}")
+
+    def import_loans_from_excel(self):
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from openpyxl import load_workbook
+
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Kredi Excel Seç",
+                "",
+                "Excel Dosyası (*.xlsx *.xls)"
+            )
+            if not file_path:
+                return
+
+            wb = load_workbook(file_path, data_only=True)
+            ws = wb.active
+
+            def normalize_header(value):
+                text = str(value or "").casefold().strip()
+                for src, dst in {
+                    "ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c"
+                }.items():
+                    text = text.replace(src, dst)
+                return "".join(ch for ch in text if ch.isalnum())
+
+            header_map = {
+                "krediadı": "loan_name",
+                "krediadi": "loan_name",
+                "banka": "bank_name",
+                "bank": "bank_name",
+                "tip": "loan_type",
+                "kreditipi": "loan_type",
+                "cekilentutar": "loan_amount",
+                "kreditutari": "loan_amount",
+                "toplamborc": "remaining_balance",
+                "kalanborc": "remaining_balance",
+                "baslangictarihi": "start_date",
+                "odemegunu": "due_day",
+                "ayliktaksit": "monthly_payment",
+                "faizorani": "interest_rate",
+                "bitistarihi": "end_date",
+                "toplamtaksit": "total_installments",
+                "not": "notes",
+            }
+
+            headers = [normalize_header(cell.value) for cell in ws[1]]
+            column_keys = []
+            for h in headers:
+                column_keys.append(header_map.get(h))
+
+            success_count = 0
+            errors = []
+
+            for row_idx in range(2, ws.max_row + 1):
+                row_values = [cell.value for cell in ws[row_idx]]
+                if not any(v is not None and str(v).strip() for v in row_values):
+                    continue
+
+                data = {}
+                for key, value in zip(column_keys, row_values):
+                    if key:
+                        data[key] = value
+
+                loan_name = str(data.get("loan_name", "") or "").strip()
+                bank_name = str(data.get("bank_name", "") or "").strip()
+                loan_type = str(data.get("loan_type", "") or "").strip()
+                loan_amount = self._parse_excel_float(data.get("loan_amount"))
+                start_date = self._parse_excel_date(data.get("start_date"))
+                due_day_raw = self._parse_excel_float(data.get("due_day"))
+
+                if not loan_name or not bank_name or not loan_type or loan_amount is None or start_date is None or due_day_raw is None:
+                    errors.append(f"Satır {row_idx}: Zorunlu alanlar eksik")
+                    continue
+
+                remaining_balance = self._parse_excel_float(data.get("remaining_balance"))
+                monthly_payment = self._parse_excel_float(data.get("monthly_payment")) or 0.0
+                interest_rate = self._parse_excel_float(data.get("interest_rate")) or 0.0
+                end_date = self._parse_excel_date(data.get("end_date"))
+                total_installments = self._parse_excel_float(data.get("total_installments"))
+                notes = str(data.get("notes", "") or "").strip() or None
+
+                loan, message = LoanService.create_loan(
+                    self.user.id,
+                    loan_name,
+                    bank_name,
+                    loan_type,
+                    float(loan_amount),
+                    start_date,
+                    int(due_day_raw),
+                    interest_rate=float(interest_rate),
+                    monthly_payment=float(monthly_payment),
+                    remaining_balance=float(remaining_balance) if remaining_balance is not None else None,
+                    end_date=end_date,
+                    total_installments=int(total_installments) if total_installments is not None else None,
+                    notes=notes
+                )
+
+                if loan:
+                    success_count += 1
+                else:
+                    errors.append(f"Satır {row_idx}: {message}")
+
+            self.refresh_loans_table()
+
+            if errors:
+                error_text = "\n".join(errors[:8])
+                if len(errors) > 8:
+                    error_text += "\n..."
+                QMessageBox.warning(
+                    self,
+                    "Excel Aktarım Tamamlandı",
+                    f"Başarılı: {success_count}\nHatalı: {len(errors)}\n\nHatalar:\n{error_text}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Excel Aktarım Tamamlandı",
+                    f"Başarılı: {success_count}"
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
+
+    def show_selected_loan_statement(self):
+        """Seçili kredi için ön izleme dökümü aç"""
+        loan_id = self.get_selected_loan_id()
+        if not loan_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce krediler tablosundan bir kayıt seçiniz.")
+            return
+        self.show_loan_statement(loan_id)
+
+    def _extract_loan_id_from_notes(self, notes_text):
+        """Transaction notundan loan_id bilgisini al"""
+        if not notes_text:
+            return None
+        notes = str(notes_text).strip()
+        if not notes.startswith("loan_id:"):
+            return None
+        try:
+            return int(notes.split(":", 1)[1].strip())
+        except (ValueError, TypeError):
+            return None
+
+    def show_loan_statement(self, loan_id):
+        """Seçili kredi için ödeme dökümünü aç"""
+        from PyQt5.QtWidgets import QDialog
+        from src.database.db import SessionLocal
+        from src.database.models import Loan
+
+        session = SessionLocal()
+        try:
+            loan = session.query(Loan).filter(
+                Loan.id == loan_id,
+                Loan.user_id == self.user.id,
+                Loan.is_active == True
+            ).first()
+
+            if not loan:
+                QMessageBox.warning(self, "Uyarı", "Kredi kaydı bulunamadı.")
+                return
+
+            current_remaining = self._get_loan_remaining_amount(loan)
+
+            all_loan_payments = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_type == TransactionType.KREDI_ODEME
+            ).order_by(Transaction.transaction_date.asc(), Transaction.id.asc()).all()
+
+            loan_payments = []
+            for trans in all_loan_payments:
+                if self._extract_loan_id_from_notes(trans.notes) == loan.id:
+                    loan_payments.append(trans)
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Kredi Dökümü - {loan.loan_name}")
+            dialog.resize(980, 620)
+
+            main_layout = QVBoxLayout(dialog)
+
+            summary_label = QLabel(
+                f"<b>Kredi:</b> {loan.loan_name} &nbsp;&nbsp; "
+                f"<b>Banka:</b> {loan.bank_name} &nbsp;&nbsp; "
+                f"<b>Tip:</b> {loan.loan_type}<br>"
+                f"<b>Toplam:</b> {format_tr(self._get_loan_total_repayment(loan))} ₺ &nbsp;&nbsp; "
+                f"<b>Toplam Ödenen:</b> {format_tr(loan.total_paid)} ₺ &nbsp;&nbsp; "
+                f"<b>Güncel Kalan:</b> {format_tr(current_remaining)} ₺"
+            )
+            summary_label.setWordWrap(True)
+            main_layout.addWidget(summary_label)
+
+            table = QTableWidget()
+            table.setColumnCount(6)
+            table.setHorizontalHeaderLabels([
+                "Ödeme Tarihi", "Ödeme Yöntemi", "Kaynak", "Açıklama", "Ödenen", "Kalan Bakiye"
+            ])
+            table.setRowCount(len(loan_payments))
+
+            running_balance = self._get_loan_total_repayment(loan)
+            for row, trans in enumerate(loan_payments):
+                running_balance = max(0, running_balance - trans.amount)
+
+                payment_method = trans.payment_method.value if trans.payment_method else "-"
+                source_text = "-"
+                if trans.bank_account:
+                    source_text = f"{trans.bank_account.bank_name} ({trans.bank_account.account_number})"
+
+                table.setItem(row, 0, QTableWidgetItem(str(trans.transaction_date)))
+                table.setItem(row, 1, QTableWidgetItem(payment_method))
+                table.setItem(row, 2, QTableWidgetItem(source_text))
+                table.setItem(row, 3, QTableWidgetItem(trans.description or ""))
+                table.setItem(row, 4, QTableWidgetItem(f"{format_tr(trans.amount)} ₺"))
+                table.setItem(row, 5, QTableWidgetItem(f"{format_tr(running_balance)} ₺"))
+
+            table.setColumnWidth(0, 110)
+            table.setColumnWidth(1, 120)
+            table.setColumnWidth(2, 210)
+            table.setColumnWidth(3, 290)
+            table.setColumnWidth(4, 110)
+            table.setColumnWidth(5, 120)
+            table.horizontalHeader().setStretchLastSection(False)
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self._resize_table(table)
+
+            main_layout.addWidget(table)
+
+            info_label = QLabel(f"Toplam {len(loan_payments)} ödeme kaydı listeleniyor.")
+            main_layout.addWidget(info_label)
+
+            close_btn = QPushButton("Kapat")
+            close_btn.clicked.connect(dialog.accept)
+            main_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Kredi dökümü açılırken hata: {str(e)}")
+        finally:
+            session.close()
+
+    def show_credit_card_statement(self, card_id):
+        """Seçili kredi kartı için döküm ekranını aç"""
+        from PyQt5.QtWidgets import QDialog
+        from src.database.db import SessionLocal
+        from src.database.models import CreditCard
+
+        session = SessionLocal()
+        try:
+            card = session.query(CreditCard).filter(
+                CreditCard.id == card_id,
+                CreditCard.user_id == self.user.id,
+                CreditCard.is_active == True
+            ).first()
+
+            if not card:
+                QMessageBox.warning(self, "Uyarı", "Kredi kartı kaydı bulunamadı.")
+                return
+
+            transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.credit_card_id == card.id
+            ).order_by(Transaction.transaction_date.asc(), Transaction.id.asc()).all()
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Kredi Kartı Dökümü - {card.card_name}")
+            dialog.resize(980, 620)
+
+            main_layout = QVBoxLayout(dialog)
+
+            summary_label = QLabel(
+                f"<b>Kart:</b> {card.card_name} &nbsp;&nbsp; "
+                f"<b>Banka:</b> {card.bank_name} &nbsp;&nbsp; "
+                f"<b>Limit:</b> {format_tr(card.card_limit)} ₺<br>"
+                f"<b>Güncel Borç:</b> {format_tr(card.current_debt)} ₺ &nbsp;&nbsp; "
+                f"<b>Kullanılabilir:</b> {format_tr(card.available_limit)} ₺ &nbsp;&nbsp; "
+                f"<b>Kesim:</b> {card.closing_day} &nbsp;&nbsp; "
+                f"<b>Son Ödeme:</b> {card.due_day}"
+            )
+            summary_label.setWordWrap(True)
+            main_layout.addWidget(summary_label)
+
+            table = QTableWidget()
+            table.setColumnCount(5)
+            table.setHorizontalHeaderLabels([
+                "Tarih", "İşlem Türü", "Açıklama", "Tutar", "Bakiye"
+            ])
+            table.setRowCount(len(transactions))
+
+            running_debt = 0.0
+            for row, trans in enumerate(transactions):
+                if trans.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
+                    running_debt += trans.amount
+                elif trans.transaction_type == TransactionType.KREDI_KARTI_ODEME:
+                    running_debt = max(0.0, running_debt - trans.amount)
+
+                table.setItem(row, 0, QTableWidgetItem(str(trans.transaction_date)))
+                table.setItem(row, 1, QTableWidgetItem(trans.transaction_type.value))
+                table.setItem(row, 2, QTableWidgetItem(trans.description or ""))
+                table.setItem(row, 3, QTableWidgetItem(f"{format_tr(trans.amount)} ₺"))
+                table.setItem(row, 4, QTableWidgetItem(f"{format_tr(running_debt)} ₺"))
+
+            table.setColumnWidth(0, 110)
+            table.setColumnWidth(1, 140)
+            table.setColumnWidth(2, 360)
+            table.setColumnWidth(3, 120)
+            table.setColumnWidth(4, 120)
+            table.horizontalHeader().setStretchLastSection(False)
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self._resize_table(table)
+
+            main_layout.addWidget(table)
+
+            info_label = QLabel(f"Toplam {len(transactions)} işlem listeleniyor.")
+            main_layout.addWidget(info_label)
+
+            close_btn = QPushButton("Kapat")
+            close_btn.clicked.connect(dialog.accept)
+            main_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Kredi kartı dökümü açılırken hata: {str(e)}")
+        finally:
+            session.close()
+
+    def show_bank_statement(self, account_id):
+        """Seçili banka hesabı için döküm ekranını aç"""
+        from PyQt5.QtWidgets import QDialog
+        from src.database.db import SessionLocal
+        from src.database.models import BankAccount, BankTransaction
+
+        session = SessionLocal()
+        try:
+            account = session.query(BankAccount).filter(
+                BankAccount.id == account_id,
+                BankAccount.user_id == self.user.id,
+                BankAccount.is_active == True
+            ).first()
+
+            if not account:
+                QMessageBox.warning(self, "Uyarı", "Banka hesabı bulunamadı.")
+                return
+
+            transactions = session.query(BankTransaction).filter(
+                BankTransaction.user_id == self.user.id,
+                BankTransaction.bank_account_id == account.id
+            ).order_by(BankTransaction.transaction_date.asc(), BankTransaction.id.asc()).all()
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Banka Dökümü - {account.bank_name}")
+            dialog.resize(980, 620)
+
+            main_layout = QVBoxLayout(dialog)
+
+            summary_label = QLabel(
+                f"<b>Banka:</b> {account.bank_name} &nbsp;&nbsp; "
+                f"<b>Hesap:</b> {account.account_number} &nbsp;&nbsp; "
+                f"<b>Para Birimi:</b> {account.currency}<br>"
+                f"<b>Bakiye:</b> {format_tr(account.balance)} ₺ &nbsp;&nbsp; "
+                f"<b>Ek Hesap:</b> {format_tr(getattr(account, 'overdraft_limit', 0.0))} ₺"
+            )
+            summary_label.setWordWrap(True)
+            main_layout.addWidget(summary_label)
+
+            table = QTableWidget()
+            table.setColumnCount(5)
+            table.setHorizontalHeaderLabels([
+                "Tarih", "İşlem Türü", "Açıklama", "Tutar", "Bakiye"
+            ])
+            table.setRowCount(len(transactions))
+
+            running_balance = 0.0
+            for row, trans in enumerate(transactions):
+                if trans.transaction_type == "INCOME":
+                    running_balance += trans.amount
+                else:
+                    running_balance -= trans.amount
+
+                table.setItem(row, 0, QTableWidgetItem(str(trans.transaction_date)))
+                table.setItem(row, 1, QTableWidgetItem(trans.transaction_type))
+                table.setItem(row, 2, QTableWidgetItem(trans.description or ""))
+                table.setItem(row, 3, QTableWidgetItem(f"{format_tr(trans.amount)} ₺"))
+                table.setItem(row, 4, QTableWidgetItem(f"{format_tr(running_balance)} ₺"))
+
+            table.setColumnWidth(0, 110)
+            table.setColumnWidth(1, 140)
+            table.setColumnWidth(2, 360)
+            table.setColumnWidth(3, 120)
+            table.setColumnWidth(4, 120)
+            table.horizontalHeader().setStretchLastSection(False)
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self._resize_table(table)
+
+            main_layout.addWidget(table)
+
+            info_label = QLabel(f"Toplam {len(transactions)} işlem listeleniyor.")
+            main_layout.addWidget(info_label)
+
+            close_btn = QPushButton("Kapat")
+            close_btn.clicked.connect(dialog.accept)
+            main_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Banka dökümü açılırken hata: {str(e)}")
+        finally:
+            session.close()
+    
+    def show_new_loan_dialog(self):
+        """Yeni kredi dialog"""
+        from src.ui.dialogs.loan_dialog import LoanDialog
+        dialog = LoanDialog(self.user.id, self)
+        if dialog.exec_():
+            self.refresh_loans_table()
+    
+    def show_edit_loan_dialog(self, loan_id):
+        """Kredi düzenleme dialog"""
+        from src.ui.dialogs.loan_dialog import LoanDialog
+        dialog = LoanDialog(self.user.id, self, loan_id)
+        if dialog.exec_():
+            self.refresh_loans_table()
+    
+    def delete_loan(self, loan_id):
+        """Kredi sil"""
+        from src.services.loan_service import LoanService
+        
+        reply = QMessageBox.question(self, "Onay", "Bu krediyi silmek istediğinize emin misiniz?",
+                                    QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            success, msg = LoanService.delete_loan(loan_id)
+            if success:
+                QMessageBox.information(self, "Başarılı", "Kredi silindi")
+                self.refresh_loans_table()
+            else:
+                QMessageBox.critical(self, "Hata", msg)
+    
     def create_cari_extract_tab(self) -> QWidget:
         """Cari Ekstre sekmesi"""
         widget = QWidget()
@@ -1828,20 +4160,28 @@ Pasif Kullanıcı: {total_users - active_users}
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         layout.addWidget(title)
         
-        # Cari seçimi
+        # Cari seçimi ve arama
         filter_layout = QHBoxLayout()
+        
+        # Müşteri arama kutusu
+        filter_layout.addWidget(QLabel("Müşteri Ara:"))
+        self.cari_extract_search_input = QLineEdit()
+        self.cari_extract_search_input.setPlaceholderText("Müşteri adı yazın...")
+        self.cari_extract_search_input.setMinimumHeight(35)
+        self.cari_extract_search_input.setMaximumWidth(200)
+        self.cari_extract_search_input.textChanged.connect(self.filter_cari_combo)
+        filter_layout.addWidget(self.cari_extract_search_input)
+        
         filter_layout.addWidget(QLabel("Cari Hesap:"))
         
         self.cari_extract_combo = QComboBox()
         self.cari_extract_combo.setMinimumHeight(35)
+        self.cari_extract_combo.setMinimumWidth(250)
         self.cari_extract_combo.addItem("-- Cari Seçiniz --", None)
-        try:
-            caris = CariService.get_caris(self.user.id)
-            if caris:
-                for cari in caris:
-                    self.cari_extract_combo.addItem(f"{cari.name} ({cari.cari_type})", cari.id)
-        except:
-            pass
+        
+        # Tüm carileri sakla (filtreleme için)
+        self.all_caris = []
+        self._reload_cari_extract_combo()
         filter_layout.addWidget(self.cari_extract_combo)
         
         btn_show_extract = QPushButton("📊 Ekstre Göster")
@@ -1864,12 +4204,27 @@ Pasif Kullanıcı: {total_users - active_users}
         """)
         btn_export_excel.clicked.connect(self.export_cari_extract_to_excel)
         filter_layout.addWidget(btn_export_excel)
-        
+
+        btn_save_extract = QPushButton("💾 Kaydet")
+        btn_save_extract.setMinimumHeight(35)
+        btn_save_extract.setToolTip("Sütun genişliklerini kaydet")
+        btn_save_extract.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 4px;
+                padding: 8px 14px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e68900; }
+        """)
+        btn_save_extract.clicked.connect(lambda: self.save_column_widths(self.table_cari_extract, "cari_extract"))
+        filter_layout.addWidget(btn_save_extract)
+
         filter_layout.addStretch()
         layout.addLayout(filter_layout)
         
         # Ekstre tablosu
         self.table_cari_extract = QTableWidget()
+        self.table_cari_extract.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_cari_extract.setColumnCount(6)
         self.table_cari_extract.setHorizontalHeaderLabels([
             "Tarih", "İşlem Türü", "Açıklama", "Borç", "Alacak", "Bakiye"
@@ -1881,10 +4236,49 @@ Pasif Kullanıcı: {total_users - active_users}
         self.table_cari_extract.setColumnWidth(3, 120)
         self.table_cari_extract.setColumnWidth(4, 120)
         self.table_cari_extract.setColumnWidth(5, 120)
+        self.load_column_widths(self.table_cari_extract, "cari_extract")
         layout.addWidget(self.table_cari_extract)
         
         widget.setLayout(layout)
         return widget
+    
+    def _reload_cari_extract_combo(self):
+        """Cari ekstre combobox verisini veritabanından yenile"""
+        try:
+            selected_id = self.cari_extract_combo.currentData() if hasattr(self, 'cari_extract_combo') else None
+            self.all_caris = CariService.get_caris(self.user.id) or []
+            search_text = self.cari_extract_search_input.text() if hasattr(self, 'cari_extract_search_input') else ""
+            self.filter_cari_combo(search_text, selected_id)
+        except Exception as e:
+            print(f"Cari ekstre listesi yenileme hatası: {e}")
+
+    def filter_cari_combo(self, search_text=None, preferred_id=None):
+        """Arama kutusuna göre cari combobox'ı filtrele"""
+        if search_text is None:
+            search_text = self.cari_extract_search_input.text() if hasattr(self, 'cari_extract_search_input') else ""
+
+        search_text = str(search_text).casefold().strip()
+        
+        # Combobox'ı temizle
+        self.cari_extract_combo.clear()
+        self.cari_extract_combo.addItem("-- Cari Seçiniz --", None)
+        
+        # Eğer arama metni boşsa, tüm carileri göster
+        if not search_text:
+            if self.all_caris:
+                for cari in self.all_caris:
+                    self.cari_extract_combo.addItem(f"{cari.name} ({cari.cari_type})", cari.id)
+        else:
+            # Arama metnini içeren carileri göster
+            if self.all_caris:
+                for cari in self.all_caris:
+                    if search_text in (cari.name or "").casefold():
+                        self.cari_extract_combo.addItem(f"{cari.name} ({cari.cari_type})", cari.id)
+
+        if preferred_id:
+            idx = self.cari_extract_combo.findData(preferred_id)
+            if idx >= 0:
+                self.cari_extract_combo.setCurrentIndex(idx)
     
     def show_cari_extract(self):
         """Cari ekstre göster"""
@@ -1922,12 +4316,12 @@ Pasif Kullanıcı: {total_users - active_users}
                     credit = trans.amount
                     running_balance += trans.amount
                 
-                self.table_cari_extract.setItem(i, 3, QTableWidgetItem(f"{debt:,.2f} ₺" if debt > 0 else "-"))
-                self.table_cari_extract.setItem(i, 4, QTableWidgetItem(f"{credit:,.2f} ₺" if credit > 0 else "-"))
-                self.table_cari_extract.setItem(i, 5, QTableWidgetItem(f"{running_balance:,.2f} ₺"))
+                self.table_cari_extract.setItem(i, 3, QTableWidgetItem(f"{format_tr(debt)} ₺" if debt > 0 else "-"))
+                self.table_cari_extract.setItem(i, 4, QTableWidgetItem(f"{format_tr(credit)} ₺" if credit > 0 else "-"))
+                self.table_cari_extract.setItem(i, 5, QTableWidgetItem(f"{format_tr(running_balance)} ₺"))
             
-            self._resize_table(self.table_cari_extract)
-            QMessageBox.information(self, "Bilgi", f"{cari.name} için {len(transactions)} işlem bulundu")
+            self._resize_table(self.table_cari_extract, stretch_col=2)
+            self.load_column_widths(self.table_cari_extract, "cari_extract")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Ekstre yüklenirken hata: {str(e)}")
     
@@ -2076,233 +4470,640 @@ Pasif Kullanıcı: {total_users - active_users}
             traceback.print_exc()
     
     def create_reports_tab(self) -> QWidget:
-        """Raporlar sekmesi"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(15, 15, 15, 15)
-        
-        title = QLabel("📊 Raporlar ve Analizler")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        layout.addWidget(title)
-        
-        # Rapor türü seçimi
-        report_layout = QHBoxLayout()
-        report_layout.addWidget(QLabel("Rapor Türü:"))
-        
-        self.report_type_combo = QComboBox()
-        self.report_type_combo.setMinimumHeight(35)
-        self.report_type_combo.addItems([
-            "Kapsamlı Genel Rapor",
-            "Gelir-Gider Raporu",
-            "Cari Bakiye Raporu",
-            "Banka Özet Raporu",
-            "Kredi Kartı Özet Raporu"
-        ])
-        report_layout.addWidget(self.report_type_combo)
-        
-        btn_generate = QPushButton("📄 Rapor Oluştur")
-        btn_generate.setMinimumHeight(35)
-        btn_generate.setStyleSheet("""
+        """Gelişmiş Raporlar sekmesi — sol kenar çubuğu + KPI kartları + modern HTML"""
+        self._current_report_key = None
+
+        wrapper = QWidget()
+        main_layout = QHBoxLayout(wrapper)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # ── SOL KENAR ÇUBUĞU ──────────────────────────────────────────────
+        sidebar = QWidget()
+        sidebar.setFixedWidth(210)
+        sidebar.setStyleSheet("background-color: #1a2332;")
+        sb_layout = QVBoxLayout(sidebar)
+        sb_layout.setContentsMargins(0, 0, 0, 0)
+        sb_layout.setSpacing(0)
+
+        sb_title = QLabel("  📊  RAPORLAR")
+        sb_title.setStyleSheet("""
+            QLabel {
+                background-color: #0d1520;
+                color: #90CAF9;
+                padding: 14px 10px;
+                font-size: 10pt;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }
+        """)
+        sb_layout.addWidget(sb_title)
+
+        STYLE_NORMAL = """
             QPushButton {
-                background-color: #4CAF50;
+                background-color: transparent;
+                color: #90A4AE;
+                border: none;
+                border-left: 3px solid transparent;
+                text-align: left;
+                padding: 9px 12px;
+                font-size: 9.5pt;
+            }
+            QPushButton:hover {
+                background-color: #263545;
+                color: #E3F2FD;
+                border-left: 3px solid #546E7A;
+            }
+        """
+        STYLE_ACTIVE = """
+            QPushButton {
+                background-color: #0D47A1;
                 color: white;
                 border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
+                border-left: 3px solid #42A5F5;
+                text-align: left;
+                padding: 9px 12px;
+                font-size: 9.5pt;
                 font-weight: bold;
             }
-            QPushButton:hover { background-color: #45a049; }
+        """
+
+        self._report_btn_styles = (STYLE_NORMAL, STYLE_ACTIVE)
+        self.report_sidebar_buttons = {}
+
+        report_menu = [
+            ("genel",       "🏠",  "Genel Finansal Özet"),
+            ("gelir_gider", "💰",  "Gelir-Gider Raporu"),
+            ("cari",        "👥",  "Cari Bakiyeleri"),
+            ("banka",       "🏦",  "Banka Hesapları"),
+            ("nakit_kasasi","💵",  "Nakit Kasası"),
+            ("kredi_karti", "💳",  "Kredi Kartları"),
+            ("kredi",       "📋",  "Krediler"),
+            ("aylik",       "📅",  "Aylık Karşılaştırma"),
+            ("top_cari",    "🏆",  "En Aktif Cariler"),
+            ("odeme",       "💸",  "Ödeme Dağılımı"),
+            ("haftalik",    "📈",  "Haftalık Trend"),
+            ("maas",        "👷",  "Maaş Ödemeleri"),
+        ]
+
+        for key, icon, label in report_menu:
+            btn = QPushButton(f"  {icon}  {label}")
+            btn.setStyleSheet(STYLE_NORMAL)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(38)
+            btn.clicked.connect(lambda checked=False, k=key: self._generate_sidebar_report(k))
+            sb_layout.addWidget(btn)
+            self.report_sidebar_buttons[key] = btn
+
+        sb_layout.addStretch()
+
+        # ── SAĞ PANEL ─────────────────────────────────────────────────────
+        right = QWidget()
+        right.setStyleSheet("background-color: #F0F4F8;")
+        r_layout = QVBoxLayout(right)
+        r_layout.setContentsMargins(16, 12, 16, 12)
+        r_layout.setSpacing(8)
+
+        # Başlık + aksiyon butonları
+        top_row = QHBoxLayout()
+        self.report_page_title = QLabel("📊  Raporlar ve Analizler")
+        self.report_page_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        self.report_page_title.setStyleSheet("color: #1A237E;")
+        top_row.addWidget(self.report_page_title)
+        top_row.addStretch()
+
+        btn_refresh = QPushButton("🔄  Yenile")
+        btn_refresh.setMinimumHeight(34)
+        btn_refresh.setStyleSheet("""
+            QPushButton { background-color:#546E7A; color:white; border:none;
+                border-radius:4px; padding:6px 14px; font-weight:bold; }
+            QPushButton:hover { background-color:#455A64; }
         """)
-        btn_generate.clicked.connect(self.generate_report)
-        report_layout.addWidget(btn_generate)
-        
-        btn_export_excel = QPushButton("📥 Excel'e Aktar")
-        btn_export_excel.setMinimumHeight(35)
-        btn_export_excel.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #F57C00; }
+        btn_refresh.clicked.connect(lambda: self._generate_sidebar_report(self._current_report_key) if self._current_report_key else None)
+        top_row.addWidget(btn_refresh)
+
+        btn_print = QPushButton("🖨️  Yazdır")
+        btn_print.setMinimumHeight(34)
+        btn_print.setStyleSheet("""
+            QPushButton { background-color:#37474F; color:white; border:none;
+                border-radius:4px; padding:6px 14px; font-weight:bold; }
+            QPushButton:hover { background-color:#263238; }
         """)
-        btn_export_excel.clicked.connect(self.export_report_to_excel)
-        report_layout.addWidget(btn_export_excel)
-        
-        report_layout.addStretch()
-        layout.addLayout(report_layout)
-        
-        # Rapor görüntüleme alanı
+        btn_print.clicked.connect(self._print_report)
+        top_row.addWidget(btn_print)
+
+        btn_export = QPushButton("📥  Excel'e Aktar")
+        btn_export.setMinimumHeight(34)
+        btn_export.setStyleSheet("""
+            QPushButton { background-color:#2E7D32; color:white; border:none;
+                border-radius:4px; padding:6px 14px; font-weight:bold; }
+            QPushButton:hover { background-color:#1B5E20; }
+        """)
+        btn_export.clicked.connect(self.export_report_to_excel)
+        top_row.addWidget(btn_export)
+        r_layout.addLayout(top_row)
+
+        # Filtre çubuğu
+        filter_bar = QFrame()
+        filter_bar.setStyleSheet("""
+            QFrame { background-color:white; border:1px solid #CFD8DC;
+                     border-radius:6px; }
+        """)
+        fb_layout = QHBoxLayout(filter_bar)
+        fb_layout.setContentsMargins(10, 6, 10, 6)
+        fb_layout.setSpacing(8)
+
+        lbl_s = QLabel("📅 Başlangıç:")
+        lbl_s.setStyleSheet("border:none; background:transparent;")
+        fb_layout.addWidget(lbl_s)
+
+        self.report_start_date = QDateEdit()
+        self.report_start_date.setCalendarPopup(True)
+        self.report_start_date.setDate(QDate.currentDate().addMonths(-1))
+        self.report_start_date.setDisplayFormat("dd.MM.yyyy")
+        self.report_start_date.setMinimumHeight(30)
+        fb_layout.addWidget(self.report_start_date)
+
+        lbl_dash = QLabel("—")
+        lbl_dash.setStyleSheet("border:none; background:transparent;")
+        fb_layout.addWidget(lbl_dash)
+
+        lbl_e = QLabel("Bitiş:")
+        lbl_e.setStyleSheet("border:none; background:transparent;")
+        fb_layout.addWidget(lbl_e)
+
+        self.report_end_date = QDateEdit()
+        self.report_end_date.setCalendarPopup(True)
+        self.report_end_date.setDate(QDate.currentDate())
+        self.report_end_date.setDisplayFormat("dd.MM.yyyy")
+        self.report_end_date.setMinimumHeight(30)
+        fb_layout.addWidget(self.report_end_date)
+
+        QBTN = """
+            QPushButton { background-color:#E3F2FD; color:#1565C0;
+                border:1px solid #90CAF9; border-radius:3px;
+                padding:2px 10px; font-size:9pt; }
+            QPushButton:hover { background-color:#BBDEFB; }
+        """
+        for lbl, rtype in [("Bu Ay", "this_month"), ("Geçen Ay", "last_month"), ("Bu Yıl", "this_year")]:
+            qb = QPushButton(lbl)
+            qb.setMinimumHeight(28)
+            qb.setStyleSheet(QBTN)
+            qb.clicked.connect(lambda checked=False, rt=rtype: self._set_date_range(rt))
+            fb_layout.addWidget(qb)
+
+        fb_layout.addStretch()
+        r_layout.addWidget(filter_bar)
+
+        # Rapor gösterim alanı
         self.report_display = QTextBrowser()
         self.report_display.setStyleSheet("""
             QTextBrowser {
-                border: 1px solid #ddd;
                 background-color: white;
-                padding: 15px;
-                font-family: Consolas, monospace;
+                border: 1px solid #CFD8DC;
+                border-radius: 6px;
+                padding: 4px;
+                font-family: Segoe UI, Arial, sans-serif;
                 font-size: 10pt;
             }
         """)
-        layout.addWidget(self.report_display)
-        
-        widget.setLayout(layout)
-        return widget
+        self.report_display.setOpenExternalLinks(False)
+        self.report_display.setHtml(self._report_welcome_html())
+        r_layout.addWidget(self.report_display)
+
+        main_layout.addWidget(sidebar)
+        main_layout.addWidget(right, 1)
+        return wrapper
     
-    def generate_report(self):
-        """Rapor oluştur"""
-        report_type = self.report_type_combo.currentText()
-        
+    def _set_date_range(self, range_type):
+        """Hızlı tarih aralığı ayarlama"""
+        today = QDate.currentDate()
+        if range_type == 'this_month':
+            self.report_start_date.setDate(QDate(today.year(), today.month(), 1))
+            self.report_end_date.setDate(today)
+        elif range_type == 'last_month':
+            last = today.addMonths(-1)
+            self.report_start_date.setDate(QDate(last.year(), last.month(), 1))
+            self.report_end_date.setDate(QDate(today.year(), today.month(), 1).addDays(-1))
+        elif range_type == 'this_year':
+            self.report_start_date.setDate(QDate(today.year(), 1, 1))
+            self.report_end_date.setDate(today)
+        # Aktif raporu yenile
+        if self._current_report_key:
+            self._generate_sidebar_report(self._current_report_key)
+
+    def _generate_sidebar_report(self, key: str):
+        """Kenar çubuğu butonundan rapor oluştur"""
+        if not key:
+            return
+        self._current_report_key = key
+
+        # Buton stillerini güncelle
+        NORMAL, ACTIVE = self._report_btn_styles
+        for k, btn in self.report_sidebar_buttons.items():
+            btn.setStyleSheet(ACTIVE if k == key else NORMAL)
+
+        start_date = self.report_start_date.date().toPyDate()
+        end_date   = self.report_end_date.date().toPyDate()
+        detail     = 'Özet'
+
+        # Başlık güncelle
+        titles = {
+            "genel":       "🏠  Genel Finansal Özet",
+            "gelir_gider": "💰  Gelir-Gider Raporu",
+            "cari":        "👥  Cari Bakiyeleri",
+            "banka":       "🏦  Banka Hesapları",
+            "nakit_kasasi":"💵  Nakit Kasası",
+            "kredi_karti": "💳  Kredi Kartları",
+            "kredi":       "📋  Krediler",
+            "aylik":       "📅  Aylık Karşılaştırma",
+            "top_cari":    "🏆  En Aktif Cariler",
+            "odeme":       "💸  Ödeme Dağılımı",
+            "haftalik":    "📈  Haftalık Trend",
+            "maas":        "👷  Maaş Ödemeleri",
+        }
+        self.report_page_title.setText(titles.get(key, "📊  Raporlar"))
+
+        self.report_display.setHtml("<p style='color:#666; padding:20px;'>⏳ Rapor oluşturuluyor...</p>")
+
         try:
-            if report_type == "Kapsamlı Genel Rapor":
+            if key == "genel":
                 data = ReportService.generate_comprehensive_report(self.user.id)
                 html = self._format_comprehensive_report(data)
-            elif report_type == "Gelir-Gider Raporu":
+            elif key == "gelir_gider":
                 data = ReportService.generate_income_expense_report(self.user.id)
-                html = self._format_income_expense_report(data)
-            elif report_type == "Cari Bakiye Raporu":
+                html = self._format_income_expense_report(data, detail, start_date, end_date)
+            elif key == "cari":
                 data = ReportService.generate_cari_balance_report(self.user.id)
                 html = self._format_cari_balance_report(data)
-            elif report_type == "Banka Özet Raporu":
+            elif key == "banka":
                 data = ReportService.generate_bank_summary_report(self.user.id)
                 html = self._format_bank_summary_report(data)
-            elif report_type == "Kredi Kartı Özet Raporu":
+            elif key == "nakit_kasasi":
+                html = self._generate_nakit_kasasi_report(start_date, end_date)
+            elif key == "kredi_karti":
                 data = ReportService.generate_credit_card_summary(self.user.id)
                 html = self._format_credit_card_report(data)
+            elif key == "kredi":
+                data = ReportService.generate_loan_summary_report(self.user.id)
+                html = self._format_loan_summary_report(data)
+            elif key == "aylik":
+                html = self._generate_monthly_comparison_report(start_date, end_date)
+            elif key == "top_cari":
+                html = self._generate_top_caris_report(start_date, end_date, detail)
+            elif key == "odeme":
+                html = self._generate_payment_method_distribution(start_date, end_date)
+            elif key == "haftalik":
+                html = self._generate_weekly_trend_report(start_date, end_date)
+            elif key == "maas":
+                html = self._generate_payroll_report(start_date, end_date)
             else:
-                html = "<h2>Rapor türü seçiniz</h2>"
-            
+                html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
         except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Rapor oluşturulurken hata: {str(e)}")
-    
-    def _format_comprehensive_report(self, data):
-        """Kapsamlı rapor HTML formatı"""
-        html = f"""
-        <h2 style='color: #2196F3;'>📊 KAPSAMLI GENEL RAPOR</h2>
-        <p><strong>Rapor Tarihi:</strong> {data['report_date']}</p>
-        <hr>
-        
-        <h3 style='color: #4CAF50;'>💰 Gelir-Gider Özeti</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Gelir:</strong></td><td>{data['income_expense']['total_income']:,.2f} ₺</td></tr>
-        <tr><td><strong>Toplam Gider:</strong></td><td>{data['income_expense']['total_expense']:,.2f} ₺</td></tr>
-        <tr><td><strong>Net Kar/Zarar:</strong></td><td style='color: {"green" if data['income_expense']['net_profit'] >= 0 else "red"};'><strong>{data['income_expense']['net_profit']:,.2f} ₺</strong></td></tr>
-        </table>
-        
-        <h3 style='color: #FF9800;'>📋 Cari Hesaplar</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Alacak:</strong></td><td>{data['cari_balance']['total_receivable']:,.2f} ₺</td></tr>
-        <tr><td><strong>Toplam Borç:</strong></td><td>{data['cari_balance']['total_payable']:,.2f} ₺</td></tr>
-        <tr><td><strong>Net Bakiye:</strong></td><td><strong>{data['cari_balance']['net_balance']:,.2f} ₺</strong></td></tr>
-        </table>
-        
-        <h3 style='color: #2196F3;'>🏦 Banka Hesapları</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Bakiye (TRY):</strong></td><td><strong>{data['bank_summary']['total_balance_try']:,.2f} ₺</strong></td></tr>
-        </table>
-        
-        <h3 style='color: #9C27B0;'>💳 Kredi Kartları</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Limit:</strong></td><td>{data['credit_card_summary']['total_limit']:,.2f} ₺</td></tr>
-        <tr><td><strong>Toplam Borç:</strong></td><td style='color: red;'>{data['credit_card_summary']['total_debt']:,.2f} ₺</td></tr>
-        <tr><td><strong>Kullanılabilir Limit:</strong></td><td style='color: green;'>{data['credit_card_summary']['total_available']:,.2f} ₺</td></tr>
-        </table>
-        
-        <h3 style='color: #f44336;'>💼 Genel Finansal Durum</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Likit Varlıklar:</strong></td><td>{data['overall_financial_health']['liquid_assets']:,.2f} ₺</td></tr>
-        <tr><td><strong>Alacaklar:</strong></td><td>{data['overall_financial_health']['receivables']:,.2f} ₺</td></tr>
-        <tr><td><strong>Borçlar:</strong></td><td>-{data['overall_financial_health']['payables']:,.2f} ₺</td></tr>
-        <tr><td><strong>Kredi Kartı Borçları:</strong></td><td>-{data['overall_financial_health']['credit_card_debt']:,.2f} ₺</td></tr>
-        <tr style='background-color: #e3f2fd;'><td><strong>NET DEĞER:</strong></td><td style='font-size: 14pt; color: {"green" if data['overall_financial_health']['net_worth'] >= 0 else "red"};'><strong>{data['overall_financial_health']['net_worth']:,.2f} ₺</strong></td></tr>
-        </table>
+            import traceback
+            QMessageBox.critical(self, "Hata", f"Rapor oluşturulurken hata:\n{str(e)}")
+            traceback.print_exc()
+
+    # Geriye uyumluluk için eski generate_report metodu da çalışsın
+    def generate_report(self):
+        report_type = getattr(self, "report_type_combo", None)
+        if report_type:
+            key_map = {
+                "Kapsamlı Genel Rapor":          "genel",
+                "Gelir-Gider Raporu":             "gelir_gider",
+                "Cari Bakiye Raporu":             "cari",
+                "Banka Özet Raporu":              "banka",
+                "Kredi Kartı Özet Raporu":        "kredi_karti",
+                "Kredi Özet Raporu":              "kredi",
+                "Aylık Karşılaştırma Raporu":     "aylik",
+                "En Çok İşlem Yapılan Cariler":   "top_cari",
+                "Ödeme Yöntemi Dağılımı":         "odeme",
+                "Haftalık Trend Analizi":         "haftalik",
+            }
+            self._generate_sidebar_report(key_map.get(report_type.currentText(), "genel"))
+
+    def _print_report(self):
+        """Raporu yaz"""
+        try:
+            printer = QPrinter(QPrinter.HighResolution)
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec_() == QPrintDialog.Accepted:
+                self.report_display.print_(printer)
+        except Exception as e:
+            QMessageBox.warning(self, "Yazdırma Hatası", str(e))
+
+    def _report_welcome_html(self) -> str:
+        return """
+        <div style='padding:40px; text-align:center;'>
+            <p style='font-size:48pt;'>📊</p>
+            <p style='font-size:18pt; font-weight:bold; color:#1A237E;'>Raporlar ve Analizler</p>
+            <p style='font-size:11pt; color:#546E7A;'>
+                Sol menüden bir rapor türü seçerek başlayın.<br><br>
+                📅 Tarih aralığını ayarlayabilir,<br>
+                🖨️ Yazdırabilir veya<br>
+                📥 Excel'e aktarabilirsiniz.
+            </p>
+        </div>
         """
-        return html
-    
-    def _format_income_expense_report(self, data):
-        """Gelir-gider raporu HTML"""
+
+    def _rh(self, icon: str, title: str, subtitle: str, accent: str = "#1A237E") -> str:
+        """Rapor başlık HTML bloğu"""
+        from datetime import datetime
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
         return f"""
-        <h2 style='color: #2196F3;'>💰 GELİR-GİDER RAPORU</h2>
-        <p><strong>Dönem:</strong> {data['period']['start']} - {data['period']['end']}</p>
-        <hr>
-        <table border='1' cellpadding='10' style='border-collapse: collapse; width: 100%; font-size: 12pt;'>
-        <tr><td><strong>Toplam Gelir:</strong></td><td style='color: green;'><strong>{data['total_income']:,.2f} ₺</strong></td></tr>
-        <tr><td><strong>Toplam Gider:</strong></td><td style='color: red;'><strong>{data['total_expense']:,.2f} ₺</strong></td></tr>
-        <tr style='background-color: #e3f2fd;'><td><strong>Net Kar/Zarar:</strong></td><td style='font-size: 14pt; color: {"green" if data['net_profit'] >= 0 else "red"};'><strong>{data['net_profit']:,.2f} ₺</strong></td></tr>
-        <tr><td><strong>İşlem Sayısı:</strong></td><td>{data['transaction_count']}</td></tr>
+        <table width='100%' cellpadding='0' cellspacing='0'>
+        <tr><td style='background-color:{accent}; padding:18px 20px; border-radius:6px;'>
+            <span style='font-size:22pt;'>{icon}</span>
+            <span style='font-size:14pt; font-weight:bold; color:white; margin-left:10px;'>{title}</span><br>
+            <span style='font-size:9pt; color:#B0BEC5;'>{subtitle} &nbsp;|&nbsp; Oluşturulma: {now}</span>
+        </td></tr>
         </table>
+        <br>
         """
-    
+
+    def _kpi_row(self, items: list) -> str:
+        """KPI kartları satırı. items = [(ikon, başlık, değer, renk), ...]"""
+        cols = "".join(f"""
+            <td width='{100//len(items)}%' style='padding:4px;'>
+                <table width='100%' cellpadding='10' cellspacing='0'
+                       style='background-color:{color}; border-radius:6px;'>
+                <tr><td align='center'>
+                    <div style='font-size:18pt;'>{icon}</div>
+                    <div style='font-size:8.5pt; color:#CFD8DC; font-weight:bold;'>{label}</div>
+                    <div style='font-size:13pt; font-weight:bold; color:white; margin-top:2px;'>{value}</div>
+                </td></tr>
+                </table>
+            </td>
+        """ for icon, label, value, color in items)
+        return f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{cols}</tr></table><br>"
+
+    def _section(self, title: str, color: str = "#1565C0") -> str:
+        return f"""
+        <table width='100%' cellpadding='0' cellspacing='0' style='margin-top:12px;'>
+        <tr><td style='background-color:{color}; padding:8px 14px; border-radius:4px;'>
+            <span style='font-size:11pt; font-weight:bold; color:white;'>{title}</span>
+        </td></tr></table>
+        """
+
+    def _table_header(self, cols: list, color: str = "#E3F2FD") -> str:
+        cells = "".join(f"<th style='padding:8px 10px; background-color:{color}; "
+                        f"border-bottom:2px solid #90CAF9; text-align:left; font-size:9pt;'>{c}</th>" for c in cols)
+        return f"<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse; margin-top:4px;'><tr>{cells}</tr>"
+
+    def _tr(self, values: list, colors: list = None, bold: bool = False, bg: str = None) -> str:
+        w = "font-weight:bold;" if bold else ""
+        bgstyle = f"background-color:{bg};" if bg else ""
+        cells = ""
+        for i, v in enumerate(values):
+            c = f"color:{colors[i]};" if colors and i < len(colors) and colors[i] else ""
+            cells += f"<td style='padding:7px 10px; border-bottom:1px solid #ECEFF1; {w}{c}{bgstyle} font-size:9.5pt;'>{v}</td>"
+        return f"<tr>{cells}</tr>"
+
+    def _progress_bar_html(self, pct: float) -> str:
+        """Metin tabanlı ilerleme çubuğu Qt HTML için"""
+        pct = max(0, min(100, pct))
+        filled = int(pct / 5)
+        empty  = 20 - filled
+        color = "#EF5350" if pct > 80 else "#FFA726" if pct > 50 else "#66BB6A"
+        bar = "<span style='color:{};'>&#9608;</span>".format(color) * filled + \
+              "<span style='color:#E0E0E0;'>&#9608;</span>" * empty
+        return f"{bar} <span style='font-size:9pt; color:#546E7A;'>{pct:.0f}%</span>"
+
+    def _format_comprehensive_report(self, data):
+        """Genel özet raporu — modern HTML"""
+        ie  = data['income_expense']
+        cb  = data['cari_balance']
+        bs  = data['bank_summary']
+        cc  = data['credit_card_summary']
+        ofh = data['overall_financial_health']
+
+        net_profit    = ie['net_profit']
+        net_worth     = ofh['net_worth']
+        np_color      = "#2E7D32" if net_profit >= 0 else "#C62828"
+        nw_color      = "#2E7D32" if net_worth  >= 0 else "#C62828"
+
+        html  = self._rh("🏠", "Genel Finansal Özet", "Tüm hesapların anlık durumu", "#1A237E")
+
+        html += self._kpi_row([
+            ("💰", "Toplam Gelir",    f"{ie['total_income']:,.0f} ₺",    "#1B5E20"),
+            ("📉", "Toplam Gider",    f"{ie['total_expense']:,.0f} ₺",   "#B71C1C"),
+            ("📊", "Net Kar/Zarar",   f"{net_profit:,.0f} ₺",            np_color if net_profit>=0 else "#C62828"),
+            ("🏦", "Banka Bakiyesi",  f"{bs['total_balance_try']:,.0f} ₺","#0D47A1"),
+        ])
+
+        # Genel mali durum
+        html += self._section("💼 Genel Mali Durum", "#1A237E")
+        html += self._table_header(["Kalem", "Tutar"])
+        rows = [
+            ("Likit Varlıklar (Banka)",  f"{ofh['liquid_assets']:,.2f} ₺",  "#1B5E20"),
+            ("Alacaklar (Cari)",         f"{ofh['receivables']:,.2f} ₺",    "#1B5E20"),
+            ("Ödenecek Borçlar",         f"-{ofh['payables']:,.2f} ₺",      "#C62828"),
+            ("Kredi Kartı Borcu",        f"-{ofh['credit_card_debt']:,.2f} ₺","#C62828"),
+        ]
+        for i, (lbl, val, vc) in enumerate(rows):
+            bg = "#FAFAFA" if i % 2 else "white"
+            html += self._tr([lbl, val], [None, vc], bg=bg)
+        # Net değer satırı
+        html += self._tr(
+            ["NET DEĞER", f"{net_worth:,.2f} ₺"],
+            [None, nw_color], bold=True, bg="#E8EAF6"
+        )
+        html += "</table><br>"
+
+        # Gelir-Gider özeti
+        html += self._section("💰 Gelir-Gider Özeti", "#1B5E20")
+        html += self._table_header(["Kalem", "Tutar"])
+        html += self._tr(["Toplam Gelir",   f"{ie['total_income']:,.2f} ₺"],  [None, "#1B5E20"], bg="white")
+        html += self._tr(["Toplam Gider",   f"{ie['total_expense']:,.2f} ₺"], [None, "#C62828"], bg="#FAFAFA")
+        html += self._tr(["Net Kar/Zarar",  f"{net_profit:,.2f} ₺"],          [None, np_color],  bold=True, bg="#E8F5E9")
+        html += self._tr(["Toplam İşlem",   str(ie['transaction_count'])],     [None, None],      bg="white")
+        html += "</table><br>"
+
+        # Cari hesaplar
+        html += self._section("👥 Cari Hesaplar", "#E65100")
+        html += self._table_header(["Kalem", "Tutar"])
+        html += self._tr(["Toplam Alacak", f"{cb['total_receivable']:,.2f} ₺"], [None, "#1B5E20"], bg="white")
+        html += self._tr(["Toplam Borç",   f"{cb['total_payable']:,.2f} ₺"],   [None, "#C62828"], bg="#FAFAFA")
+        html += self._tr(["Net Bakiye",    f"{cb['net_balance']:,.2f} ₺"],     [None, None],      bold=True, bg="#FFF3E0")
+        html += "</table><br>"
+
+        # Kredi kartları
+        html += self._section("💳 Kredi Kartları", "#4A148C")
+        html += self._table_header(["Kalem", "Tutar"])
+        usage = cc['overall_usage_rate'] if 'overall_usage_rate' in cc else 0
+        html += self._tr(["Toplam Limit",         f"{cc['total_limit']:,.2f} ₺"],     [None, None],      bg="white")
+        html += self._tr(["Toplam Borç",           f"{cc['total_debt']:,.2f} ₺"],      [None, "#C62828"],  bg="#FAFAFA")
+        html += self._tr(["Kullanılabilir Limit",  f"{cc['total_available']:,.2f} ₺"], [None, "#1B5E20"],  bg="white")
+        html += self._tr(["Kullanım Oranı",        f"{usage:.1f}%"],                   [None, None],      bold=True, bg="#F3E5F5")
+        html += "</table>"
+        return html
+
+    def _format_income_expense_report(self, data, detail_level='Özet', start_date=None, end_date=None):
+        """Gelir-Gider raporu — modern HTML"""
+        net      = data['net_profit']
+        nc       = "#2E7D32" if net >= 0 else "#C62828"
+        donem    = f"{data['period']['start']} — {data['period']['end']}"
+        subtitle = f"Dönem: {donem}"
+        if start_date and end_date:
+            subtitle += f"  |  Seçili: {start_date} – {end_date}"
+
+        html  = self._rh("💰", "Gelir-Gider Raporu", subtitle, "#1B5E20")
+        html += self._kpi_row([
+            ("➕", "Toplam Gelir",   f"{data['total_income']:,.0f} ₺",   "#1B5E20"),
+            ("➖", "Toplam Gider",   f"{data['total_expense']:,.0f} ₺",  "#B71C1C"),
+            ("📊", "Net Kar/Zarar",  f"{net:,.0f} ₺",                    "#0D47A1" if net >= 0 else "#B71C1C"),
+            ("🔢", "İşlem Sayısı",   str(data['transaction_count']),     "#37474F"),
+        ])
+
+        html += self._section("📋 Özet", "#1B5E20")
+        html += self._table_header(["Kalem", "Tutar", "Oran"])
+        total = data['total_income'] + data['total_expense'] or 1
+        html += self._tr(["Toplam Gelir",  f"{data['total_income']:,.2f} ₺",  f"{data['total_income']/total*100:.1f}%"],  [None, "#1B5E20", None], bg="white")
+        html += self._tr(["Toplam Gider",  f"{data['total_expense']:,.2f} ₺", f"{data['total_expense']/total*100:.1f}%"], [None, "#C62828", None], bg="#FAFAFA")
+        html += self._tr(["Net Kar/Zarar", f"{net:,.2f} ₺",                   ""],                                        [None, nc, None],        bold=True, bg="#E8F5E9")
+        html += "</table><br>"
+
+        if detail_level == 'Detaylı':
+            html += self._section("📄 Son 100 İşlem", "#1B5E20")
+            html += self._table_header(["Tarih", "Tür", "Müşteri", "Açıklama", "Tutar"])
+            from src.database.db import SessionLocal
+            session = SessionLocal()
+            try:
+                txs = session.query(Transaction).filter(
+                    Transaction.user_id == self.user.id
+                ).order_by(Transaction.transaction_date.desc()).limit(100).all()
+                for i, t in enumerate(txs):
+                    income_types = [TransactionType.GELIR, TransactionType.KESILEN_FATURA]
+                    vc = "#1B5E20" if t.transaction_type in income_types else "#C62828"
+                    icon = "➕" if t.transaction_type in income_types else "➖"
+                    bg  = "white" if i % 2 == 0 else "#FAFAFA"
+                    html += self._tr([
+                        str(t.transaction_date)[:10],
+                        f"{icon} {t.transaction_type.value}",
+                        t.customer_name or "—",
+                        (t.description or "")[:50],
+                        f"{t.amount:,.2f} ₺"
+                    ], [None, vc, None, None, vc], bg=bg)
+            finally:
+                session.close()
+            html += "</table>"
+        return html
+
     def _format_cari_balance_report(self, data):
-        """Cari bakiye raporu HTML"""
-        html = f"""
-        <h2 style='color: #FF9800;'>📋 CARİ BAKİYE RAPORU</h2>
-        <hr>
-        <table border='1' cellpadding='10' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Cari:</strong></td><td>{data['total_caris']}</td></tr>
-        <tr><td><strong>Toplam Alacak:</strong></td><td style='color: green;'>{data['total_receivable']:,.2f} ₺</td></tr>
-        <tr><td><strong>Toplam Borç:</strong></td><td style='color: red;'>{data['total_payable']:,.2f} ₺</td></tr>
-        <tr style='background-color: #e3f2fd;'><td><strong>Net Bakiye:</strong></td><td><strong>{data['net_balance']:,.2f} ₺</strong></td></tr>
-        </table>
-        <br>
-        <h3>Cari Detayları:</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr style='background-color: #f5f5f5;'><th>Cari Adı</th><th>Tip</th><th>Bakiye</th><th>Durum</th></tr>
-        """
-        for cari in data['caris']:
-            color = 'green' if cari['balance'] > 0 else 'red' if cari['balance'] < 0 else 'black'
-            html += f"<tr><td>{cari['name']}</td><td>{cari['type']}</td><td style='color: {color};'>{cari['balance']:,.2f} ₺</td><td>{cari['status']}</td></tr>"
+        """Cari bakiye raporu — modern HTML"""
+        nb = data['net_balance']
+        nc = "#2E7D32" if nb >= 0 else "#C62828"
+
+        html  = self._rh("👥", "Cari Bakiye Raporu", f"Toplam {data['total_caris']} cari hesap", "#E65100")
+        html += self._kpi_row([
+            ("👥", "Toplam Cari",    str(data['total_caris']),                "#37474F"),
+            ("📥", "Toplam Alacak",  f"{data['total_receivable']:,.0f} ₺",   "#1B5E20"),
+            ("📤", "Toplam Borç",    f"{data['total_payable']:,.0f} ₺",      "#B71C1C"),
+            ("⚖️", "Net Bakiye",    f"{nb:,.0f} ₺",                          "#0D47A1" if nb >= 0 else "#B71C1C"),
+        ])
+
+        html += self._section("📋 Cari Hesap Detayları", "#E65100")
+        html += self._table_header(["Cari Adı", "Tür", "Bakiye", "Durum"])
+        for i, cari in enumerate(data['caris']):
+            bal = cari['balance']
+            vc  = "#1B5E20" if bal > 0 else "#C62828" if bal < 0 else "#546E7A"
+            bg  = "white" if i % 2 == 0 else "#FAFAFA"
+            html += self._tr([
+                cari['name'], cari['type'],
+                f"{bal:,.2f} ₺", cari['status']
+            ], [None, None, vc, None], bg=bg)
         html += "</table>"
         return html
-    
+
     def _format_bank_summary_report(self, data):
-        """Banka özet HTML"""
-        html = f"""
-        <h2 style='color: #2196F3;'>🏦 BANKA ÖZET RAPORU</h2>
-        <hr>
-        <table border='1' cellpadding='10' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Hesap:</strong></td><td>{data['total_accounts']}</td></tr>
-        <tr style='background-color: #e3f2fd;'><td><strong>Toplam Bakiye (TRY):</strong></td><td style='font-size: 14pt;'><strong>{data['total_balance_try']:,.2f} ₺</strong></td></tr>
-        </table>
-        <br>
-        <h3>Hesap Detayları:</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr style='background-color: #f5f5f5;'><th>Banka</th><th>Hesap No</th><th>Bakiye</th><th>Para Birimi</th></tr>
-        """
-        for bank in data['banks']:
-            html += f"<tr><td>{bank['bank_name']}</td><td>{bank['account_number']}</td><td>{bank['balance']:,.2f}</td><td>{bank['currency']}</td></tr>"
+        """Banka özet raporu — modern HTML"""
+        html  = self._rh("🏦", "Banka Hesapları Raporu", f"Toplam {data['total_accounts']} hesap", "#0D47A1")
+        html += self._kpi_row([
+            ("🏦", "Toplam Hesap",      str(data['total_accounts']),                 "#37474F"),
+            ("💵", "Toplam Bakiye TRY", f"{data['total_balance_try']:,.0f} ₺",       "#1B5E20"),
+        ])
+        html += self._section("🏦 Hesap Detayları", "#0D47A1")
+        html += self._table_header(["Banka", "Hesap No", "Bakiye", "Para Birimi"])
+        for i, bank in enumerate(data['banks']):
+            bg = "white" if i % 2 == 0 else "#FAFAFA"
+            vc = "#1B5E20" if bank['balance'] >= 0 else "#C62828"
+            html += self._tr([
+                bank['bank_name'], bank['account_number'],
+                f"{bank['balance']:,.2f}", bank['currency']
+            ], [None, None, vc, None], bg=bg)
         html += "</table>"
         return html
-    
+
     def _format_credit_card_report(self, data):
-        """Kredi kartı raporu HTML"""
-        html = f"""
-        <h2 style='color: #9C27B0;'>💳 KREDİ KARTI ÖZET RAPORU</h2>
-        <hr>
-        <table border='1' cellpadding='10' style='border-collapse: collapse; width: 100%;'>
-        <tr><td><strong>Toplam Kart:</strong></td><td>{data['total_cards']}</td></tr>
-        <tr><td><strong>Toplam Limit:</strong></td><td>{data['total_limit']:,.2f} ₺</td></tr>
-        <tr><td><strong>Toplam Borç:</strong></td><td style='color: red;'><strong>{data['total_debt']:,.2f} ₺</strong></td></tr>
-        <tr><td><strong>Kullanılabilir Limit:</strong></td><td style='color: green;'><strong>{data['total_available']:,.2f} ₺</strong></td></tr>
-        <tr><td><strong>Kullanım Oranı:</strong></td><td>{data['overall_usage_rate']:.1f}%</td></tr>
-        </table>
-        <br>
-        <h3>Kart Detayları:</h3>
-        <table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>
-        <tr style='background-color: #f5f5f5;'><th>Kart</th><th>Banka</th><th>Limit</th><th>Borç</th><th>Kullanılabilir</th><th>Kullanım %</th></tr>
-        """
-        for card in data['cards']:
-            html += f"<tr><td>{card['card_name']}</td><td>{card['bank']}</td><td>{card['limit']:,.2f} ₺</td><td style='color: red;'>{card['debt']:,.2f} ₺</td><td style='color: green;'>{card['available']:,.2f} ₺</td><td>{card['usage_rate']:.1f}%</td></tr>"
+        """Kredi kartı raporu — modern HTML"""
+        usage = data.get('overall_usage_rate', 0)
+        html  = self._rh("💳", "Kredi Kartları Raporu", f"Toplam {data['total_cards']} kart  |  Kullanım: {usage:.1f}%", "#4A148C")
+        html += self._kpi_row([
+            ("💳", "Toplam Kart",       str(data['total_cards']),                "#37474F"),
+            ("🔢", "Toplam Limit",      f"{data['total_limit']:,.0f} ₺",        "#1565C0"),
+            ("💸", "Toplam Borç",       f"{data['total_debt']:,.0f} ₺",         "#B71C1C"),
+            ("✅", "Kullanılabilir",    f"{data['total_available']:,.0f} ₺",    "#1B5E20"),
+        ])
+        html += self._section("💳 Kart Detayları", "#4A148C")
+        html += self._table_header(["Kart Adı", "Banka", "Limit", "Borç", "Kullanılabilir", "Kullanım"])
+        for i, card in enumerate(data['cards']):
+            bg = "white" if i % 2 == 0 else "#FAFAFA"
+            ur = card['usage_rate']
+            uc = "#C62828" if ur > 80 else "#E65100" if ur > 50 else "#2E7D32"
+            html += self._tr([
+                card['card_name'], card['bank'],
+                f"{card['limit']:,.2f} ₺",
+                f"{card['debt']:,.2f} ₺",
+                f"{card['available']:,.2f} ₺",
+                self._progress_bar_html(ur)
+            ], [None, None, None, "#C62828", "#1B5E20", None], bg=bg)
         html += "</table>"
         return html
-    
+
+    def _format_loan_summary_report(self, data):
+        """Kredi özet raporu — modern HTML"""
+        html  = self._rh("📋", "Krediler Raporu",
+                         f"Toplam {data['total_loans']} kredi  |  Aktif: {data['active_loans']}",
+                         "#1A237E")
+        html += self._kpi_row([
+            ("📋", "Toplam Kredi",   str(data['total_loans']),                  "#37474F"),
+            ("💰", "Toplam Tutar",   f"{data['total_loan_amount']:,.0f} ₺",    "#0D47A1"),
+            ("✅", "Toplam Ödenen",  f"{data['total_paid']:,.0f} ₺",           "#1B5E20"),
+            ("⏳", "Kalan Borç",     f"{data['total_remaining']:,.0f} ₺",      "#B71C1C"),
+        ])
+        html += self._section("📋 Kredi Detayları", "#1A237E")
+        html += self._table_header(["Kredi", "Banka", "Tip", "Toplam", "Ödenen", "Kalan", "Durum", "İlerleme"])
+        for i, loan in enumerate(data['loans']):
+            bg = "white" if i % 2 == 0 else "#FAFAFA"
+            pr = loan['progress_rate']
+            html += self._tr([
+                loan['loan_name'], loan['bank_name'], loan['loan_type'],
+                f"{loan['loan_amount']:,.2f} ₺",
+                f"{loan['total_paid']:,.2f} ₺",
+                f"{loan['remaining_balance']:,.2f} ₺",
+                loan['status'],
+                self._progress_bar_html(pr)
+            ], [None, None, None, None, "#1B5E20", "#C62828", None, None], bg=bg)
+        html += "</table>"
+        return html
+
     def export_report_to_excel(self):
         """Raporu Excel'e aktar"""
-        report_type = self.report_type_combo.currentText()
-        
+        _key_map = {
+            "genel": "Kapsamlı Genel Rapor",
+            "gelir_gider": "Gelir-Gider Raporu",
+            "cari": "Cari Bakiye Raporu",
+            "banka": "Banka Özet Raporu",
+            "kredi_karti": "Kredi Kartı Özet Raporu",
+            "kredi": "Kredi Özet Raporu",
+            "maas": "Maaş Ödemeleri Raporu",
+        }
+        report_type = _key_map.get(getattr(self, '_current_report_key', None), "")
+        if not report_type:
+            QMessageBox.warning(self, "Uyarı", "Önce sol menüden bir rapor türü seçin!")
+            return
+
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -2327,6 +5128,12 @@ Pasif Kullanıcı: {total_users - active_users}
             elif report_type == "Kredi Kartı Özet Raporu":
                 data = ReportService.generate_credit_card_summary(self.user.id)
                 filename_prefix = "Kredi_Karti_Raporu"
+            elif report_type == "Kredi Özet Raporu":
+                data = ReportService.generate_loan_summary_report(self.user.id)
+                filename_prefix = "Kredi_Ozet_Raporu"
+            elif report_type == "Maaş Ödemeleri Raporu":
+                self._export_payroll_report_excel()
+                return
             else:
                 QMessageBox.warning(self, "Uyarı", "Önce bir rapor türü seçiniz!")
                 return
@@ -2357,6 +5164,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 self._export_bank_summary_excel(ws, data, header_font, header_fill, title_font, border)
             elif report_type == "Kredi Kartı Özet Raporu":
                 self._export_credit_card_excel(ws, data, header_font, header_fill, title_font, border)
+            elif report_type == "Kredi Özet Raporu":
+                self._export_loan_summary_excel(ws, data, header_font, header_fill, title_font, border)
             
             # Dosya kaydetme dialog
             default_filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -2428,7 +5237,7 @@ Pasif Kullanıcı: {total_users - active_users}
         
         for label, value in items:
             ws[f'A{row}'] = label
-            ws[f'B{row}'] = f"{value:,.2f} ₺"
+            ws[f'B{row}'] = format_currency_tr(value)
             ws[f'A{row}'].border = border
             ws[f'B{row}'].border = border
             if label == 'NET DEĞER':
@@ -2492,7 +5301,7 @@ Pasif Kullanıcı: {total_users - active_users}
         for label, value in headers:
             ws[f'A{row}'] = label
             if isinstance(value, (int, float)) and label != 'İşlem Sayısı':
-                ws[f'B{row}'] = f"{value:,.2f} ₺"
+                ws[f'B{row}'] = format_currency_tr(value)
             else:
                 ws[f'B{row}'] = value
             ws[f'A{row}'].border = border
@@ -2697,3 +5506,4132 @@ Pasif Kullanıcı: {total_users - active_users}
         ws.column_dimensions['E'].width = 18
         ws.column_dimensions['F'].width = 12
 
+    def _export_loan_summary_excel(self, ws, data, header_font, header_fill, title_font, border):
+        """Kredi özet raporu Excel export"""
+        ws.title = "Kredi Özeti"
+
+        ws['A1'] = 'KREDİ ÖZET RAPORU'
+        ws['A1'].font = header_font
+        ws['A1'].fill = header_fill
+        ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+        ws.merge_cells('A1:H1')
+        ws.row_dimensions[1].height = 30
+
+        row = 3
+        summary = [
+            ('Toplam Kredi Sayısı', data['total_loans'], None),
+            ('Toplam Kredi Tutarı', f"{data['total_loan_amount']:,.2f} ₺", None),
+            ('Toplam Ödenen', f"{data['total_paid']:,.2f} ₺", 'C6EFCE'),
+            ('Toplam Kalan Borç', f"{data['total_remaining']:,.2f} ₺", 'FFC7CE'),
+            ('Aktif Kredi Sayısı', data['active_loans'], None)
+        ]
+
+        for label, value, fill in summary:
+            ws[f'A{row}'] = label
+            ws[f'B{row}'] = value
+            ws[f'A{row}'].border = border
+            ws[f'B{row}'].border = border
+            if fill:
+                ws[f'B{row}'].fill = PatternFill(start_color=fill, end_color=fill, fill_type='solid')
+            row += 1
+
+        row += 1
+        ws[f'A{row}'] = 'KREDİ DETAYLARI'
+        ws[f'A{row}'].font = title_font
+        ws[f'A{row}'].fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+        ws.merge_cells(f'A{row}:H{row}')
+        row += 1
+
+        headers = ['Kredi', 'Banka', 'Tip', 'Toplam', 'Ödenen', 'Kalan', 'Durum', 'İlerleme %']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+            cell.border = border
+        row += 1
+
+        for loan in data['loans']:
+            ws[f'A{row}'] = loan['loan_name']
+            ws[f'B{row}'] = loan['bank_name']
+            ws[f'C{row}'] = loan['loan_type']
+            ws[f'D{row}'] = f"{loan['loan_amount']:,.2f} ₺"
+            ws[f'E{row}'] = f"{loan['total_paid']:,.2f} ₺"
+            ws[f'F{row}'] = f"{loan['remaining_balance']:,.2f} ₺"
+            ws[f'G{row}'] = loan['status']
+            ws[f'H{row}'] = f"{loan['progress_rate']:.1f}%"
+
+            for col in range(1, 9):
+                ws.cell(row=row, column=col).border = border
+
+            row += 1
+
+        ws.column_dimensions['A'].width = 24
+        ws.column_dimensions['B'].width = 20
+        ws.column_dimensions['C'].width = 14
+        ws.column_dimensions['D'].width = 14
+        ws.column_dimensions['E'].width = 14
+        ws.column_dimensions['F'].width = 14
+        ws.column_dimensions['G'].width = 12
+        ws.column_dimensions['H'].width = 12
+
+    def _export_payroll_report_excel(self):
+        """Maaş ödemeleri raporunu Excel'e aktar"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.utils import get_column_letter
+            from PyQt5.QtWidgets import QFileDialog
+            import os
+
+            start_date = self.report_start_date.date().toPyDate()
+            end_date   = self.report_end_date.date().toPyDate()
+
+            all_records = self._load_saved_payroll_records()
+            from datetime import date as _date
+            filtered = []
+            for r in all_records:
+                try:
+                    rd = _date(int(r.get('year', 0)), int(r.get('month', 0)), 1)
+                    if start_date <= rd <= end_date:
+                        filtered.append(r)
+                except Exception:
+                    continue
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Maaş Ödemeleri"
+
+            h_font  = Font(size=11, bold=True, color='FFFFFF')
+            h_fill  = PatternFill(start_color='1565C0', end_color='1565C0', fill_type='solid')
+            border  = Border(left=Side(style='thin'), right=Side(style='thin'),
+                             top=Side(style='thin'),  bottom=Side(style='thin'))
+
+            ws['A1'] = 'MAAŞ ÖDEMELERİ RAPORU'
+            ws['A1'].font = Font(size=14, bold=True, color='FFFFFF')
+            ws['A1'].fill = PatternFill(start_color='1565C0', end_color='1565C0', fill_type='solid')
+            ws['A1'].alignment = Alignment(horizontal='center')
+            ws.merge_cells('A1:H1')
+            ws.row_dimensions[1].height = 28
+
+            ws['A2'] = f'Dönem: {start_date} — {end_date}'
+            ws['A2'].font = Font(size=10)
+            ws.merge_cells('A2:H2')
+
+            headers = ['Dönem', 'Çalışan', 'Brüt (₺)', 'Net (₺)',
+                       'SGK Kesinti (₺)', 'Gelir Vergisi (₺)', 'Damga Vergisi (₺)', 'Toplam Kesinti (₺)']
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=4, column=col, value=h)
+                cell.font = h_font
+                cell.fill = h_fill
+                cell.alignment = Alignment(horizontal='center')
+                cell.border = border
+
+            row = 5
+            for r in sorted(filtered,
+                    key=lambda x: (int(x.get('year', 0)), int(x.get('month', 0)),
+                                   str(x.get('employee', '')))):
+                donem = f"{int(r.get('month', 0)):02d}/{r.get('year', '')}"
+                vals  = [donem,
+                         r.get('employee', ''),
+                         float(r.get('gross_total', 0) or 0),
+                         float(r.get('net_salary', 0) or 0),
+                         float(r.get('sgk_deduction', 0) or 0),
+                         float(r.get('income_tax', 0) or 0),
+                         float(r.get('stamp_tax', 0) or 0),
+                         float(r.get('total_deductions', 0) or 0)]
+                for col, v in enumerate(vals, 1):
+                    cell = ws.cell(row=row, column=col, value=v)
+                    cell.border = border
+                    if col >= 3:
+                        cell.number_format = '#,##0.00'
+                row += 1
+
+            for col, w in enumerate([12, 24, 14, 14, 16, 16, 16, 16], 1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+
+            fname = f"Maas_Odemeleri_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", fname, "Excel (*.xlsx)")
+            if path:
+                wb.save(path)
+                QMessageBox.information(self, "Başarılı", f"Excel kaydedildi:\n{path}")
+                reply = QMessageBox.question(self, "Aç", "Dosyayı şimdi açmak ister misiniz?",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    os.startfile(path)
+        except ImportError:
+            QMessageBox.critical(self, "Hata", "openpyxl bulunamadı. 'pip install openpyxl' çalıştırın.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
+
+    def _generate_monthly_comparison_report(self, start_date, end_date):
+        """Aylık karşılaştırma raporu - modern stil"""
+        from src.database.db import SessionLocal
+        session = SessionLocal()
+        try:
+            monthly_data = defaultdict(lambda: {'gelir': 0, 'gider': 0})
+            transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date
+            ).all()
+            for t in transactions:
+                mk = t.transaction_date.strftime('%Y-%m')
+                if t.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
+                    monthly_data[mk]['gelir'] += t.amount
+                elif t.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
+                    monthly_data[mk]['gider'] += t.amount
+
+            sorted_months = sorted(monthly_data.keys())
+            total_gelir = sum(monthly_data[m]['gelir'] for m in sorted_months)
+            total_gider = sum(monthly_data[m]['gider'] for m in sorted_months)
+            net_total   = total_gelir - total_gider
+
+            html  = self._rh('📊', 'Aylık Karşılaştırma Raporu',
+                             f'{start_date} — {end_date}', '#2196F3')
+            html += self._kpi_row([
+                ('📅', 'Toplam Gelir',  f'{total_gelir:,.2f} ₺', '#4CAF50'),
+                ('📉', 'Toplam Gider',  f'{total_gider:,.2f} ₺', '#f44336'),
+                ('📊', 'Net Toplam',    f'{net_total:,.2f} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
+                ('🗓', 'Ay Sayısı',     str(len(sorted_months)),  '#2196F3'),
+            ])
+            html += self._section('Aylık Detay', '#2196F3')
+            html += self._table_header(['Ay', 'Gelir (₺)', 'Gider (₺)', 'Net (₺)', 'Değişim'], '#2196F3')
+
+            prev_net = None
+            for i, month in enumerate(sorted_months):
+                d   = monthly_data[month]
+                net = d['gelir'] - d['gider']
+                if prev_net is not None:
+                    ch  = ((net - prev_net) / prev_net * 100) if prev_net != 0 else 0
+                    chstr = f'{"▲" if ch > 0 else "▼"} {abs(ch):.1f}%'
+                    chc   = '#4CAF50' if ch > 0 else '#f44336'
+                else:
+                    chstr, chc = '—', '#888'
+                netc = '#4CAF50' if net >= 0 else '#f44336'
+                bg   = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+                html += self._tr(
+                    [month,
+                     f'{d["gelir"]:,.2f}', f'{d["gider"]:,.2f}',
+                     f'{net:,.2f}', chstr],
+                    ['#e0e0e0', '#4CAF50', '#f44336', netc, chc],
+                    bold=[False, False, False, True, False],
+                    bg=bg
+                )
+                prev_net = net
+            html += '</table>'
+            return html
+        finally:
+            session.close()
+
+    def _generate_top_caris_report(self, start_date, end_date, detail_level):
+        """En çok işlem yapılan cariler raporu - modern stil"""
+        from src.database.db import SessionLocal
+        from sqlalchemy import func
+        session = SessionLocal()
+        try:
+            cari_stats = session.query(
+                Transaction.customer_name,
+                func.count(Transaction.id).label('count'),
+                func.sum(Transaction.amount).label('total')
+            ).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date,
+                Transaction.customer_name != None
+            ).group_by(Transaction.customer_name)\
+             .order_by(func.sum(Transaction.amount).desc()).limit(20).all()
+
+            grand_total = sum(r[2] for r in cari_stats) or 1
+
+            html  = self._rh('👥', 'En Çok İşlem Yapılan Cariler',
+                             f'{start_date} — {end_date}', '#FF9800')
+            html += self._kpi_row([
+                ('👥', 'Toplam Cari',       str(len(cari_stats)),          '#FF9800'),
+                ('💰', 'Toplam Tutar',      f'{grand_total:,.2f} ₺',       '#4CAF50'),
+                ('🏆', 'En Yüksek',         f'{cari_stats[0][2]:,.2f} ₺' if cari_stats else '—', '#2196F3'),
+                ('📅', 'Dönem',             f'{start_date} / {end_date}',  '#9C27B0'),
+            ])
+            html += self._section('Cari Sıralaması', '#FF9800')
+            html += self._table_header(['#', 'Cari Adı', 'İşlem Sayısı', 'Toplam Tutar (₺)', 'Pay %'], '#FF9800')
+
+            for i, (customer, count, total) in enumerate(cari_stats, 1):
+                pct = total / grand_total * 100
+                bg  = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+                html += self._tr(
+                    [str(i), customer or '—', str(count), f'{total:,.2f}',
+                     self._progress_bar_html(pct)],
+                    ['#FF9800', '#e0e0e0', '#aaa', '#4CAF50', '#e0e0e0'],
+                    bold=[True, True, False, True, False],
+                    bg=bg
+                )
+            html += '</table>'
+
+            if detail_level == 'Detaylı':
+                html += self._section('Detaylı İşlem Listesi (İlk 5 Cari)', '#FF9800')
+                for customer, _, _ in cari_stats[:5]:
+                    txns = session.query(Transaction).filter(
+                        Transaction.user_id == self.user.id,
+                        Transaction.customer_name == customer,
+                        Transaction.transaction_date >= start_date,
+                        Transaction.transaction_date <= end_date
+                    ).order_by(Transaction.transaction_date.desc()).limit(10).all()
+                    html += f"<p style='color:#FF9800;font-weight:bold;margin:12px 0 4px;'>{customer}</p>"
+                    html += self._table_header(['Tarih', 'Tür', 'Açıklama', 'Tutar (₺)'], '#555')
+                    for j, t in enumerate(txns):
+                        is_in = t.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]
+                        bg = '#1e2a3a' if j % 2 == 0 else '#1a2332'
+                        html += self._tr(
+                            [str(t.transaction_date)[:10], t.transaction_type.value,
+                             t.description or '—', f'{t.amount:,.2f}'],
+                            ['#aaa', '#4CAF50' if is_in else '#f44336',
+                             '#ccc', '#4CAF50' if is_in else '#f44336'],
+                            bold=[False, False, False, True], bg=bg
+                        )
+                    html += '</table>'
+            return html
+        finally:
+            session.close()
+
+    def _generate_payment_method_distribution(self, start_date, end_date):
+        """Ödeme yöntemi dağılımı raporu - modern stil"""
+        from src.database.db import SessionLocal
+        from sqlalchemy import func
+        session = SessionLocal()
+        try:
+            payment_stats = session.query(
+                Transaction.payment_method,
+                func.count(Transaction.id).label('count'),
+                func.sum(Transaction.amount).label('total')
+            ).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date
+            ).group_by(Transaction.payment_method).all()
+
+            total_amount = sum(s[2] for s in payment_stats) or 1
+            total_count  = sum(s[1] for s in payment_stats)
+
+            html  = self._rh('💳', 'Ödeme Yöntemi Dağılımı',
+                             f'{start_date} — {end_date}', '#9C27B0')
+            html += self._kpi_row([
+                ('💳', 'Toplam Tutar',    f'{total_amount:,.2f} ₺',     '#9C27B0'),
+                ('🔢', 'Toplam İşlem',    str(total_count),              '#2196F3'),
+                ('📋', 'Yöntem Sayısı',   str(len(payment_stats)),       '#FF9800'),
+                ('📅', 'Dönem',           f'{start_date} / {end_date}',  '#4CAF50'),
+            ])
+            html += self._section('Ödeme Yöntemi Breakdown', '#9C27B0')
+            html += self._table_header(
+                ['Ödeme Yöntemi', 'İşlem Sayısı', 'Toplam Tutar (₺)', 'Pay %', 'Dağılım'],
+                '#9C27B0')
+
+            COLORS = ['#9C27B0', '#2196F3', '#FF9800', '#4CAF50', '#f44336', '#00BCD4']
+            for i, (method, count, total) in enumerate(payment_stats):
+                pct  = total / total_amount * 100
+                name = method.value if method else 'Belirtilmemiş'
+                clr  = COLORS[i % len(COLORS)]
+                bg   = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+                html += self._tr(
+                    [name, str(count), f'{total:,.2f}',
+                     f'{pct:.1f}%', self._progress_bar_html(pct)],
+                    [clr, '#aaa', '#4CAF50', clr, '#e0e0e0'],
+                    bold=[True, False, True, True, False], bg=bg
+                )
+            html += '</table>'
+            return html
+        finally:
+            session.close()
+
+    def _generate_weekly_trend_report(self, start_date, end_date):
+        """Haftalık trend analizi - modern stil"""
+        from src.database.db import SessionLocal
+        session = SessionLocal()
+        try:
+            weekly_data = defaultdict(lambda: {'gelir': 0, 'gider': 0})
+            transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date
+            ).all()
+            for t in transactions:
+                ws = t.transaction_date - timedelta(days=t.transaction_date.weekday())
+                wk = ws.strftime('%Y-%m-%d')
+                if t.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
+                    weekly_data[wk]['gelir'] += t.amount
+                elif t.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
+                    weekly_data[wk]['gider'] += t.amount
+
+            sorted_weeks = sorted(weekly_data.keys())
+            total_gelir  = sum(weekly_data[w]['gelir'] for w in sorted_weeks)
+            total_gider  = sum(weekly_data[w]['gider'] for w in sorted_weeks)
+            net_total    = total_gelir - total_gider
+
+            html  = self._rh('📈', 'Haftalık Trend Analizi',
+                             f'{start_date} — {end_date}', '#4CAF50')
+            html += self._kpi_row([
+                ('📈', 'Toplam Gelir',  f'{total_gelir:,.2f} ₺', '#4CAF50'),
+                ('📉', 'Toplam Gider',  f'{total_gider:,.2f} ₺', '#f44336'),
+                ('📊', 'Net',           f'{net_total:,.2f} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
+                ('🗓', 'Hafta Sayısı',  str(len(sorted_weeks)),  '#2196F3'),
+            ])
+            html += self._section('Haftalık Detay', '#4CAF50')
+            html += self._table_header(
+                ['Hafta Başlangıcı', 'Gelir (₺)', 'Gider (₺)', 'Net (₺)', 'Trend'],
+                '#4CAF50')
+
+            prev_net = None
+            for i, week in enumerate(sorted_weeks):
+                d   = weekly_data[week]
+                net = d['gelir'] - d['gider']
+                if prev_net is not None:
+                    if net > prev_net:   trend, tc = '▲ Yükseliş', '#4CAF50'
+                    elif net < prev_net: trend, tc = '▼ Düşüş',    '#f44336'
+                    else:                trend, tc = '● Sabit',     '#888'
+                else:
+                    trend, tc = '—', '#888'
+                netc = '#4CAF50' if net >= 0 else '#f44336'
+                bg   = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+                html += self._tr(
+                    [week, f'{d["gelir"]:,.2f}', f'{d["gider"]:,.2f}',
+                     f'{net:,.2f}', trend],
+                    ['#e0e0e0', '#4CAF50', '#f44336', netc, tc],
+                    bold=[False, False, False, True, True],
+                    bg=bg
+                )
+                prev_net = net
+            html += '</table>'
+            return html
+        finally:
+            session.close()
+
+    def _generate_payroll_report(self, start_date, end_date):
+        """Maaş ödemeleri raporu — çalışanlar DB + kaydedilen bordrolar"""
+        from src.database.db import SessionLocal
+        from src.database.models import Employee
+
+        # ── Çalışanları DB'den al ────────────────────────────────────────
+        session = SessionLocal()
+        try:
+            employees = session.query(Employee).filter(
+                Employee.is_active == True
+            ).order_by(Employee.first_name, Employee.last_name).all()
+            emp_info = {
+                e.get_full_name(): {
+                    'brut': e.gross_salary,
+                    'sgk_rate': e.sgk_rate,
+                    'baslangic': str(e.start_date) if e.start_date else '—',
+                }
+                for e in employees
+            }
+        finally:
+            session.close()
+
+        # ── Kaydedilen bordrolardan ay/yıl filtreli kayıtlar ─────────────
+        all_records = self._load_saved_payroll_records()
+
+        filtered = []
+        for r in all_records:
+            try:
+                rec_year  = int(r.get('year', 0))
+                rec_month = int(r.get('month', 0))
+                from datetime import date as _date
+                rec_date = _date(rec_year, rec_month, 1)
+                if start_date <= rec_date <= end_date:
+                    filtered.append(r)
+            except Exception:
+                continue
+
+        # ── Çalışan bazında topla ────────────────────────────────────────
+        from collections import defaultdict
+        emp_totals = defaultdict(lambda: {
+            'kayit': 0, 'brut': 0.0, 'net': 0.0,
+            'sgk': 0.0, 'issizlik': 0.0, 'gelir_vergisi': 0.0,
+            'damga_vergisi': 0.0, 'toplam_kesinti': 0.0,
+            'donemler': []
+        })
+
+        for r in filtered:
+            name = str(r.get('employee', 'Belirtilmedi')).strip()
+            et = emp_totals[name]
+            et['kayit']         += 1
+            et['brut']          += float(r.get('gross_total', 0) or 0)
+            et['net']           += float(r.get('net_salary', 0) or 0)
+            et['sgk']           += float(r.get('sgk_deduction', 0) or 0)
+            et['issizlik']      += float(r.get('unemployment_deduction', 0) or 0)
+            et['gelir_vergisi'] += float(r.get('income_tax', 0) or 0)
+            et['damga_vergisi'] += float(r.get('stamp_tax', 0) or 0)
+            et['toplam_kesinti']+= float(r.get('total_deductions', 0) or 0)
+            donem = f"{int(r.get('month',0)):02d}/{r.get('year','')}"
+            if donem not in et['donemler']:
+                et['donemler'].append(donem)
+
+        toplam_brut    = sum(v['brut']  for v in emp_totals.values())
+        toplam_net     = sum(v['net']   for v in emp_totals.values())
+        toplam_sgk     = sum(v['sgk']   for v in emp_totals.values())
+        toplam_kesinti = sum(v['toplam_kesinti'] for v in emp_totals.values())
+        kisi_sayisi    = len(emp_totals)
+
+        # ── HTML ─────────────────────────────────────────────────────────
+        html  = self._rh('👷', 'Maaş Ödemeleri Raporu',
+                         f'{start_date} — {end_date}', '#1565C0')
+        html += self._kpi_row([
+            ('👷', 'Çalışan Sayısı',    str(kisi_sayisi),           '#1565C0'),
+            ('💵', 'Toplam Brüt',       f'{toplam_brut:,.2f} ₺',    '#4CAF50'),
+            ('💰', 'Toplam Net',        f'{toplam_net:,.2f} ₺',      '#2196F3'),
+            ('📉', 'Toplam Kesinti',    f'{toplam_kesinti:,.2f} ₺',  '#f44336'),
+        ])
+
+        # Aktif çalışanlar listesi (DB'den — kaydedilmiş bordro olmasa bile gösterilsin)
+        html += self._section('👥 Aktif Çalışanlar (Tanımlı Maaş)', '#1565C0')
+        html += self._table_header(
+            ['Çalışan', 'Brüt Maaş (₺)', 'SGK %', 'İşe Başlama', 'Kaydedilen Bordro'],
+            '#1565C0')
+        for i, (name, info) in enumerate(emp_info.items()):
+            et = emp_totals.get(name, {})
+            kayit_sayisi = et.get('kayit', 0)
+            kayit_str = f'{kayit_sayisi} dönem' if kayit_sayisi else '—'
+            bg = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+            html += self._tr(
+                [name, f'{info["brut"]:,.2f}', f'{info["sgk_rate"]}%',
+                 info['baslangic'], kayit_str],
+                ['#e0e0e0', '#4CAF50', '#aaa', '#aaa',
+                 '#2196F3' if kayit_sayisi else '#666'],
+                bold=[True, True, False, False, False], bg=bg
+            )
+        html += '</table>'
+
+        if not filtered:
+            html += f"""
+            <div style='margin:20px; padding:16px; background:#1e2a3a;
+                        border-left:4px solid #FF9800; border-radius:4px;'>
+                <span style='color:#FF9800; font-weight:bold;'>ℹ️ Bu tarih aralığında kaydedilmiş bordro bulunamadı.</span><br>
+                <span style='color:#aaa; font-size:9pt;'>Maaş Bordro sayfasında hesaplama yapıp
+                "Bordroyu Kaydet" butonuna basarak kayıt ekleyebilirsiniz.</span>
+            </div>"""
+            return html
+
+        # Dönem bazında özet tablo
+        html += self._section(f'📋 Çalışan Bazında Özet ({start_date} — {end_date})', '#1565C0')
+        html += self._table_header(
+            ['Çalışan', 'Dönem Sayısı', 'Toplam Brüt (₺)', 'Toplam Net (₺)',
+             'SGK Kesinti (₺)', 'Gelir Vergisi (₺)', 'Dönemler'],
+            '#1565C0')
+        for i, (name, et) in enumerate(sorted(emp_totals.items())):
+            pct_net = (et['net'] / et['brut'] * 100) if et['brut'] else 0
+            donem_str = ', '.join(sorted(et['donemler']))
+            bg = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+            html += self._tr(
+                [name, str(et['kayit']),
+                 f'{et["brut"]:,.2f}', f'{et["net"]:,.2f}',
+                 f'{et["sgk"]:,.2f}', f'{et["gelir_vergisi"]:,.2f}',
+                 donem_str],
+                ['#e0e0e0', '#aaa', '#4CAF50', '#2196F3',
+                 '#f44336', '#FF9800', '#888'],
+                bold=[True, False, True, True, False, False, False], bg=bg
+            )
+        html += '</table>'
+
+        # Dönem dönem detay tablosu
+        html += self._section('📅 Dönem / Çalışan Bazında Detay', '#34495e')
+        html += self._table_header(
+            ['Dönem', 'Çalışan', 'Brüt (₺)', 'Net (₺)',
+             'SGK (₺)', 'Gelir V. (₺)', 'Damga V. (₺)', 'Toplam Kesinti (₺)'],
+            '#34495e')
+        for i, r in enumerate(sorted(filtered,
+                key=lambda x: (int(x.get('year',0)), int(x.get('month',0)),
+                               str(x.get('employee',''))))):
+            donem = f"{int(r.get('month',0)):02d}/{r.get('year','')}"
+            bg = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+            html += self._tr(
+                [donem, str(r.get('employee','—')),
+                 f'{float(r.get("gross_total",0) or 0):,.2f}',
+                 f'{float(r.get("net_salary",0) or 0):,.2f}',
+                 f'{float(r.get("sgk_deduction",0) or 0):,.2f}',
+                 f'{float(r.get("income_tax",0) or 0):,.2f}',
+                 f'{float(r.get("stamp_tax",0) or 0):,.2f}',
+                 f'{float(r.get("total_deductions",0) or 0):,.2f}'],
+                ['#aaa', '#e0e0e0', '#4CAF50', '#2196F3',
+                 '#f44336', '#FF9800', '#FF9800', '#f44336'],
+                bold=[False, True, True, True, False, False, False, False], bg=bg
+            )
+        html += '</table>'
+        return html
+
+    def _generate_nakit_kasasi_report(self, start_date, end_date):
+        """Nakit Kasası raporu — nakit giriş/çıkış ve güncel bakiye"""
+        from src.database.db import SessionLocal
+        from src.database.models import Transaction, TransactionType, PaymentMethod
+
+        session = SessionLocal()
+        try:
+            # ── TÜM ZAMANLAR: Güncel nakit bakiye hesapla ─────────────────
+            all_tx = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id
+            ).order_by(Transaction.transaction_date.asc()).all()
+
+            NAKIT_GIRIS_TYPES  = {TransactionType.GELIR, TransactionType.KESILEN_FATURA}
+            NAKIT_CIKIS_TYPES  = {TransactionType.GIDER, TransactionType.GELEN_FATURA,
+                                  TransactionType.KREDI_ODEME, TransactionType.KREDI_KARTI_ODEME,
+                                  TransactionType.EK_HESAP_FAIZLERI, TransactionType.KREDI_DOSYA_MASRAFI,
+                                  TransactionType.EKSPERTIZ_UCRETI}
+
+            toplam_nakit_giris  = 0.0
+            toplam_nakit_cikis  = 0.0
+            toplam_cekilis      = 0.0  # bankadan çekilen
+            toplam_yatirim      = 0.0  # bankaya yatırılan
+
+            for tx in all_tx:
+                if tx.transaction_type == TransactionType.NAKIT_CEKIMI:
+                    toplam_cekilis += tx.amount
+                elif tx.transaction_type == TransactionType.NAKIT_YATIRIMI:
+                    toplam_yatirim += tx.amount
+                elif tx.payment_method == PaymentMethod.NAKIT:
+                    if tx.transaction_type in NAKIT_GIRIS_TYPES:
+                        toplam_nakit_giris += tx.amount
+                    elif tx.transaction_type in NAKIT_CIKIS_TYPES:
+                        toplam_nakit_cikis += tx.amount
+
+            nakit_bakiye = toplam_nakit_giris + toplam_cekilis - toplam_nakit_cikis - toplam_yatirim
+
+            # ── TARİH ARALIĞI: Seçili döneme ait işlemler ─────────────────
+            donem_tx = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date
+            ).order_by(Transaction.transaction_date.desc()).all()
+
+            donem_giris  = 0.0
+            donem_cikis  = 0.0
+            donem_cekilis = 0.0
+            donem_yatirim = 0.0
+            nakit_islemler = []
+
+            for tx in donem_tx:
+                if tx.transaction_type == TransactionType.NAKIT_CEKIMI:
+                    donem_cekilis += tx.amount
+                    nakit_islemler.append((tx, '+', tx.amount, '#4CAF50', 'Nakit Çekim (Bankadan)'))
+                elif tx.transaction_type == TransactionType.NAKIT_YATIRIMI:
+                    donem_yatirim += tx.amount
+                    nakit_islemler.append((tx, '-', tx.amount, '#f44336', 'Nakit Yatırım (Bankaya)'))
+                elif tx.payment_method == PaymentMethod.NAKIT:
+                    if tx.transaction_type in NAKIT_GIRIS_TYPES:
+                        donem_giris += tx.amount
+                        nakit_islemler.append((tx, '+', tx.amount, '#4CAF50',
+                                               tx.transaction_type.value))
+                    elif tx.transaction_type in NAKIT_CIKIS_TYPES:
+                        donem_cikis += tx.amount
+                        nakit_islemler.append((tx, '-', tx.amount, '#f44336',
+                                               tx.transaction_type.value))
+
+            donem_net = donem_giris + donem_cekilis - donem_cikis - donem_yatirim
+
+        finally:
+            session.close()
+
+        # ── HTML ───────────────────────────────────────────────────────────
+        bakiye_renk = '#4CAF50' if nakit_bakiye >= 0 else '#f44336'
+        donem_renk  = '#4CAF50' if donem_net >= 0 else '#f44336'
+
+        html  = self._rh('💵', 'Nakit Kasası Raporu',
+                         f'Dönem: {start_date} — {end_date}', '#2E7D32')
+        html += self._kpi_row([
+            ('💵', 'Güncel Nakit Bakiye', f'{nakit_bakiye:,.2f} ₺', bakiye_renk),
+            ('📥', 'Toplam Banka Çekim',  f'{toplam_cekilis:,.2f} ₺', '#1565C0'),
+            ('📤', 'Toplam Banka Yatırım',f'{toplam_yatirim:,.2f} ₺', '#FF6F00'),
+            ('📊', 'Dönem Net Değişim',   f'{donem_net:,.2f} ₺', donem_renk),
+        ])
+
+        html += self._kpi_row([
+            ('📈', 'Dönem Nakit Giriş',   f'{donem_giris + donem_cekilis:,.2f} ₺', '#388E3C'),
+            ('📉', 'Dönem Nakit Çıkış',   f'{donem_cikis + donem_yatirim:,.2f} ₺', '#C62828'),
+            ('🏦', 'Tüm Zamanlarda Çekim',f'{toplam_cekilis:,.2f} ₺', '#1976D2'),
+            ('🏦', 'Tüm Zamanlarda Yatırım',f'{toplam_yatirim:,.2f} ₺', '#E65100'),
+        ])
+
+        # Nakit kasası özeti kutusu
+        html += f"""
+        <table width='100%' cellpadding='0' cellspacing='0' style='margin-top:12px;'>
+        <tr><td style='background-color:#1B5E20; padding:14px 18px; border-radius:6px;'>
+            <span style='font-size:12pt; font-weight:bold; color:white;'>💵 Nakit Kasası Güncel Durumu</span><br>
+            <span style='font-size:10pt; color:#A5D6A7;'>
+                Nakit Gelir: <b>{toplam_nakit_giris:,.2f} ₺</b> &nbsp;+&nbsp;
+                Bankadan Çekim: <b>{toplam_cekilis:,.2f} ₺</b> &nbsp;−&nbsp;
+                Nakit Gider: <b>{toplam_nakit_cikis:,.2f} ₺</b> &nbsp;−&nbsp;
+                Bankaya Yatırım: <b>{toplam_yatirim:,.2f} ₺</b> &nbsp;=&nbsp;
+                <span style='color:#69F0AE; font-size:12pt;'><b>Kasa: {nakit_bakiye:,.2f} ₺</b></span>
+            </span>
+        </td></tr></table><br>
+        """
+
+        # Seçili dönemdeki nakit işlemler tablosu
+        html += self._section(f'📋 Dönem Nakit İşlemleri ({start_date} — {end_date})', '#2E7D32')
+
+        if not nakit_islemler:
+            html += """
+            <div style='margin:16px; padding:14px; background:#1e2a3a;
+                        border-left:4px solid #FF9800; border-radius:4px;'>
+                <span style='color:#FF9800; font-weight:bold;'>ℹ️ Bu tarih aralığında nakit işlem bulunamadı.</span>
+            </div>"""
+        else:
+            html += self._table_header(
+                ['Tarih', 'G/Ç', 'Tür', 'Müşteri/Açıklama', 'Tutar (₺)'],
+                '#2E7D32')
+            for i, (tx, yon, amount, renk, tur) in enumerate(nakit_islemler):
+                aciklama = (tx.customer_name or '') + (' — ' + (tx.description or '')[:50] if tx.description else '')
+                bg = '#1e2a3a' if i % 2 == 0 else '#1a2332'
+                html += self._tr(
+                    [str(tx.transaction_date), yon, tur, aciklama, f'{amount:,.2f}'],
+                    ['#aaa', renk, '#e0e0e0', '#ccc', renk],
+                    bold=False, bg=bg
+                )
+            html += '</table>'
+
+        return html
+
+    def create_payroll_tab(self) -> QWidget:
+        """Maaş bordro hesaplama sekmesi"""
+        outer_widget = QWidget()
+        outer_layout = QVBoxLayout(outer_widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # Scroll area – küçük çözünürlüklerde kaydırılabilir
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        inner_widget = QWidget()
+        layout = QVBoxLayout(inner_widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("💼 Maaş Bordro Hesaplama")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        layout.addWidget(title)
+
+        # ── Bordro Bilgileri GroupBox ─────────────────────────────────────
+        form_group = QGroupBox("Bordro Bilgileri")
+        form_grid = QGridLayout()
+        form_grid.setSpacing(8)
+        form_grid.setColumnStretch(1, 1)
+        form_grid.setColumnStretch(3, 1)
+        LABEL_MIN = 210
+
+        # Personel Adı – tam genişlik
+        lbl_emp = QLabel("Personel Adı:")
+        lbl_emp.setMinimumWidth(LABEL_MIN)
+        self.payroll_employee_input = QLineEdit()
+        self.payroll_employee_input.setPlaceholderText("Örn: Ahmet Yılmaz")
+        form_grid.addWidget(lbl_emp, 0, 0)
+        form_grid.addWidget(self.payroll_employee_input, 0, 1, 1, 3)
+
+        # Bordro Dönemi
+        lbl_period = QLabel("Bordro Dönemi:")
+        lbl_period.setMinimumWidth(LABEL_MIN)
+        self.payroll_period_date = QDateEdit()
+        self.payroll_period_date.setDate(QDate.currentDate())
+        self.payroll_period_date.setDisplayFormat("MM.yyyy")
+        self.payroll_period_date.setMaximumWidth(120)
+        form_grid.addWidget(lbl_period, 1, 0)
+        form_grid.addWidget(self.payroll_period_date, 1, 1)
+
+        # Alan tanımları – (key, etiket, varsayılan)
+        self.payroll_fields = {}
+        field_defs = [
+            ("gross_salary",      "Brüt Maaş (₺)",                 "0"),
+            ("month_days",        "Ay Gün Sayısı",                  "30"),
+            ("worked_days",       "Çalışılan Gün",                  "30"),
+            ("paid_leave_days",   "Ücretli İzin Gün",               "0"),
+            ("unpaid_leave_days", "Ücretsiz İzin Gün",              "0"),
+            ("child_count",       "Bakmakla Yükümlü Çocuk Sayısı",  "0"),
+            ("overtime_hours",    "Fazla Mesai (Saat)",              "0"),
+            ("overtime_rate",     "Fazla Mesai Saat Ücreti (₺)",    "0"),
+            ("bonus",             "Prim / İkramiye (₺)",            "0"),
+            ("meal",              "Yemek Yardımı (₺)",              "0"),
+            ("transport",         "Yol Yardımı (₺)",                "0"),
+            ("advance",           "Avans Kesintisi (₺)",            "0"),
+            ("private_insurance", "Özel Sigorta Kesintisi (₺)",     "0"),
+            ("other_deductions",  "Diğer Kesintiler (₺)",           "0"),
+            ("sgk_rate",          "SGK İşçi Oranı (%)",             "14"),
+            ("unemployment_rate", "İşsizlik Sigortası (%)",         "1"),
+            ("income_tax_rate",   "Gelir Vergisi Oranı (%)",        "15"),
+            ("stamp_tax_rate",    "Damga Vergisi Oranı (%)",        "0.759"),
+        ]
+        self.payroll_field_defaults = {key: default for key, _, default in field_defs}
+
+        # Grid'e ekle: çift index → sol sütun, tek index → sağ sütun
+        for idx, (key, label, default) in enumerate(field_defs):
+            row_offset = idx // 2 + 2          # 2'den başla (0,1 yukarıda dolu)
+            col_offset = (idx % 2) * 2         # 0 veya 2
+
+            lbl = QLabel(label + ":")
+            lbl.setMinimumWidth(LABEL_MIN)
+            inp = QLineEdit(default)
+            inp.setMinimumWidth(110)
+
+            form_grid.addWidget(lbl, row_offset, col_offset)
+            form_grid.addWidget(inp, row_offset, col_offset + 1)
+            self.payroll_fields[key] = inp
+
+        form_group.setLayout(form_grid)
+        layout.addWidget(form_group)
+
+        # ── Ayarlar GroupBox ──────────────────────────────────────────────
+        opt_group = QGroupBox("Ayarlar")
+        opt_grid = QGridLayout()
+        opt_grid.setSpacing(8)
+        opt_grid.setColumnStretch(1, 1)
+        opt_grid.setColumnStretch(3, 1)
+
+        # Asgari ücret modu butonu – tam genişlik
+        self.asgari_mode_button = QPushButton("🎯 Asgari Ücret Modu: Kapalı")
+        self.asgari_mode_button.setCheckable(True)
+        self.asgari_mode_button.setMinimumHeight(34)
+        self.asgari_mode_button.toggled.connect(self.toggle_asgari_ucret_mode)
+        opt_grid.addWidget(self.asgari_mode_button, 0, 0, 1, 4)
+
+        # Sol: asgari istisna + asgari ücret brüt + kümülatif dilim
+        self.apply_min_wage_exemption_check = QCheckBox("Asgari vergi istisnasını uygula")
+        self.apply_min_wage_exemption_check.setChecked(True)
+        opt_grid.addWidget(self.apply_min_wage_exemption_check, 1, 0, 1, 2)
+
+        lbl_min_wage = QLabel("Asgari Ücret Brüt (₺):")
+        lbl_min_wage.setMinimumWidth(LABEL_MIN)
+        self.min_wage_gross_input = QLineEdit("33030")
+        self.min_wage_gross_input.setMinimumWidth(110)
+        opt_grid.addWidget(lbl_min_wage, 2, 0)
+        opt_grid.addWidget(self.min_wage_gross_input, 2, 1)
+
+        self.progressive_tax_check = QCheckBox("Kümülatif vergi dilimi hesabı uygula")
+        self.progressive_tax_check.setChecked(True)
+        opt_grid.addWidget(self.progressive_tax_check, 3, 0, 1, 2)
+
+        # Sağ: vergi dilimleri + kümülatif matrah + manuel matrah
+        lbl_brackets = QLabel("Vergi Dilimleri (üst:oran%):")
+        lbl_brackets.setMinimumWidth(LABEL_MIN)
+        self.tax_brackets_input = QLineEdit("158000:15,330000:20,1200000:27,4300000:35,sonsuz:40")
+        self.tax_brackets_input.setToolTip("Örn: 158000:15,330000:20,1200000:27,4300000:35,sonsuz:40")
+        opt_grid.addWidget(lbl_brackets, 1, 2)
+        opt_grid.addWidget(self.tax_brackets_input, 1, 3)
+
+        self.use_saved_cumulative_check = QCheckBox("Kümülatif matrahı sistemde kaydedilen bordrolardan al")
+        self.use_saved_cumulative_check.setChecked(True)
+        opt_grid.addWidget(self.use_saved_cumulative_check, 2, 2, 1, 2)
+
+        lbl_prev = QLabel("Manuel Önceki Kümülatif Matrah (₺):")
+        lbl_prev.setMinimumWidth(LABEL_MIN)
+        self.manual_prev_tax_base_input = QLineEdit("0")
+        self.manual_prev_tax_base_input.setMinimumWidth(110)
+        opt_grid.addWidget(lbl_prev, 3, 2)
+        opt_grid.addWidget(self.manual_prev_tax_base_input, 3, 3)
+
+        opt_group.setLayout(opt_grid)
+        layout.addWidget(opt_group)
+
+        # ── Net → Brüt GroupBox ───────────────────────────────────────────
+        reverse_group = QGroupBox("🔄 Net Maaştan Brütü Hesapla (Ters Hesaplama)")
+        rev_grid = QGridLayout()
+        rev_grid.setSpacing(8)
+        rev_grid.setColumnStretch(1, 1)
+        rev_grid.setColumnStretch(3, 1)
+
+        rev_grid.addWidget(QLabel("Net Maaş (₺):"), 0, 0)
+        self.reverse_net_input = QLineEdit("0")
+        self.reverse_net_input.setMinimumWidth(110)
+        rev_grid.addWidget(self.reverse_net_input, 0, 1)
+
+        rev_grid.addWidget(QLabel("Çocuk Sayısı:"), 0, 2)
+        self.reverse_child_count_input = QLineEdit("0")
+        self.reverse_child_count_input.setMinimumWidth(110)
+        rev_grid.addWidget(self.reverse_child_count_input, 0, 3)
+
+        btn_reverse = QPushButton("🔢 Net'ten Brütü Hesapla")
+        btn_reverse.setMinimumHeight(34)
+        btn_reverse.clicked.connect(self.calculate_gross_from_net)
+        rev_grid.addWidget(btn_reverse, 1, 0, 1, 4)
+
+        reverse_group.setLayout(rev_grid)
+        layout.addWidget(reverse_group)
+
+        # ── Aksiyon butonları ─────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        btn_calculate = QPushButton("🧮 Bordroyu Hesapla")
+        btn_calculate.setMinimumHeight(38)
+        btn_calculate.clicked.connect(self.calculate_payroll)
+        btn_row.addWidget(btn_calculate)
+
+        btn_export_pdf = QPushButton("📄 Bordro PDF Çıktısı Al")
+        btn_export_pdf.setMinimumHeight(38)
+        btn_export_pdf.clicked.connect(self.export_payroll_to_pdf)
+        btn_row.addWidget(btn_export_pdf)
+
+        btn_save_payroll = QPushButton("💾 Bordroyu Sisteme Kaydet")
+        btn_save_payroll.setMinimumHeight(38)
+        btn_save_payroll.clicked.connect(self.save_last_payroll_record)
+        btn_row.addWidget(btn_save_payroll)
+
+        btn_reset = QPushButton("🧹 Formu Sıfırla")
+        btn_reset.setMinimumHeight(38)
+        btn_reset.clicked.connect(self.reset_payroll_form)
+        btn_row.addWidget(btn_reset)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        # ── Sonuç alanı ───────────────────────────────────────────────────
+        self.payroll_result_view = QTextBrowser()
+        # Kendi scroll'unu kapat — dış QScrollArea halleder
+        self.payroll_result_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.payroll_result_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.payroll_result_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.payroll_result_view.setMinimumHeight(40)
+        # İçerik değişince yüksekliği otomatik ayarla
+        self.payroll_result_view.document().contentsChanged.connect(self._adjust_payroll_result_height)
+        self.payroll_result_view.setHtml(
+            "<p><i>Bordro hesaplamak için bilgileri girip 'Bordroyu Hesapla' butonuna basın.</i></p>"
+        )
+        layout.addWidget(self.payroll_result_view)
+
+        self.last_payroll_html = ""
+        self.last_payroll_employee = ""
+        self.last_payroll_period = ""
+        self.last_payroll_data = {}
+
+        scroll.setWidget(inner_widget)
+        outer_layout.addWidget(scroll)
+        self.payroll_scroll = scroll
+        return outer_widget
+
+    def create_payroll_records_tab(self) -> QWidget:
+        """Kaydedilen bordroları listeleme ve arama sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        title = QLabel("📚 Kaydedilen Bordrolar")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        layout.addWidget(title)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Personel Ara:"))
+        self.payroll_search_input = QLineEdit()
+        self.payroll_search_input.setPlaceholderText("Örn: Burak Tekin")
+        self.payroll_search_input.setMinimumWidth(240)
+        search_row.addWidget(self.payroll_search_input)
+
+        btn_search = QPushButton("🔎 Ara")
+        btn_search.setMinimumHeight(34)
+        btn_search.clicked.connect(self.search_saved_payroll_records)
+        search_row.addWidget(btn_search)
+
+        btn_show_all = QPushButton("📋 Tümünü Göster")
+        btn_show_all.setMinimumHeight(34)
+        btn_show_all.clicked.connect(self.show_all_saved_payroll_records)
+        search_row.addWidget(btn_show_all)
+        search_row.addStretch()
+        layout.addLayout(search_row)
+
+        action_row = QHBoxLayout()
+        btn_refresh_saved = QPushButton("🔄 Kayıtları Yenile")
+        btn_refresh_saved.setMinimumHeight(34)
+        btn_refresh_saved.clicked.connect(self.refresh_saved_payroll_records_table)
+        action_row.addWidget(btn_refresh_saved)
+
+        btn_preview_saved_pdf = QPushButton("👁️ Ön İzleme")
+        btn_preview_saved_pdf.setMinimumHeight(34)
+        btn_preview_saved_pdf.clicked.connect(self.preview_selected_payroll_record_pdf)
+        action_row.addWidget(btn_preview_saved_pdf)
+
+        btn_export_saved_pdf = QPushButton("📄 Seçili Kaydı PDF Çıktı Al")
+        btn_export_saved_pdf.setMinimumHeight(34)
+        btn_export_saved_pdf.clicked.connect(self.export_selected_payroll_record_pdf)
+        action_row.addWidget(btn_export_saved_pdf)
+
+        btn_preview_all_pdf = QPushButton("👁️ Toplu Ön İzleme")
+        btn_preview_all_pdf.setMinimumHeight(34)
+        btn_preview_all_pdf.clicked.connect(self.preview_all_payroll_records_pdf)
+        action_row.addWidget(btn_preview_all_pdf)
+
+        btn_export_all_pdf = QPushButton("📑 Tüm Bordroları PDF Yap")
+        btn_export_all_pdf.setMinimumHeight(34)
+        btn_export_all_pdf.clicked.connect(self.export_all_payroll_records_to_pdf)
+        action_row.addWidget(btn_export_all_pdf)
+
+        btn_delete_saved = QPushButton("🗑️ Seçili Kaydı Sil")
+        btn_delete_saved.setMinimumHeight(34)
+        btn_delete_saved.clicked.connect(self.delete_selected_payroll_record)
+        action_row.addWidget(btn_delete_saved)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        self.saved_payroll_table = QTableWidget()
+        self.saved_payroll_table.setColumnCount(8)
+        self.saved_payroll_table.setHorizontalHeaderLabels([
+            "Personel", "Dönem", "Brüt", "Vergi Matrahı", "Gelir Vergisi", "Damga Vergisi", "Net", "Kaydedilme"
+        ])
+        self.saved_payroll_table.horizontalHeader().setStretchLastSection(True)
+        self.saved_payroll_table.setMinimumHeight(500)
+        layout.addWidget(self.saved_payroll_table)
+
+        self.payroll_records_cache = []
+        self.refresh_saved_payroll_records_table()
+
+        widget.setLayout(layout)
+        return widget
+
+    def _parse_payroll_float(self, input_widget: QLineEdit, field_name: str) -> float:
+        raw_value = input_widget.text().strip()
+        if not raw_value:
+            return 0.0
+
+        if "," in raw_value and "." in raw_value:
+            if raw_value.rfind(",") > raw_value.rfind("."):
+                normalized = raw_value.replace(".", "").replace(",", ".")
+            else:
+                normalized = raw_value.replace(",", "")
+        elif "," in raw_value:
+            normalized = raw_value.replace(",", ".")
+        else:
+            normalized = raw_value
+
+        try:
+            return float(normalized)
+        except ValueError:
+            raise ValueError(f"Geçersiz sayı: {field_name}")
+
+    def _adjust_payroll_result_height(self):
+        """QTextBrowser'ı içerik yüksekliğine göre boyutlandır, dış scroll ile görünür kıl."""
+        if not hasattr(self, 'payroll_result_view'):
+            return
+        doc = self.payroll_result_view.document()
+        # Döküman genişliğini widget genişliğine sabitle
+        doc.setTextWidth(self.payroll_result_view.viewport().width())
+        content_height = int(doc.size().height()) + 20
+        self.payroll_result_view.setMinimumHeight(content_height)
+        self.payroll_result_view.setMaximumHeight(content_height)
+
+    def _scroll_to_payroll_result(self):
+        """Dış scroll'u sonuç kutusuna kaydır."""
+        if hasattr(self, 'payroll_scroll') and hasattr(self, 'payroll_result_view'):
+            self.payroll_scroll.ensureWidgetVisible(self.payroll_result_view, 0, 0)
+
+    def toggle_asgari_ucret_mode(self, enabled: bool):
+        """Asgari ücret modunda gelir ve damga vergisini sıfırla"""
+        income_input = self.payroll_fields.get("income_tax_rate")
+        stamp_input = self.payroll_fields.get("stamp_tax_rate")
+
+        if not income_input or not stamp_input:
+            return
+
+        if enabled:
+            self._prev_income_tax_rate = income_input.text().strip() or "15"
+            self._prev_stamp_tax_rate = stamp_input.text().strip() or "0.759"
+            income_input.setText("0")
+            stamp_input.setText("0")
+            income_input.setEnabled(False)
+            stamp_input.setEnabled(False)
+            self.asgari_mode_button.setText("🎯 Asgari Ücret Modu: Açık")
+        else:
+            income_input.setEnabled(True)
+            stamp_input.setEnabled(True)
+            income_input.setText(getattr(self, "_prev_income_tax_rate", "15"))
+            stamp_input.setText(getattr(self, "_prev_stamp_tax_rate", "0.759"))
+            self.asgari_mode_button.setText("🎯 Asgari Ücret Modu: Kapalı")
+
+    def reset_payroll_form(self):
+        """Bordro alanlarını varsayılan değerlere sıfırla"""
+        self.payroll_employee_input.clear()
+        self.payroll_period_date.setDate(QDate.currentDate())
+
+        if hasattr(self, "asgari_mode_button") and self.asgari_mode_button.isChecked():
+            self.asgari_mode_button.setChecked(False)
+
+        if hasattr(self, "apply_min_wage_exemption_check"):
+            self.apply_min_wage_exemption_check.setChecked(True)
+
+        if hasattr(self, "min_wage_gross_input"):
+            self.min_wage_gross_input.setText("33030")
+
+        if hasattr(self, "progressive_tax_check"):
+            self.progressive_tax_check.setChecked(True)
+
+        if hasattr(self, "tax_brackets_input"):
+            self.tax_brackets_input.setText("158000:15,330000:20,1200000:27,4300000:35,sonsuz:40")
+
+        if hasattr(self, "use_saved_cumulative_check"):
+            self.use_saved_cumulative_check.setChecked(True)
+
+        if hasattr(self, "manual_prev_tax_base_input"):
+            self.manual_prev_tax_base_input.setText("0")
+
+        defaults = getattr(self, "payroll_field_defaults", {})
+        for key, inp in self.payroll_fields.items():
+            inp.setEnabled(True)
+            inp.setText(defaults.get(key, "0"))
+
+        self.last_payroll_html = ""
+        self.last_payroll_employee = ""
+        self.last_payroll_period = ""
+        self.last_payroll_data = {}
+        self.payroll_result_view.setHtml("<p><i>Bordro hesaplamak için bilgileri girip 'Bordroyu Hesapla' butonuna basın.</i></p>")
+
+    def _parse_tax_brackets(self, raw_text: str):
+        brackets = []
+        raw_parts = [part.strip() for part in (raw_text or "").split(",") if part.strip()]
+        if not raw_parts:
+            raise ValueError("Vergi dilimleri boş olamaz")
+
+        for part in raw_parts:
+            if ":" not in part:
+                raise ValueError(f"Geçersiz dilim formatı: {part}")
+            limit_raw, rate_raw = part.split(":", 1)
+            limit_raw = limit_raw.strip().lower()
+            rate = float(rate_raw.strip().replace(",", ".")) / 100
+
+            if limit_raw in ["sonsuz", "inf", "infinity", "max"]:
+                limit = None
+            else:
+                limit = float(limit_raw.replace(".", "").replace(",", "."))
+            brackets.append((limit, rate))
+
+        finite_brackets = [b for b in brackets if b[0] is not None]
+        finite_brackets.sort(key=lambda item: item[0])
+        infinite_brackets = [b for b in brackets if b[0] is None]
+        if len(infinite_brackets) > 1:
+            raise ValueError("Sadece bir adet sonsuz dilim tanımlanabilir")
+        if infinite_brackets:
+            finite_brackets.append(infinite_brackets[0])
+        return finite_brackets
+
+    def _compute_progressive_tax(self, taxable_amount: float, brackets):
+        if taxable_amount <= 0:
+            return 0.0
+
+        total_tax = 0.0
+        lower_limit = 0.0
+        remaining = taxable_amount
+
+        for upper_limit, rate in brackets:
+            if upper_limit is None:
+                total_tax += remaining * rate
+                break
+
+            if taxable_amount <= lower_limit:
+                break
+
+            band_width = upper_limit - lower_limit
+            taxable_in_band = min(remaining, band_width)
+            if taxable_in_band > 0:
+                total_tax += taxable_in_band * rate
+                remaining -= taxable_in_band
+
+            lower_limit = upper_limit
+            if remaining <= 0:
+                break
+
+        return total_tax
+
+    def _load_saved_payroll_records(self):
+        records = UserSettingsService.get_json_setting(self.user.id, "payroll_records", [])
+        if isinstance(records, list):
+            return records
+        return []
+
+    def _save_payroll_records(self, records):
+        UserSettingsService.set_json_setting(self.user.id, "payroll_records", records)
+
+    def refresh_saved_payroll_records_table(self):
+        """Kaydedilen bordroları tabloda göster"""
+        self._render_saved_payroll_records(self._load_saved_payroll_records())
+
+    def _filter_payroll_payment_transactions(self, transactions, employee_name, month, year):
+        name = (employee_name or "").casefold().strip()
+        if not name:
+            return []
+
+        results = []
+        for trans in transactions:
+            desc = (getattr(trans, "description", "") or "").casefold()
+            if "maaş ödemesi" not in desc and "maas odemesi" not in desc:
+                continue
+
+            customer_name = (getattr(trans, "customer_name", "") or "").casefold()
+            subject = (getattr(trans, "subject", "") or "").casefold()
+            if name not in desc and name not in customer_name and name not in subject:
+                continue
+
+            if month and year and getattr(trans, "transaction_date", None):
+                if trans.transaction_date.month != month or trans.transaction_date.year != year:
+                    continue
+
+            results.append(trans)
+
+        return results
+
+    def show_payroll_payment_statement(self, employee_name, month, year):
+        try:
+            from src.database.db import SessionLocal
+            from src.database.models import Transaction
+
+            session = SessionLocal()
+            transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id
+            ).all()
+            session.close()
+
+            matches = self._filter_payroll_payment_transactions(
+                transactions, employee_name, month, year
+            )
+
+            dialog = QDialog(self)
+            period = f"{month:02d}.{year}" if month and year else "-"
+            dialog.setWindowTitle(f"Maaş Dökümü - {employee_name} ({period})")
+            dialog.setMinimumSize(700, 420)
+
+            layout = QVBoxLayout(dialog)
+            info_label = QLabel(f"Personel: {employee_name}   |   Dönem: {period}")
+            info_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            layout.addWidget(info_label)
+
+            table = QTableWidget()
+            table.setColumnCount(3)
+            table.setHorizontalHeaderLabels(["Tarih", "Açıklama", "Tutar"])
+            table.horizontalHeader().setStretchLastSection(True)
+            table.setRowCount(len(matches))
+
+            total_paid = 0.0
+            matches = sorted(matches, key=lambda t: t.transaction_date)
+            for row, trans in enumerate(matches):
+                date_text = str(trans.transaction_date) if trans.transaction_date else "-"
+                desc = trans.description or ""
+                amount = float(trans.amount or 0.0)
+                total_paid += amount
+
+                table.setItem(row, 0, QTableWidgetItem(date_text))
+                table.setItem(row, 1, QTableWidgetItem(desc))
+                table.setItem(row, 2, QTableWidgetItem(f"{format_tr(amount)} ₺"))
+
+            layout.addWidget(table)
+
+            total_label = QLabel(f"Toplam Ödenen: {format_tr(total_paid)} ₺")
+            total_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            total_label.setAlignment(Qt.AlignRight)
+            layout.addWidget(total_label)
+
+            btn_close = QPushButton("Kapat")
+            btn_close.clicked.connect(dialog.close)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_row.addWidget(btn_close)
+            layout.addLayout(btn_row)
+
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "Uyarı", f"Maaş dökümü açılamadı: {e}")
+
+    def _render_saved_payroll_records(self, records):
+        """Verilen bordro kayıtlarını tabloya bas"""
+        records = list(records or [])
+        records.sort(key=lambda r: (int(r.get("year", 0)), int(r.get("month", 0)), str(r.get("employee", "")).lower()))
+        self.payroll_records_cache = records
+
+
+        if not hasattr(self, "saved_payroll_table"):
+            return
+
+        self.saved_payroll_table.setRowCount(len(records))
+
+        # Helper function for Turkish number formatting
+        def format_tr(val):
+            """Türkçe sayı formatı: 7.521,00"""
+            try:
+                val_float = float(val)
+            except (ValueError, TypeError):
+                return str(val)
+            s = f"{val_float:.2f}"
+            parts = s.split('.')
+            integer_part = parts[0]
+            decimal_part = parts[1] if len(parts) > 1 else "00"
+            result = ""
+            for i, digit in enumerate(reversed(integer_part)):
+                if i > 0 and i % 3 == 0:
+                    result = "." + result
+                result = digit + result
+            return f"{result},{decimal_part}"
+
+        for row, rec in enumerate(records):
+            period = f"{int(rec.get('month', 0)):02d}.{int(rec.get('year', 0))}" if rec.get('month') and rec.get('year') else "-"
+            saved_at = str(rec.get("saved_at", ""))[:19].replace("T", " ") if rec.get("saved_at") else "-"
+
+            gross = float(rec.get('gross_total', 0.0) or 0.0)
+            sgk = float(rec.get('sgk_deduction', 0.0) or 0.0)
+            unemployment = float(rec.get('unemployment_deduction', 0.0) or 0.0)
+            income_tax = float(rec.get('income_tax', 0.0) or 0.0)
+            stamp_tax = float(rec.get('stamp_tax', 0.0) or 0.0)
+            net = float(rec.get('net_salary', 0.0) or 0.0)
+            
+            # Calculate tax base properly: gross - sgk - unemployment
+            tax_base = gross - sgk - unemployment
+
+            values = [
+                str(rec.get("employee", "-")),
+                period,
+                format_tr(gross),
+                format_tr(tax_base),
+                format_tr(income_tax),
+                format_tr(stamp_tax),
+                format_tr(net),
+                saved_at,
+            ]
+
+            for col, value in enumerate(values):
+                self.saved_payroll_table.setItem(row, col, QTableWidgetItem(value))
+
+    def search_saved_payroll_records(self):
+        """Personel adına göre kaydedilen bordroları filtrele"""
+        query = self.payroll_search_input.text().strip().lower() if hasattr(self, "payroll_search_input") else ""
+        records = self._load_saved_payroll_records()
+        if query:
+            records = [
+                r for r in records
+                if query in str(r.get("employee", "")).strip().lower()
+            ]
+        self._render_saved_payroll_records(records)
+
+    def show_all_saved_payroll_records(self):
+        """Tüm kayıtlı bordroları göster"""
+        if hasattr(self, "payroll_search_input"):
+            self.payroll_search_input.clear()
+        self.refresh_saved_payroll_records_table()
+
+    def export_all_payroll_records_to_pdf(self):
+        """Tüm kayıtlı bordroları resmi vergi formatında PDF oluştur"""
+        records = self._load_saved_payroll_records()
+        if not records:
+            QMessageBox.warning(self, "Uyarı", "Kaydedilmiş bordro bulunamadı")
+            return
+
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from PyQt5.QtPrintSupport import QPrinter
+            from PyQt5.QtGui import QTextDocument
+            from datetime import datetime
+
+            num_records = len(records)
+            default_name = f"toplu_bordro_{num_records}_kayit.pdf"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Toplu Bordro PDF Kaydet",
+                default_name,
+                "PDF Dosyası (*.pdf)"
+            )
+
+            if not file_path:
+                return
+
+            if not file_path.lower().endswith(".pdf"):
+                file_path += ".pdf"
+
+            def get_float(record, key, default=0.0):
+                return float(record.get(key, default) or default)
+
+            def get_int(record, key, default=0):
+                return int(record.get(key, default) or default)
+
+            def format_money(val):
+                return format_tr(val)
+
+            today = datetime.now()
+            year = records[0].get("year", today.year) if records else today.year
+            month = records[0].get("month", today.month) if records else today.month
+            
+            # Ay adları
+            months_tr = {
+                1: "OCAK", 2: "ŞUBAT", 3: "MART", 4: "NİSAN", 5: "MAYIS", 6: "HAZİRAN",
+                7: "TEMMUZ", 8: "AĞUSTOS", 9: "EYLÜL", 10: "EKİM", 11: "KASIM", 12: "ARALIK"
+            }
+            month_name = months_tr.get(month, str(month))
+
+            # Veri hazırla
+            table_data = []
+            totals = {
+                "worked_days": 0, "paid_leave": 0, "unpaid_leave": 0,
+                "gross": 0.0, "sgk": 0.0, "unemployment": 0.0, 
+                "income_tax": 0.0, "stamp_tax": 0.0, "net": 0.0
+            }
+
+            for idx, record in enumerate(records, 1):
+                employee = str(record.get("employee", "-"))
+                
+                worked = get_int(record, "worked_days")
+                paid_leave = get_int(record, "paid_leave_days")
+                unpaid = get_int(record, "unpaid_leave_days")
+                
+                gross = get_float(record, "gross_total")
+                sgk = get_float(record, "sgk_deduction")
+                unemployment = get_float(record, "unemployment_deduction")
+                income_tax = get_float(record, "income_tax")
+                stamp_tax = get_float(record, "stamp_tax")
+                net = get_float(record, "net_salary")
+                
+                totals["worked_days"] += worked
+                totals["paid_leave"] += paid_leave
+                totals["unpaid_leave"] += unpaid
+                totals["gross"] += gross
+                totals["sgk"] += sgk
+                totals["unemployment"] += unemployment
+                totals["income_tax"] += income_tax
+                totals["stamp_tax"] += stamp_tax
+                totals["net"] += net
+
+                table_data.append({
+                    "no": idx,
+                    "name": employee,
+                    "worked": worked,
+                    "paid_leave": paid_leave,
+                    "unpaid": unpaid,
+                    "gross": gross,
+                    "sgk": sgk,
+                    "unemployment": unemployment,
+                    "income_tax": income_tax,
+                    "stamp_tax": stamp_tax,
+                    "net": net
+                })
+
+            # HTML Oluştur - RESMİ FORMATTA
+            html = f"""
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    * {{ margin: 0; padding: 0; }}
+                    body {{ 
+                        font-family: Arial, sans-serif;
+                        font-size: 11pt;
+                        padding: 10px;
+                        line-height: 1.4;
+                    }}
+                    .header {{
+                        text-align: center;
+                        margin-bottom: 15px;
+                        border-top: 3px solid #000;
+                        border-bottom: 2px solid #000;
+                        padding: 10px 0;
+                    }}
+                    .title {{
+                        font-size: 16pt;
+                        font-weight: bold;
+                        margin: 8px 0;
+                    }}
+                    .subtitle {{
+                        font-size: 12pt;
+                        font-weight: bold;
+                    }}
+                    .info-row {{
+                        display: table;
+                        width: 100%;
+                        margin: 3px 0;
+                        font-size: 9pt;
+                    }}
+                    .info-col {{
+                        display: table-cell;
+                        width: 33%;
+                        padding: 2px 5px;
+                    }}
+                    .info-label {{
+                        font-weight: bold;
+                    }}
+                    table {
+                        border-collapse: collapse;
+                        width: 100%;
+                        margin-left: 0;
+                        margin-top: 12px;
+                        font-size: 12pt;
+                        table-layout: auto;
+                    }
+                    thead tr {{
+                        background-color: #ddd;
+                    }}
+                    th {
+                        border: 1px solid #000;
+                        padding: 8px 8px;
+                        font-weight: bold;
+                        text-align: center;
+                        font-size: 12pt;
+                        white-space: normal;
+                    }
+                    td {
+                        border: 1px solid #000;
+                        padding: 8px 8px;
+                        text-align: right;
+                        font-family: 'Courier New';
+                        white-space: normal;
+                    }
+                    td.name {{
+                        text-align: left;
+                    }}
+                    td.center {{
+                        text-align: center;
+                    }}
+                    tr.total td {{
+                        background-color: #ddd;
+                        font-weight: bold;
+                        border-top: 2px solid #000;
+                    }}
+                    .footer {{
+                        margin-top: 15px;
+                        font-size: 9pt;
+                        text-align: center;
+                        border-top: 1px solid #000;
+                        padding-top: 8px;
+                        padding-bottom: 10px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="title">{month_name} {year} AYLIK ÜCRET BORDROSU</div>
+                    <div class="info-row">
+                        <div class="info-col"><span class="info-label">Dönem:</span> {month:02d}/{year}</div>
+                        <div class="info-col"><span class="info-label">Personel Sayısı:</span> {num_records}</div>
+                        <div class="info-col"><span class="info-label">Tarih:</span> {today.strftime('%d.%m.%Y')}</div>
+                    </div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>S.No</th>
+                            <th>Personel Adı</th>
+                            <th>Çalış. Gün</th>
+                            <th>Ücretli İzin</th>
+                            <th>Ücretsiz İzin</th>
+                            <th>Brüt Maaş</th>
+                            <th>SGK %14</th>
+                            <th>İşsizlik %1</th>
+                            <th>Gelir Vergisi</th>
+                            <th>Damga Vergisi</th>
+                            <th>Net Maaş</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            """
+
+            # Satırları ekle
+            for row in table_data:
+                html += f"""
+                        <tr>
+                            <td class="center">{row['no']}</td>
+                            <td class="name">{row['name']}</td>
+                            <td class="center">{row['worked']}</td>
+                            <td class="center">{row['paid_leave']}</td>
+                            <td class="center">{row['unpaid']}</td>
+                            <td>{format_money(row['gross'])}</td>
+                            <td>{format_money(row['sgk'])}</td>
+                            <td>{format_money(row['unemployment'])}</td>
+                            <td>{format_money(row['income_tax'])}</td>
+                            <td>{format_money(row['stamp_tax'])}</td>
+                            <td><strong>{format_money(row['net'])}</strong></td>
+                        </tr>
+                """
+
+            # Toplam satırı
+            html += f"""
+                        <tr class="total">
+                            <td class="center" colspan="2">TOPLAM</td>
+                            <td class="center">{totals['worked_days']}</td>
+                            <td class="center">{totals['paid_leave']}</td>
+                            <td class="center">{totals['unpaid_leave']}</td>
+                            <td>{format_money(totals['gross'])}</td>
+                            <td>{format_money(totals['sgk'])}</td>
+                            <td>{format_money(totals['unemployment'])}</td>
+                            <td>{format_money(totals['income_tax'])}</td>
+                            <td>{format_money(totals['stamp_tax'])}</td>
+                            <td><strong>{format_money(totals['net'])}</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="footer">
+                    <p><strong>Bu bordro resmi nitelik taşımamakta olup bilgilendirme amaçlıdır.</strong></p>
+                    <p>Muhasebe müdürü/İşletmeci tarafından onanmalıdır.</p>
+                    <p style="margin-top: 15px; font-size: 11pt; font-weight: bold;">
+                        TOPLAM ÖDENECEK TUTARI: <span style="color: #000; text-decoration: underline;">{format_money(totals['net'])} TL</span>
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+
+            # PDF oluştur
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(file_path)
+            printer.setPageSize(QPrinter.A4)
+            printer.setOrientation(QPrinter.Landscape)
+            printer.setPageMargins(8, 8, 8, 8, QPrinter.Millimeter)
+
+            document = QTextDocument()
+            document.setHtml(html)
+            document.print_(printer)
+
+            QMessageBox.information(self, "Başarılı", 
+                f"Toplu bordro ({num_records} personel) PDF olarak kaydedildi:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Toplu PDF oluşturulamadı:\n{str(e)}")
+
+    def delete_selected_payroll_record(self):
+        """Seçilen bordro kaydını sil"""
+        if not hasattr(self, "saved_payroll_table"):
+            return
+
+        row = self.saved_payroll_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Uyarı", "Silmek için tablodan bir kayıt seçin")
+            return
+
+        if row >= len(self.payroll_records_cache):
+            QMessageBox.warning(self, "Uyarı", "Seçilen kayıt bulunamadı")
+            return
+
+        selected_record = self.payroll_records_cache[row]
+        confirm = QMessageBox.question(
+            self,
+            "Kayıt Sil",
+            f"Seçili bordro kaydı silinsin mi?\n\nPersonel: {selected_record.get('employee', '-')}\nDönem: {int(selected_record.get('month', 0)):02d}.{int(selected_record.get('year', 0))}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if confirm != QMessageBox.Yes:
+            return
+
+        records = self._load_saved_payroll_records()
+        records = [
+            r for r in records
+            if not (
+                str(r.get("employee", "")).strip().lower() == str(selected_record.get("employee", "")).strip().lower()
+                and int(r.get("year", 0)) == int(selected_record.get("year", 0))
+                and int(r.get("month", 0)) == int(selected_record.get("month", 0))
+            )
+        ]
+
+        self._save_payroll_records(records)
+        self.refresh_saved_payroll_records_table()
+        QMessageBox.information(self, "Başarılı", "Seçili bordro kaydı silindi")
+
+    def preview_selected_payroll_record_pdf(self):
+        """Seçilen bordronun ön izlemesini göster"""
+        if not hasattr(self, "saved_payroll_table"):
+            return
+
+        row = self.saved_payroll_table.currentRow()
+        if row < 0 or row >= len(self.payroll_records_cache):
+            QMessageBox.warning(self, "Uyarı", "Ön izleme için tablodan bir kayıt seçin")
+            return
+
+        record = self.payroll_records_cache[row]
+
+        try:
+            from PyQt5.QtPrintSupport import QPrinter, QPrintPreviewDialog
+            from PyQt5.QtGui import QTextDocument
+
+            employee = str(record.get("employee", "Belirtilmedi"))
+            year = int(record.get("year", 0) or 0)
+            month = int(record.get("month", 0) or 0)
+            saved_at = str(record.get("saved_at", "-")).replace("T", " ")[:19]
+
+            def get_float(key, default=0.0):
+                return float(record.get(key, default) or default)
+            
+            def get_int(key, default=0):
+                return int(record.get(key, default) or default)
+
+            gross_salary = get_float("gross_salary")
+            month_days = get_int("month_days", 30)
+            worked_days = get_int("worked_days")
+            paid_leave_days = get_int("paid_leave_days")
+            unpaid_leave_days = get_int("unpaid_leave_days")
+            child_count = get_int("child_count")
+            paid_days = get_int("paid_days")
+            day_ratio = get_float("day_ratio", 1.0)
+            overtime_amount = get_float("overtime_amount")
+            bonus = get_float("bonus")
+            meal = get_float("meal")
+            transport = get_float("transport")
+            gross_total = get_float("gross_total")
+            sgk_rate = get_float("sgk_rate")
+            sgk_deduction = get_float("sgk_deduction")
+            unemployment_rate = get_float("unemployment_rate")
+            unemployment_deduction = get_float("unemployment_deduction")
+            tax_base = get_float("tax_base")
+            child_allowance = get_float("child_allowance")
+            income_tax_rate = get_float("income_tax_rate")
+            income_tax = get_float("income_tax")
+            stamp_tax_rate = get_float("stamp_tax_rate")
+            stamp_tax = get_float("stamp_tax")
+            income_tax_exemption = get_float("income_tax_exemption")
+            stamp_tax_exemption = get_float("stamp_tax_exemption")
+            total_deductions = get_float("total_deductions")
+            advance = get_float("advance")
+            private_insurance = get_float("private_insurance")
+            other_deductions = get_float("other_deductions")
+            additional_deductions = get_float("additional_deductions")
+            total_exemptions = get_float("total_exemptions")
+            net_salary = get_float("net_salary")
+
+            def format_money(val):
+                return format_tr(val)
+
+            months_tr = {
+                1: "OCAK", 2: "ŞUBAT", 3: "MART", 4: "NİSAN", 5: "MAYIS", 6: "HAZİRAN",
+                7: "TEMMUZ", 8: "AĞUSTOS", 9: "EYLÜL", 10: "EKİM", 11: "KASIM", 12: "ARALIK"
+            }
+            month_name = months_tr.get(month, str(month))
+
+            html = f"""
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    * {{ margin: 0; padding: 0; }}
+                    body {{ 
+                        font-family: Arial, sans-serif;
+                        font-size: 9pt;
+                        padding: 8px;
+                    }}
+                    .header {{
+                        text-align: center;
+                        margin-bottom: 12px;
+                        border-top: 2px solid #000;
+                        border-bottom: 2px solid #000;
+                        padding: 6px 0;
+                    }}
+                    .title {{
+                        font-size: 12pt;
+                        font-weight: bold;
+                        margin: 3px 0;
+                    }}
+                    .info {{
+                        font-size: 9pt;
+                        display: flex;
+                        justify-content: space-around;
+                        padding: 2px 0;
+                    }}
+                    .info-item {{
+                        flex: 1;
+                        text-align: center;
+                    }}
+                    .section-title {{
+                        font-weight: bold;
+                        background-color: #ddd;
+                        padding: 2px 4px;
+                        margin-top: 6px;
+                        margin-bottom: 3px;
+                    }}
+                    table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        border: 1px solid #000;
+                        margin-bottom: 3px;
+                        font-size: 8pt;
+                    }}
+                    th, td {{
+                        border: 1px solid #000;
+                        padding: 2px 3px;
+                        text-align: center;
+                    }}
+                    th {{
+                        background-color: #e0e0e0;
+                        font-weight: bold;
+                    }}
+                    td {{
+                        height: 16px;
+                    }}
+                    .net-section {{
+                        text-align: center;
+                        margin-top: 10px;
+                        font-weight: bold;
+                        font-size: 11pt;
+                        padding: 8px;
+                        border: 2px solid #000;
+                        background-color: #f0f0f0;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="title">{month_name} {year} AYLIK ÜCRET BORDROSU</div>
+                    <div class="info">
+                        <div class="info-item"><strong>Personel:</strong> {employee}</div>
+                        <div class="info-item"><strong>Dönem:</strong> {month:02d}.{year}</div>
+                        <div class="info-item"><strong>Tarih:</strong> {saved_at}</div>
+                    </div>
+                </div>
+
+                <div class="section-title">ÇALIŞMA BİLGİLERİ</div>
+                <table>
+                    <tr>
+                        <th>Ay Gün</th>
+                        <th>Çalış.</th>
+                        <th>Ücretli İzin</th>
+                        <th>Ücretsiz İzin</th>
+                        <th>Ücretl. Gün</th>
+                        <th>Gün Oranı</th>
+                        <th>Çocuk Sayısı</th>
+                        <th>Çocuk İnd.</th>
+                    </tr>
+                    <tr>
+                        <td>{month_days:.0f}</td>
+                        <td>{worked_days:.0f}</td>
+                        <td>{paid_leave_days:.0f}</td>
+                        <td>{unpaid_leave_days:.0f}</td>
+                        <td>{paid_days:.0f}</td>
+                        <td>{day_ratio*100:.1f}%</td>
+                        <td>{child_count:.0f}</td>
+                        <td>{format_money(child_allowance)}</td>
+                    </tr>
+                </table>
+
+                <div class="section-title">BRÜT ÜCRET BİLEŞENLERİ</div>
+                <table>
+                    <tr>
+                        <th>Brüt (Tam)</th>
+                        <th>Brüt (Gün Oranlı)</th>
+                        <th>Fazla Mesai</th>
+                        <th>Prim/İkramiye</th>
+                        <th>Yemek Yardımı</th>
+                        <th>Yol Yardımı</th>
+                        <th><strong>Toplam Brüt</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(gross_salary)}</td>
+                        <td>{format_money(gross_salary * day_ratio)}</td>
+                        <td>{format_money(overtime_amount)}</td>
+                        <td>{format_money(bonus)}</td>
+                        <td>{format_money(meal)}</td>
+                        <td>{format_money(transport)}</td>
+                        <td><strong>{format_money(gross_total)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="section-title">VERGİ MATRAHÍ HESAPLAMASI</div>
+                <table>
+                    <tr>
+                        <th>SGK İşçi (%{sgk_rate:.3g})</th>
+                        <th>İşsizlik (%{unemployment_rate:.3g})</th>
+                        <th>Orijinal Matrah</th>
+                        <th>Çocuk İnd. (-)</th>
+                        <th><strong>İndirimli Matrah</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(sgk_deduction)}</td>
+                        <td>{format_money(unemployment_deduction)}</td>
+                        <td>{format_money(tax_base + child_allowance)}</td>
+                        <td>{format_money(child_allowance)}</td>
+                        <td><strong>{format_money(tax_base)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="section-title">KESİNTİLER</div>
+                <table>
+                    <tr>
+                        <th>Gelir Vergisi (%{income_tax_rate:.3g})</th>
+                        <th>Damga Vergisi (%{stamp_tax_rate:.3g})</th>
+                        <th>Gel.Vergi İst.</th>
+                        <th>Damga İst.</th>
+                        <th>Avans</th>
+                        <th>Özel Sigorta</th>
+                        <th>Diğer Kes.</th>
+                        <th><strong>Toplam Kes.</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(income_tax)}</td>
+                        <td>{format_money(stamp_tax)}</td>
+                        <td>-{format_money(income_tax_exemption)}</td>
+                        <td>-{format_money(stamp_tax_exemption)}</td>
+                        <td>{format_money(advance)}</td>
+                        <td>{format_money(private_insurance)}</td>
+                        <td>{format_money(other_deductions)}</td>
+                        <td><strong>{format_money(total_deductions + additional_deductions)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="net-section">
+                    <div style="margin-bottom: 8px;">NET ÜCRET: <strong>{format_money(net_salary)} TL</strong></div>
+                </div>
+            </body>
+            </html>
+            """
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setPageSize(QPrinter.A4)
+            printer.setOrientation(QPrinter.Landscape)
+            printer.setPageMargins(6, 6, 6, 6, QPrinter.Millimeter)
+
+            document = QTextDocument()
+            document.setHtml(html)
+
+            dialog = QPrintPreviewDialog(printer, self)
+            dialog.paintRequested.connect(lambda p: document.print_(p))
+            dialog.exec_()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Ön izleme oluşturulamadı:\n{str(e)}")
+
+    def preview_all_payroll_records_pdf(self):
+        """Tüm bordroların ön izlemesini göster"""
+        records = self._load_saved_payroll_records()
+        if not records:
+            QMessageBox.warning(self, "Uyarı", "Kaydedilmiş bordro bulunamadı")
+            return
+
+        try:
+            from PyQt5.QtPrintSupport import QPrinter, QPrintPreviewDialog
+            from PyQt5.QtGui import QTextDocument
+            from datetime import datetime
+
+            num_records = len(records)
+
+            def get_float(record, key, default=0.0):
+                return float(record.get(key, default) or default)
+
+            def get_int(record, key, default=0):
+                return int(record.get(key, default) or default)
+
+            def format_money(val):
+                return format_tr(val)
+
+            today = datetime.now()
+            year = records[0].get("year", today.year) if records else today.year
+            month = records[0].get("month", today.month) if records else today.month
+            
+            months_tr = {
+                1: "OCAK", 2: "ŞUBAT", 3: "MART", 4: "NİSAN", 5: "MAYIS", 6: "HAZİRAN",
+                7: "TEMMUZ", 8: "AĞUSTOS", 9: "EYLÜL", 10: "EKİM", 11: "KASIM", 12: "ARALIK"
+            }
+            month_name = months_tr.get(month, str(month))
+
+            # Veri hazırla
+            table_data = []
+            totals = {
+                "worked_days": 0, "paid_leave": 0, "unpaid_leave": 0,
+                "gross": 0.0, "sgk": 0.0, "unemployment": 0.0, 
+                "income_tax": 0.0, "stamp_tax": 0.0, "net": 0.0
+            }
+
+            for idx, record in enumerate(records, 1):
+                employee = str(record.get("employee", "-"))
+                
+                worked = get_int(record, "worked_days")
+                paid_leave = get_int(record, "paid_leave_days")
+                unpaid = get_int(record, "unpaid_leave_days")
+                
+                gross = get_float(record, "gross_total")
+                sgk = get_float(record, "sgk_deduction")
+                unemployment = get_float(record, "unemployment_deduction")
+                income_tax = get_float(record, "income_tax")
+                stamp_tax = get_float(record, "stamp_tax")
+                net = get_float(record, "net_salary")
+                
+                totals["worked_days"] += worked
+                totals["paid_leave"] += paid_leave
+                totals["unpaid_leave"] += unpaid
+                totals["gross"] += gross
+                totals["sgk"] += sgk
+                totals["unemployment"] += unemployment
+                totals["income_tax"] += income_tax
+                totals["stamp_tax"] += stamp_tax
+                totals["net"] += net
+
+                table_data.append({
+                    "no": idx,
+                    "name": employee,
+                    "worked": worked,
+                    "paid_leave": paid_leave,
+                    "unpaid": unpaid,
+                    "gross": gross,
+                    "sgk": sgk,
+                    "unemployment": unemployment,
+                    "income_tax": income_tax,
+                    "stamp_tax": stamp_tax,
+                    "net": net
+                })
+
+            # HTML Oluştur
+            html = f"""
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    * {{ margin: 0; padding: 0; }}
+                    body {{ 
+                        font-family: Arial, sans-serif;
+                        font-size: 10pt;
+                        padding: 8px;
+                        line-height: 1.2;
+                    }}
+                    .header {{
+                        text-align: center;
+                        margin-bottom: 10px;
+                        border-top: 3px solid #000;
+                        border-bottom: 2px solid #000;
+                        padding: 8px 0;
+                    }}
+                    .title {{
+                        font-size: 14pt;
+                        font-weight: bold;
+                        margin: 5px 0;
+                    }}
+                    .subtitle {{
+                        font-size: 11pt;
+                        font-weight: bold;
+                    }}
+                    .info-row {{
+                        display: table;
+                        width: 100%;
+                        margin: 5px 0;
+                        font-size: 11pt;
+                    }}
+                    .info-col {{
+                        display: table-cell;
+                        width: 33%;
+                        padding: 4px 10px;
+                    }}
+                    .info-label {{
+                        font-weight: bold;
+                    }}
+                    table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        margin: 12px 0;
+                        font-size: 10pt;
+                    }}
+                    thead tr {{
+                        background-color: #ddd;
+                    }}
+                    th {{
+                        border: 1px solid #000;
+                        padding: 4px 2px;
+                        font-weight: bold;
+                        text-align: center;
+                        font-size: 8pt;
+                    }}
+                    td {{
+                        border: 1px solid #000;
+                        padding: 2px 4px;
+                        text-align: right;
+                        font-family: 'Courier New';
+                    }}
+                    td.name {{
+                        text-align: left;
+                    }}
+                    td.center {{
+                        text-align: center;
+                    }}
+                    tr.total td {{
+                        background-color: #ddd;
+                        font-weight: bold;
+                        border-top: 2px solid #000;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="title">{month_name} {year} AYLIK ÜCRET BORDROSU</div>
+                    <div class="info-row">
+                        <div class="info-col"><span class="info-label">Dönem:</span> {month:02d}/{year}</div>
+                        <div class="info-col"><span class="info-label">Personel Sayısı:</span> {num_records}</div>
+                        <div class="info-col"><span class="info-label">Tarih:</span> {today.strftime('%d.%m.%Y')}</div>
+                    </div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:4%">S.No</th>
+                            <th style="width:18%">Personel Adı</th>
+                            <th style="width:6%">Çalış. Gün</th>
+                            <th style="width:6%">Ücretli İzin</th>
+                            <th style="width:6%">Ücretsiz İzin</th>
+                            <th style="width:10%">Brüt Maaş</th>
+                            <th style="width:10%">SGK %14</th>
+                            <th style="width:10%">İşsizlik %1</th>
+                            <th style="width:10%">Gelir Vergisi</th>
+                            <th style="width:10%">Damga Vergisi</th>
+                            <th style="width:10%">Net Maaş</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            """
+
+            # Satırları ekle
+            for row in table_data:
+                html += f"""
+                        <tr>
+                            <td class="center">{row['no']}</td>
+                            <td class="name">{row['name']}</td>
+                            <td class="center">{row['worked']}</td>
+                            <td class="center">{row['paid_leave']}</td>
+                            <td class="center">{row['unpaid']}</td>
+                            <td>{format_money(row['gross'])}</td>
+                            <td>{format_money(row['sgk'])}</td>
+                            <td>{format_money(row['unemployment'])}</td>
+                            <td>{format_money(row['income_tax'])}</td>
+                            <td>{format_money(row['stamp_tax'])}</td>
+                            <td><strong>{format_money(row['net'])}</strong></td>
+                        </tr>
+                """
+
+            # Toplam satırı
+            html += f"""
+                        <tr class="total">
+                            <td class="center" colspan="2">TOPLAM</td>
+                            <td class="center">{totals['worked_days']}</td>
+                            <td class="center">{totals['paid_leave']}</td>
+                            <td class="center">{totals['unpaid_leave']}</td>
+                            <td>{format_money(totals['gross'])}</td>
+                            <td>{format_money(totals['sgk'])}</td>
+                            <td>{format_money(totals['unemployment'])}</td>
+                            <td>{format_money(totals['income_tax'])}</td>
+                            <td>{format_money(totals['stamp_tax'])}</td>
+                            <td><strong>{format_money(totals['net'])}</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div style="margin-top: 12px; font-size: 9pt; text-align: center; border-top: 1px solid #000; padding-top: 8px;">
+                    <p><strong>Bu bordro resmi nitelik taşımamakta olup bilgilendirme amaçlıdır.</strong></p>
+                    <p>Muhasebe müdürü/İşletmeci tarafından onanmalıdır.</p>
+                    <p style="margin-top: 15px; font-size: 11pt; font-weight: bold;">
+                        TOPLAM ÖDENECEK TUTARI: <span style="text-decoration: underline;">{format_money(totals['net'])} TL</span>
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setPageSize(QPrinter.A4)
+            printer.setOrientation(QPrinter.Landscape)
+            printer.setPageMargins(8, 8, 8, 8, QPrinter.Millimeter)
+
+            document = QTextDocument()
+            document.setHtml(html)
+
+            dialog = QPrintPreviewDialog(printer, self)
+            dialog.paintRequested.connect(lambda p: document.print_(p))
+            dialog.exec_()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Ön izleme oluşturulamadı:\n{str(e)}")
+
+    def export_selected_payroll_record_pdf(self):
+        """Seçilen kayıtlı bordroyu PDF çıktısı olarak kaydet (Landscape - Yan Yana)"""
+        if not hasattr(self, "saved_payroll_table"):
+            return
+
+        row = self.saved_payroll_table.currentRow()
+        if row < 0 or row >= len(self.payroll_records_cache):
+            QMessageBox.warning(self, "Uyarı", "PDF çıktısı için tablodan bir kayıt seçin")
+            return
+
+        record = self.payroll_records_cache[row]
+
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from PyQt5.QtPrintSupport import QPrinter
+            from PyQt5.QtGui import QTextDocument
+
+            employee = str(record.get("employee", "Belirtilmedi"))
+            year = int(record.get("year", 0) or 0)
+            month = int(record.get("month", 0) or 0)
+            
+            period_text = f"{month:02d}.{year}" if month and year else "-"
+            saved_at = str(record.get("saved_at", "-")).replace("T", " ")[:19]
+
+            # Tüm detayları al (eski kayıtlarda olmayabilir - varsayılan değer set et)
+            def get_float(key, default=0.0):
+                return float(record.get(key, default) or default)
+            
+            def get_int(key, default=0):
+                return int(record.get(key, default) or default)
+
+            gross_salary = get_float("gross_salary")
+            month_days = get_int("month_days", 30)
+            worked_days = get_int("worked_days")
+            paid_leave_days = get_int("paid_leave_days")
+            unpaid_leave_days = get_int("unpaid_leave_days")
+            child_count = get_int("child_count")
+            paid_days = get_int("paid_days")
+            day_ratio = get_float("day_ratio", 1.0)
+            overtime_hours = get_float("overtime_hours")
+            overtime_rate = get_float("overtime_rate")
+            overtime_amount = get_float("overtime_amount")
+            bonus = get_float("bonus")
+            meal = get_float("meal")
+            transport = get_float("transport")
+            gross_total = get_float("gross_total")
+            sgk_rate = get_float("sgk_rate")
+            sgk_deduction = get_float("sgk_deduction")
+            unemployment_rate = get_float("unemployment_rate")
+            unemployment_deduction = get_float("unemployment_deduction")
+            tax_base = get_float("tax_base")
+            child_allowance = get_float("child_allowance")
+            income_tax_rate = get_float("income_tax_rate")
+            income_tax = get_float("income_tax")
+            stamp_tax_rate = get_float("stamp_tax_rate")
+            stamp_tax = get_float("stamp_tax")
+            income_tax_exemption = get_float("income_tax_exemption")
+            stamp_tax_exemption = get_float("stamp_tax_exemption")
+            total_deductions = get_float("total_deductions")
+            advance = get_float("advance")
+            private_insurance = get_float("private_insurance")
+            other_deductions = get_float("other_deductions")
+            additional_deductions = get_float("additional_deductions")
+            total_exemptions = get_float("total_exemptions")
+            net_salary = get_float("net_salary")
+
+            def format_money(val):
+                return format_tr(val)
+
+            # Ay adları
+            months_tr = {
+                1: "OCAK", 2: "ŞUBAT", 3: "MART", 4: "NİSAN", 5: "MAYIS", 6: "HAZİRAN",
+                7: "TEMMUZ", 8: "AĞUSTOS", 9: "EYLÜL", 10: "EKİM", 11: "KASIM", 12: "ARALIK"
+            }
+            month_name = months_tr.get(month, str(month))
+
+            html = f"""
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    * {{ margin: 0; padding: 0; }}
+                    body {{ 
+                        font-family: Arial, sans-serif;
+                        font-size: 9pt;
+                        padding: 8px;
+                    }}
+                    .header {{
+                        text-align: center;
+                        margin-bottom: 12px;
+                        border-top: 2px solid #000;
+                        border-bottom: 2px solid #000;
+                        padding: 6px 0;
+                    }}
+                    .title {{
+                        font-size: 12pt;
+                        font-weight: bold;
+                        margin: 3px 0;
+                    }}
+                    .info {{
+                        font-size: 9pt;
+                        display: flex;
+                        justify-content: space-around;
+                        padding: 2px 0;
+                    }}
+                    .info-item {{
+                        flex: 1;
+                        text-align: center;
+                    }}
+                    .section-title {{
+                        font-weight: bold;
+                        background-color: #ddd;
+                        padding: 2px 4px;
+                        margin-top: 6px;
+                        margin-bottom: 3px;
+                    }}
+                    table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        border: 1px solid #000;
+                        margin-bottom: 3px;
+                        font-size: 8pt;
+                    }}
+                    th, td {{
+                        border: 1px solid #000;
+                        padding: 2px 3px;
+                        text-align: center;
+                    }}
+                    th {{
+                        background-color: #e0e0e0;
+                        font-weight: bold;
+                    }}
+                    td {{
+                        height: 16px;
+                    }}
+                    tbody tr:first-child td {{
+                        border-top: 1px solid #000;
+                    }}
+                    .label {{
+                        text-align: left;
+                        font-weight: bold;
+                        background-color: #f5f5f5;
+                    }}
+                    .footer {{
+                        margin-top: 12px;
+                        font-size: 9pt;
+                        text-align: center;
+                        border-top: 1px solid #000;
+                        padding-top: 8px;
+                    }}
+                    .net-section {{
+                        text-align: center;
+                        margin-top: 10px;
+                        font-weight: bold;
+                        font-size: 11pt;
+                        padding: 8px;
+                        border: 2px solid #000;
+                        background-color: #f0f0f0;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="title">{month_name} {year} AYLIK ÜCRET BORDROSU</div>
+                    <div class="info">
+                        <div class="info-item"><strong>Personel:</strong> {employee}</div>
+                        <div class="info-item"><strong>Dönem:</strong> {period_text}</div>
+                        <div class="info-item"><strong>Tarih:</strong> {saved_at}</div>
+                    </div>
+                </div>
+
+                <div class="section-title">ÇALIŞMA BİLGİLERİ</div>
+                <table>
+                    <tr>
+                        <th>Ay Gün</th>
+                        <th>Çalış.</th>
+                        <th>Ücretli İzin</th>
+                        <th>Ücretsiz İzin</th>
+                        <th>Ücretl. Gün</th>
+                        <th>Gün Oranı</th>
+                        <th>Çocuk Sayısı</th>
+                        <th>Çocuk İnd.</th>
+                    </tr>
+                    <tr>
+                        <td>{month_days:.0f}</td>
+                        <td>{worked_days:.0f}</td>
+                        <td>{paid_leave_days:.0f}</td>
+                        <td>{unpaid_leave_days:.0f}</td>
+                        <td>{paid_days:.0f}</td>
+                        <td>{day_ratio*100:.1f}%</td>
+                        <td>{child_count:.0f}</td>
+                        <td>{format_money(child_allowance)}</td>
+                    </tr>
+                </table>
+
+                <div class="section-title">BRÜT ÜCRET BİLEŞENLERİ</div>
+                <table>
+                    <tr>
+                        <th>Brüt (Tam)</th>
+                        <th>Brüt (Gün Oranlı)</th>
+                        <th>Fazla Mesai</th>
+                        <th>Prim/İkramiye</th>
+                        <th>Yemek Yardımı</th>
+                        <th>Yol Yardımı</th>
+                        <th><strong>Toplam Brüt</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(gross_salary)}</td>
+                        <td>{format_money(gross_salary * day_ratio)}</td>
+                        <td>{format_money(overtime_amount)}</td>
+                        <td>{format_money(bonus)}</td>
+                        <td>{format_money(meal)}</td>
+                        <td>{format_money(transport)}</td>
+                        <td><strong>{format_money(gross_total)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="section-title">VERGİ MATRAHÍ HESAPLAMASI</div>
+                <table>
+                    <tr>
+                        <th>SGK İşçi (%{sgk_rate:.3g})</th>
+                        <th>İşsizlik (%{unemployment_rate:.3g})</th>
+                        <th>Orijinal Matrah</th>
+                        <th>Çocuk İnd. (-)</th>
+                        <th><strong>İndirimli Matrah</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(sgk_deduction)}</td>
+                        <td>{format_money(unemployment_deduction)}</td>
+                        <td>{format_money(tax_base + child_allowance)}</td>
+                        <td>{format_money(child_allowance)}</td>
+                        <td><strong>{format_money(tax_base)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="section-title">KESİNTİLER</div>
+                <table>
+                    <tr>
+                        <th>Gelir Vergisi (%{income_tax_rate:.3g})</th>
+                        <th>Damga Vergisi (%{stamp_tax_rate:.3g})</th>
+                        <th>Gel.Vergi İst.</th>
+                        <th>Damga İst.</th>
+                        <th>Avans</th>
+                        <th>Özel Sigorta</th>
+                        <th>Diğer Kes.</th>
+                        <th><strong>Toplam Kes.</strong></th>
+                    </tr>
+                    <tr>
+                        <td>{format_money(income_tax)}</td>
+                        <td>{format_money(stamp_tax)}</td>
+                        <td>-{format_money(income_tax_exemption)}</td>
+                        <td>-{format_money(stamp_tax_exemption)}</td>
+                        <td>{format_money(advance)}</td>
+                        <td>{format_money(private_insurance)}</td>
+                        <td>{format_money(other_deductions)}</td>
+                        <td><strong>{format_money(total_deductions + additional_deductions)}</strong></td>
+                    </tr>
+                </table>
+
+                <div class="net-section">
+                    <div style="margin-bottom: 8px;">NET ÜCRET: <strong>{format_money(net_salary)} TL</strong></div>
+                </div>
+
+                <div class="footer">
+                    <p><strong>Bu bordro resmi nitelik taşımamakta olup bilgilendirme amaçlıdır.</strong></p>
+                    <p>Muhasebe müdürü/İşletmeci tarafından onanmalıdır.</p>
+                </div>
+            </body>
+            </html>
+            """
+
+            safe_employee = employee.replace(" ", "_")
+            default_name = f"kayitli_bordro_{safe_employee}_{period_text.replace('.', '_')}.pdf"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Kayıtlı Bordro PDF Kaydet",
+                default_name,
+                "PDF Dosyası (*.pdf)"
+            )
+
+            if not file_path:
+                return
+
+            if not file_path.lower().endswith(".pdf"):
+                file_path += ".pdf"
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(file_path)
+            printer.setPageSize(QPrinter.A4)
+            printer.setOrientation(QPrinter.Landscape)
+            printer.setPageMargins(6, 6, 6, 6, QPrinter.Millimeter)
+
+            document = QTextDocument()
+            document.setHtml(html)
+            document.print_(printer)
+
+            QMessageBox.information(self, "Başarılı", f"Kayıtlı bordro PDF olarak kaydedildi:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"PDF oluşturulamadı:\n{str(e)}")
+
+    def _get_saved_cumulative_tax_base(self, employee_name: str, year: int, month: int):
+        normalized_name = (employee_name or "").strip().lower()
+        if not normalized_name:
+            return 0.0
+
+        total = 0.0
+        for record in self._load_saved_payroll_records():
+            if str(record.get("employee", "")).strip().lower() != normalized_name:
+                continue
+            if int(record.get("year", 0)) != int(year):
+                continue
+            if int(record.get("month", 0)) >= int(month):
+                continue
+            total += float(record.get("tax_base", 0.0) or 0.0)
+        return total
+
+    def save_last_payroll_record(self):
+        """Son hesaplanan bordroyu sistem verisine kaydet"""
+        if not self.last_payroll_data:
+            QMessageBox.warning(self, "Uyarı", "Önce bordroyu hesaplamalısınız")
+            return
+
+        try:
+            record = self.last_payroll_data.copy()
+            record["saved_at"] = datetime.now().isoformat()
+
+            records = self._load_saved_payroll_records()
+            records = [
+                r for r in records
+                if not (
+                    str(r.get("employee", "")).strip().lower() == str(record["employee"]).strip().lower()
+                    and int(r.get("year", 0)) == int(record["year"])
+                    and int(r.get("month", 0)) == int(record["month"])
+                )
+            ]
+            records.append(record)
+            records.sort(key=lambda r: (str(r.get("employee", "")).lower(), int(r.get("year", 0)), int(r.get("month", 0))))
+            self._save_payroll_records(records)
+            self.refresh_saved_payroll_records_table()
+
+            QMessageBox.information(self, "Başarılı", "Bordro sisteme kaydedildi. Sonraki aylarda kümülatif matrah hesabında kullanılacak.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Bordro kaydedilemedi:\n{str(e)}")
+
+    def calculate_payroll(self):
+        """Maaş bordrosunu hesapla ve göster"""
+        try:
+            def money(value):
+                return round(float(value) + 1e-9, 2)
+
+            def fmt_money(value):
+                return format_tr(money(value))
+
+            employee_name = self.payroll_employee_input.text().strip() or "Belirtilmedi"
+            period_qdate = self.payroll_period_date.date()
+            period_text = period_qdate.toString("MM.yyyy")
+            period_year = period_qdate.year()
+            period_month = period_qdate.month()
+
+            gross_salary = self._parse_payroll_float(self.payroll_fields["gross_salary"], "Brüt Maaş")
+            month_days = max(self._parse_payroll_float(self.payroll_fields["month_days"], "Ay Gün Sayısı"), 1)
+            worked_days = max(self._parse_payroll_float(self.payroll_fields["worked_days"], "Çalışılan Gün"), 0)
+            paid_leave_days = max(self._parse_payroll_float(self.payroll_fields["paid_leave_days"], "Ücretli İzin Gün"), 0)
+            unpaid_leave_days = max(self._parse_payroll_float(self.payroll_fields["unpaid_leave_days"], "Ücretsiz İzin Gün"), 0)
+            child_count = max(int(self._parse_payroll_float(self.payroll_fields["child_count"], "Çocuk Sayısı")), 0)
+            overtime_hours = self._parse_payroll_float(self.payroll_fields["overtime_hours"], "Fazla Mesai Saat")
+            overtime_rate = self._parse_payroll_float(self.payroll_fields["overtime_rate"], "Fazla Mesai Ücreti")
+            bonus = self._parse_payroll_float(self.payroll_fields["bonus"], "Prim")
+            meal = self._parse_payroll_float(self.payroll_fields["meal"], "Yemek Yardımı")
+            transport = self._parse_payroll_float(self.payroll_fields["transport"], "Yol Yardımı")
+            advance = max(self._parse_payroll_float(self.payroll_fields["advance"], "Avans Kesintisi"), 0)
+            private_insurance = max(self._parse_payroll_float(self.payroll_fields["private_insurance"], "Özel Sigorta Kesintisi"), 0)
+            other_deductions = max(self._parse_payroll_float(self.payroll_fields["other_deductions"], "Diğer Kesintiler"), 0)
+
+            sgk_rate = self._parse_payroll_float(self.payroll_fields["sgk_rate"], "SGK Oranı")
+            unemployment_rate = self._parse_payroll_float(self.payroll_fields["unemployment_rate"], "İşsizlik Sigortası Oranı")
+            income_tax_rate = self._parse_payroll_float(self.payroll_fields["income_tax_rate"], "Gelir Vergisi Oranı")
+            stamp_tax_rate = self._parse_payroll_float(self.payroll_fields["stamp_tax_rate"], "Damga Vergisi Oranı")
+            min_wage_gross = self._parse_payroll_float(self.min_wage_gross_input, "Asgari Ücret Brüt")
+            manual_prev_base = self._parse_payroll_float(self.manual_prev_tax_base_input, "Manuel Önceki Kümülatif Matrah")
+
+            if hasattr(self, "asgari_mode_button") and self.asgari_mode_button.isChecked():
+                income_tax_rate = 0.0
+                stamp_tax_rate = 0.0
+
+            paid_days_input = worked_days + paid_leave_days
+            if unpaid_leave_days > 0:
+                paid_days_input = month_days - unpaid_leave_days
+            paid_days = min(max(paid_days_input, 0), month_days)
+            day_ratio = paid_days / month_days if month_days > 0 else 1.0
+
+            overtime_amount_raw = overtime_hours * overtime_rate
+            prorated_gross_salary_raw = gross_salary * day_ratio
+            gross_total_raw = prorated_gross_salary_raw + overtime_amount_raw + bonus + meal + transport
+
+            deduction_base_raw = gross_total_raw
+            sgk_deduction_raw = deduction_base_raw * (sgk_rate / 100)
+            unemployment_deduction_raw = deduction_base_raw * (unemployment_rate / 100)
+            tax_base_raw = max(deduction_base_raw - sgk_deduction_raw - unemployment_deduction_raw, 0)
+
+            overtime_amount = money(overtime_amount_raw)
+            gross_total = money(gross_total_raw)
+            sgk_deduction = money(sgk_deduction_raw)
+            unemployment_deduction = money(unemployment_deduction_raw)
+            tax_base = money(tax_base_raw)
+
+            progressive_enabled = self.progressive_tax_check.isChecked()
+            child_allowance = child_count * 346.5
+            
+            saved_prev_base = 0.0
+            if self.use_saved_cumulative_check.isChecked() and employee_name != "Belirtilmedi":
+                saved_prev_base = self._get_saved_cumulative_tax_base(employee_name, period_year, period_month)
+
+            reduced_tax_base_raw = max(tax_base_raw - child_allowance, 0)
+            cumulative_prev_base = money(saved_prev_base + manual_prev_base)
+            cumulative_current_base = money(cumulative_prev_base + reduced_tax_base_raw)
+            cumulative_prev_base_raw = float(saved_prev_base + manual_prev_base)
+            cumulative_current_base_raw = float(cumulative_prev_base_raw + reduced_tax_base_raw)
+
+            if progressive_enabled and not (hasattr(self, "asgari_mode_button") and self.asgari_mode_button.isChecked()):
+                brackets = self._parse_tax_brackets(self.tax_brackets_input.text())
+                income_tax_raw = (
+                    self._compute_progressive_tax(cumulative_current_base_raw, brackets)
+                    - self._compute_progressive_tax(cumulative_prev_base_raw, brackets)
+                )
+                income_tax = money(income_tax_raw)
+                income_tax_rate_label = "Kümülatif Dilim"
+                min_wage_income_tax_rate = brackets[0][1] * 100 if brackets else income_tax_rate
+            else:
+                income_tax_raw = reduced_tax_base_raw * (income_tax_rate / 100)
+                income_tax = money(income_tax_raw)
+                income_tax_rate_label = f"%{income_tax_rate:.3g}"
+                min_wage_income_tax_rate = income_tax_rate
+
+            stamp_tax_raw = deduction_base_raw * (stamp_tax_rate / 100)
+            stamp_tax = money(stamp_tax_raw)
+
+            income_tax_exemption = 0.0
+            stamp_tax_exemption = 0.0
+            income_tax_exemption_raw = 0.0
+            stamp_tax_exemption_raw = 0.0
+            if self.apply_min_wage_exemption_check.isChecked() and min_wage_gross > 0:
+                min_sgk_raw = min_wage_gross * (sgk_rate / 100)
+                min_unemployment_raw = min_wage_gross * (unemployment_rate / 100)
+                min_tax_base_raw = max(min_wage_gross - min_sgk_raw - min_unemployment_raw, 0)
+                income_tax_exemption_raw = min(min_tax_base_raw * (min_wage_income_tax_rate / 100), income_tax_raw)
+                stamp_tax_exemption_raw = min(min_wage_gross * (stamp_tax_rate / 100), stamp_tax_raw)
+                income_tax_exemption = money(income_tax_exemption_raw)
+                stamp_tax_exemption = money(stamp_tax_exemption_raw)
+
+            total_deductions_raw = sgk_deduction_raw + unemployment_deduction_raw + income_tax_raw + stamp_tax_raw
+            additional_deductions_raw = advance + private_insurance + other_deductions
+            total_exemptions_raw = income_tax_exemption_raw + stamp_tax_exemption_raw
+
+            total_deductions = money(total_deductions_raw)
+            additional_deductions = money(additional_deductions_raw)
+            total_exemptions = money(total_exemptions_raw)
+            net_salary = money(gross_total_raw - total_deductions_raw - additional_deductions_raw + total_exemptions_raw)
+
+            total_final_deduction = money(total_deductions_raw + additional_deductions_raw)
+
+            html = f"""
+            <h2 style='color:#1976D2;'>💼 MAAŞ BORDROSU</h2>
+            <p><strong>Personel:</strong> {employee_name}</p>
+            <p><strong>Dönem:</strong> {period_text}</p>
+            <p><strong>Asgari Ücret Modu:</strong> {'Açık' if hasattr(self, 'asgari_mode_button') and self.asgari_mode_button.isChecked() else 'Kapalı'}</p>
+            <p><strong>Kümülatif Vergi Hesabı:</strong> {'Açık' if progressive_enabled else 'Kapalı'}</p>
+            <p><strong>Önceki Kümülatif Matrah:</strong> {fmt_money(cumulative_prev_base)} ₺</p>
+            <p><strong>Yeni Kümülatif Matrah:</strong> {fmt_money(cumulative_current_base)} ₺</p>
+            <hr>
+            <h3 style='color:#455A64;'>Çalışma Bilgileri</h3>
+            <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                <tr style='background:#f5f5f5;'><th align='left'>Alan</th><th>Değer</th></tr>
+                <tr><td>Ay Gün Sayısı</td><td>{month_days:.0f}</td></tr>
+                <tr><td>Çalışılan Gün</td><td>{worked_days:.0f}</td></tr>
+                <tr><td>Ücretli İzin</td><td>{paid_leave_days:.0f}</td></tr>
+                <tr><td>Ücretsiz İzin</td><td>{unpaid_leave_days:.0f}</td></tr>
+                <tr><td>Ücretlendirilen Gün</td><td>{paid_days:.0f}</td></tr>
+                <tr><td>Gün Oranı</td><td>{day_ratio*100:.2f}%</td></tr>
+                <tr><td>Bakmakla Yükümlü Çocuk</td><td>{child_count:.0f}</td></tr>
+                <tr><td>Çocuk İndirimi (₺)</td><td>{fmt_money(child_allowance)}</td></tr>
+            </table>
+            <br>
+            <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                <tr style='background:#f5f5f5;'><th align='left'>Kalem</th><th>Tutar (₺)</th></tr>
+                <tr><td>Brüt Maaş (Tam)</td><td>{fmt_money(gross_salary)}</td></tr>
+                <tr><td>Brüt Maaş (Gün Oranlı)</td><td>{fmt_money(prorated_gross_salary_raw)}</td></tr>
+                <tr><td>Fazla Mesai</td><td>{fmt_money(overtime_amount)}</td></tr>
+                <tr><td>Prim / İkramiye</td><td>{fmt_money(bonus)}</td></tr>
+                <tr><td>Yemek Yardımı</td><td>{fmt_money(meal)}</td></tr>
+                <tr><td>Yol Yardımı</td><td>{fmt_money(transport)}</td></tr>
+                <tr style='font-weight:bold; background:#E3F2FD;'><td>Toplam Brüt</td><td>{fmt_money(gross_total)}</td></tr>
+            </table>
+            <br>
+            <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                <tr style='background:#f5f5f5;'><th align='left'>Vergi Matrahı</th><th>Tutar (₺)</th></tr>
+                <tr><td>Orijinal Vergi Matrahı</td><td>{fmt_money(tax_base)}</td></tr>
+                <tr><td>Çocuk İndirimi</td><td>-{fmt_money(child_allowance)}</td></tr>
+                <tr style='background:#FFF3E0;'><td>İndirimli Vergi Matrahı</td><td>{fmt_money(reduced_tax_base_raw)}</td></tr>
+            </table>
+            <br>
+            <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                <tr style='background:#f5f5f5;'><th align='left'>Kesinti</th><th>Tutar (₺)</th></tr>
+                <tr><td>SGK İşçi Payı (%{sgk_rate:.3g})</td><td>{fmt_money(sgk_deduction)}</td></tr>
+                <tr><td>İşsizlik Sigortası (%{unemployment_rate:.3g})</td><td>{fmt_money(unemployment_deduction)}</td></tr>
+                <tr><td>Gelir Vergisi ({income_tax_rate_label})</td><td>{fmt_money(income_tax)}</td></tr>
+                <tr><td>Damga Vergisi (%{stamp_tax_rate:.3g})</td><td>{fmt_money(stamp_tax)}</td></tr>
+                <tr><td>Asgari Ücret Gelir Vergisi İstisnası</td><td>-{fmt_money(income_tax_exemption)}</td></tr>
+                <tr><td>Asgari Ücret Damga Vergisi İstisnası</td><td>-{fmt_money(stamp_tax_exemption)}</td></tr>
+                <tr style='font-weight:bold; background:#FFEBEE;'><td>Toplam Kesinti</td><td>{fmt_money(total_deductions)}</td></tr>
+                <tr><td>Avans Kesintisi</td><td>{fmt_money(advance)}</td></tr>
+                <tr><td>Özel Sigorta Kesintisi</td><td>{fmt_money(private_insurance)}</td></tr>
+                <tr><td>Diğer Kesintiler</td><td>{fmt_money(other_deductions)}</td></tr>
+                <tr style='font-weight:bold; background:#FCE4EC;'><td>Toplam Ek Kesinti</td><td>{fmt_money(additional_deductions)}</td></tr>
+            </table>
+            <br>
+            <p><strong>Toplam Nihai Kesinti:</strong> {fmt_money(total_final_deduction)} ₺</p>
+            <p><strong>Toplam İstisna:</strong> {fmt_money(total_exemptions)} ₺</p>
+            <h3 style='color:#2E7D32;'>Net Maaş: {fmt_money(net_salary)} ₺</h3>
+            <p style='font-size:9pt; color:#666;'>Not: Bu bordro hesaplaması bilgilendirme amaçlıdır.</p>
+            """
+
+            self.last_payroll_html = html
+            self.last_payroll_employee = employee_name
+            self.last_payroll_period = period_text
+            self.last_payroll_data = {
+                "employee": employee_name,
+                "year": period_year,
+                "month": period_month,
+                "gross_salary": gross_salary,
+                "month_days": month_days,
+                "worked_days": worked_days,
+                "paid_leave_days": paid_leave_days,
+                "unpaid_leave_days": unpaid_leave_days,
+                "child_count": child_count,
+                "paid_days": paid_days,
+                "day_ratio": day_ratio,
+                "overtime_hours": overtime_hours,
+                "overtime_rate": overtime_rate,
+                "overtime_amount": overtime_amount,
+                "bonus": bonus,
+                "meal": meal,
+                "transport": transport,
+                "gross_total": gross_total,
+                "sgk_rate": sgk_rate,
+                "sgk_deduction": sgk_deduction,
+                "unemployment_rate": unemployment_rate,
+                "unemployment_deduction": unemployment_deduction,
+                "tax_base": money(reduced_tax_base_raw),
+                "child_allowance": child_allowance,
+                "income_tax_rate": income_tax_rate,
+                "income_tax": income_tax,
+                "stamp_tax_rate": stamp_tax_rate,
+                "stamp_tax": stamp_tax,
+                "income_tax_exemption": income_tax_exemption,
+                "stamp_tax_exemption": stamp_tax_exemption,
+                "total_deductions": total_deductions,
+                "advance": money(advance),
+                "private_insurance": money(private_insurance),
+                "other_deductions": money(other_deductions),
+                "additional_deductions": additional_deductions,
+                "total_exemptions": total_exemptions,
+                "net_salary": net_salary,
+                "savings_time": datetime.now().isoformat()
+            }
+            self.payroll_result_view.setHtml(html)
+            QTimer.singleShot(50, self._adjust_payroll_result_height)
+            QTimer.singleShot(150, self._scroll_to_payroll_result)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Uyarı", f"Bordro hesaplanamadı: {str(e)}") 
+
+    def _calculate_net_for_gross_value(self, gross_value, s, u, t, d, child_allowance, min_wage_gross, use_exemption, money_fn):
+        """Verilen brüt için net'i hesapla (Binary search için helper)"""
+        # Temel kesintiler
+        sgk = gross_value * s
+        unemployment = gross_value * u
+        tax_base = gross_value - sgk - unemployment
+        reduced_tax_base = max(tax_base - child_allowance, 0)
+        income_tax = reduced_tax_base * t
+        stamp_tax = gross_value * d
+        
+        # Muafiyet hesabı (her brüt için uygulanabilir - min ücret tutarı kadar)
+        income_tax_exemption = 0.0
+        stamp_tax_exemption = 0.0
+        if use_exemption and min_wage_gross > 0:
+            # Minimum ücretin vergi tutarı hesapla
+            min_sgk = min_wage_gross * s
+            min_unemployment = min_wage_gross * u
+            min_tax_base = max(min_wage_gross - min_sgk - min_unemployment, 0)
+            # Muafiyet: min ücretin vergisi, ama ödenmesi gereken vergiden fazla olamaz
+            income_tax_exemption = min(min_tax_base * t, income_tax)
+            stamp_tax_exemption = min(min_wage_gross * d, stamp_tax)
+        
+        # Net hesapla
+        net = gross_value - sgk - unemployment - income_tax - stamp_tax + income_tax_exemption + stamp_tax_exemption
+        return money_fn(net)
+    def calculate_gross_from_net(self):
+        """Net maaştan brüt maaşı hesapla (Binary Search)"""
+        try:
+            def money(value):
+                return round(float(value) + 1e-9, 2)
+
+            net_salary_input = self._parse_payroll_float(self.reverse_net_input, "Net Maaş")
+            child_count = max(int(self._parse_payroll_float(self.reverse_child_count_input, "Çocuk Sayısı")), 0)
+            
+            # Parametrelerden oranları oku
+            sgk_rate = self._parse_payroll_float(self.payroll_fields["sgk_rate"], "SGK Oranı")
+            unemployment_rate = self._parse_payroll_float(self.payroll_fields["unemployment_rate"], "İşsizlik Sigortası")
+            income_tax_rate = self._parse_payroll_float(self.payroll_fields["income_tax_rate"], "Gelir Vergisi")
+            stamp_tax_rate = self._parse_payroll_float(self.payroll_fields["stamp_tax_rate"], "Damga Vergisi")
+            min_wage_gross = self._parse_payroll_float(self.min_wage_gross_input, "Asgari Ücret Brüt")
+            
+            # Ondalık sayılara dönüştür
+            s = sgk_rate / 100.0  # SGK oranı
+            u = unemployment_rate / 100.0  # İşsizlik oranı
+            t = income_tax_rate / 100.0  # Gelir vergisi oranı
+            d = stamp_tax_rate / 100.0  # Damga vergisi oranı
+            
+            # Çocuk indirimi
+            child_allowance = child_count * 346.5
+            
+            # Binary search ile brüt bul
+            low = net_salary_input * 0.9
+            high = net_salary_input * 2.5
+            
+            gross_calculated = None
+            for iteration in range(100):
+                mid = (low + high) / 2
+                
+                # Bu brüt için net hesapla
+                calculated_net = self._calculate_net_for_gross_value(
+                    mid, s, u, t, d, child_allowance, min_wage_gross, 
+                    self.apply_min_wage_exemption_check.isChecked(), money
+                )
+                
+                # Yakınlık kontrolü
+                if abs(calculated_net - net_salary_input) < 0.01:
+                    gross_calculated = mid
+                    break
+                
+                # Binary search güncelle
+                if calculated_net < net_salary_input:
+                    low = mid  # Net düşük, gross'u artır
+                else:
+                    high = mid  # Net yüksek, gross'u azalt
+            
+            if gross_calculated is None:
+                gross_calculated = (low + high) / 2
+            
+            gross_calculated = money(gross_calculated)
+            
+            # Hesaplanan brüt ile doğrulama yaparak net'i kontrol et
+            if gross_calculated > 0:
+                # Verifikasyon: Hesaplanan brütün net'ini hesapla
+                net_verification = self._calculate_net_for_gross_value(
+                    gross_calculated, s, u, t, d, child_allowance, min_wage_gross,
+                    self.apply_min_wage_exemption_check.isChecked(), money
+                )
+                
+                # Doğrulama detayları hesapla
+                sgk_ded = gross_calculated * s
+                unemployment_ded = gross_calculated * u
+                tax_base = gross_calculated - sgk_ded - unemployment_ded
+                reduced_tax_base = max(tax_base - child_allowance, 0)
+                income_tax_val = reduced_tax_base * t
+                stamp_tax_val = gross_calculated * d
+                
+                # Muafiyet hesabı
+                income_tax_exemption = 0.0
+                stamp_tax_exemption = 0.0
+                if self.apply_min_wage_exemption_check.isChecked() and min_wage_gross > 0 and gross_calculated < min_wage_gross:
+                    min_sgk = min_wage_gross * s
+                    min_unemployment = min_wage_gross * u
+                    min_tax_base = max(min_wage_gross - min_sgk - min_unemployment, 0)
+                    income_tax_exemption = money(min(min_tax_base * t, income_tax_val))
+                    stamp_tax_exemption = money(min(min_wage_gross * d, stamp_tax_val))
+                
+                # Toplam kesinti (muafiyet uygulanmış)
+                total_deductions = money(
+                    sgk_ded + unemployment_ded + 
+                    (income_tax_val - income_tax_exemption) + 
+                    (stamp_tax_val - stamp_tax_exemption)
+                )
+                net_verification = money(gross_calculated - total_deductions)
+                
+                # Sonuçları göster
+                html = f"""
+                <h2 style='color:#2E7D32;'>✅ NET'TEN BRÜT HESAPLAMA SONUCU</h2>
+                <hr>
+                <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                    <tr style='background:#f5f5f5;'><th align='left'>Alan</th><th>Tutar (₺)</th></tr>
+                    <tr><td><strong>Hedef Net Maaş</strong></td><td><strong>{format_tr(net_salary_input)}</strong></td></tr>
+                    <tr><td><strong>Çocuk Sayısı</strong></td><td><strong>{child_count:.0f}</strong></td></tr>
+                    <tr style='background:#E3F2FD;'><td><strong>Hesaplanan Brüt Maaş</strong></td><td><strong>{format_tr(gross_calculated)}</strong></td></tr>
+                </table>
+                <br>
+                <h3 style='color:#1976D2;'>Doğrulama Hesaplaması</h3>
+                <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%;'>
+                    <tr style='background:#f5f5f5;'><th align='left'>Kesinti</th><th>Tutar (₺)</th></tr>
+                    <tr><td>SGK İşçi Payı (%{sgk_rate:.3g})</td><td>{format_tr(money(sgk_ded))}</td></tr>
+                    <tr><td>İşsizlik Sigortası (%{unemployment_rate:.3g})</td><td>{format_tr(money(unemployment_ded))}</td></tr>
+                    <tr><td>Vergi Matrahı (Çocuk İndirimi Sonrası)</td><td>{format_tr(money(reduced_tax_base))}</td></tr>
+                    <tr><td>Gelir Vergisi (%{income_tax_rate:.3g})</td><td>{format_tr(money(income_tax_val))}</td></tr>
+                    <tr><td>Gelir Vergisi İstisnası</td><td>-{format_tr(money(income_tax_exemption))}</td></tr>
+                    <tr><td>Damga Vergisi (%{stamp_tax_rate:.3g})</td><td>{format_tr(money(stamp_tax_val))}</td></tr>
+                    <tr><td>Damga Vergisi İstisnası</td><td>-{format_tr(money(stamp_tax_exemption))}</td></tr>
+                    <tr style='font-weight:bold; background:#FFEBEE;'><td>Toplam Kesinti</td><td>{format_tr(total_deductions)}</td></tr>
+                </table>
+                <br>
+                <p><strong>Doğrulama - Hesaplanan Net Maaş:</strong> {format_tr(net_verification)} ₺</p>
+                <p style='color:#1976D2;'><strong>Fark:</strong> {format_tr(money(abs(net_verification - net_salary_input)))} ₺ {'✓ Doğru' if money(abs(net_verification - net_salary_input)) < 0.01 else '⚠ Rounding farkı'}</p>
+                <br>
+                <div style='background:#FFF9C4; padding:10px; border-left:4px solid #FBC02D;'>
+                    <strong>💡 Kullanım:</strong> Hesaplanan <strong>{format_tr(gross_calculated)} ₺</strong> brüt maaşını 
+                    'Brüt Maaş' alanına kopyalayıp 'Bordroyu Hesapla' butonuna basınız.
+                </div>
+                <p style='font-size:9pt; color:#666;'>Not: Rounding nedeniyle doğrulama netinde küçük farklar oluşabilir.</p>
+                """
+                self.payroll_result_view.setHtml(html)
+                QTimer.singleShot(50, self._adjust_payroll_result_height)
+                QTimer.singleShot(150, self._scroll_to_payroll_result)
+                
+                # Brütü otomatik olarak Brüt Maaş alanına yerleştir
+                self.payroll_fields["gross_salary"].setText(format_tr(gross_calculated))
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Uyarı", f"Ters hesaplama başarısız: {str(e)}")
+
+    def export_payroll_to_pdf(self):
+        """Hesaplanan bordroyu PDF çıktısı olarak kaydet"""
+        if not self.last_payroll_html:
+            QMessageBox.warning(self, "Uyarı", "Önce bordroyu hesaplamalısınız")
+            return
+
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from PyQt5.QtPrintSupport import QPrinter
+            from PyQt5.QtGui import QTextDocument
+
+            safe_employee = self.last_payroll_employee.replace(" ", "_") if self.last_payroll_employee else "personel"
+            default_file = f"bordro_{safe_employee}_{self.last_payroll_period.replace('.', '_')}.pdf"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Bordro PDF Kaydet",
+                default_file,
+                "PDF Dosyası (*.pdf)"
+            )
+
+            if not file_path:
+                return
+
+            if not file_path.lower().endswith(".pdf"):
+                file_path += ".pdf"
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(file_path)
+
+            document = QTextDocument()
+            document.setHtml(self.last_payroll_html)
+            document.print_(printer)
+            
+            QMessageBox.information(self, "Başarılı", f"Bordro PDF'ye kaydedildi:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"PDF oluşturulamadı:\n{str(e)}")
+
+    def create_employees_tab(self) -> QWidget:
+        """Çalışanlar yönetim sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # İşlem butonları
+        button_layout = QHBoxLayout()
+        
+        btn_add_emp = QPushButton("➕ Yeni Çalışan Ekle")
+        btn_add_emp.setMinimumHeight(34)
+        btn_add_emp.clicked.connect(self.show_add_employee_dialog)
+        button_layout.addWidget(btn_add_emp)
+        
+        btn_edit_emp = QPushButton("✏️ Seçileni Düzenle")
+        btn_edit_emp.setMinimumHeight(34)
+        btn_edit_emp.clicked.connect(self.show_edit_employee_dialog)
+        button_layout.addWidget(btn_edit_emp)
+        
+        btn_delete_emp = QPushButton("🗑️ Seçileni Sil")
+        btn_delete_emp.setMinimumHeight(34)
+        btn_delete_emp.clicked.connect(self.delete_employee)
+        button_layout.addWidget(btn_delete_emp)
+        
+        search_label = QLabel("Ara:")
+        search_label.setMinimumWidth(50)
+        button_layout.addWidget(search_label)
+        
+        self.emp_search_field = QLineEdit()
+        self.emp_search_field.setPlaceholderText("Ad, Soyad veya E-posta...")
+        self.emp_search_field.setMaximumWidth(250)
+        self.emp_search_field.textChanged.connect(self.search_employees)
+        button_layout.addWidget(self.emp_search_field)
+        
+        btn_refresh_emp = QPushButton("🔄 Yenile")
+        btn_refresh_emp.setMinimumHeight(34)
+        btn_refresh_emp.clicked.connect(self.refresh_employees_table)
+        button_layout.addWidget(btn_refresh_emp)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Çalışanlar tablosu
+        self.employees_table = QTableWidget()
+        self.employees_table.setColumnCount(13)
+        self.employees_table.setHorizontalHeaderLabels([
+            "Ad", "Soyad", "E-posta", "Telefon", "Başlama Tarihi",
+            "Brüt Maaş", "Net Maaş", "Kesilmiş Bordro", "Ödenen Maaş", "Kalan Maaş", "Döküm", "Durum", "ID"
+        ])
+        self.employees_table.horizontalHeader().setStretchLastSection(True)
+        self.employees_table.setColumnHidden(12, True)
+        layout.addWidget(self.employees_table)
+        
+        widget.setLayout(layout)
+        self.refresh_employees_table()
+        return widget
+    
+    def refresh_employees_table(self):
+        """Çalışanlar tablosunu yenile"""
+        try:
+            from src.services.employee_service import EmployeeService
+            from src.database.db import get_db
+            
+            db = get_db()
+            emp_service = EmployeeService(db)
+            employees = emp_service.get_all_employees(active_only=False)
+            self._render_employees_table(employees)
+            db.close()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Çalışanlar yüklenemedi:\n{str(e)}")
+    
+    def search_employees(self):
+        """Çalışan ara"""
+        search_text = self.emp_search_field.text().strip()
+        
+        try:
+            from src.services.employee_service import EmployeeService
+            from src.database.db import get_db
+            
+            db = get_db()
+            emp_service = EmployeeService(db)
+            
+            if search_text:
+                employees = emp_service.search_employees(search_text, active_only=False)
+            else:
+                employees = emp_service.get_all_employees(active_only=False)
+            self._render_employees_table(employees)
+            db.close()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Arama yapılamadı:\n{str(e)}")
+
+    def _render_employees_table(self, employees):
+        if not hasattr(self, "employees_table"):
+            return
+
+        records = self._load_saved_payroll_records()
+        payroll_map = {}
+        for rec in records:
+            name = str(rec.get("employee", "")).strip()
+            if not name:
+                continue
+            key = name.casefold()
+            year = int(rec.get("year", 0) or 0)
+            month = int(rec.get("month", 0) or 0)
+            current = payroll_map.get(key)
+            if not current or (year, month) > (current["year"], current["month"]):
+                payroll_map[key] = {
+                    "record": rec,
+                    "year": year,
+                    "month": month,
+                    "name": name,
+                }
+
+        try:
+            from src.database.db import SessionLocal
+            from src.database.models import Transaction
+
+            session = SessionLocal()
+            payroll_transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id
+            ).all()
+            session.close()
+        except Exception:
+            payroll_transactions = []
+
+        self.employees_table.setRowCount(0)
+        for employee in employees:
+            row = self.employees_table.rowCount()
+            self.employees_table.insertRow(row)
+
+            full_name = f"{employee.first_name} {employee.last_name}".strip()
+            key = full_name.casefold()
+            payroll_info = payroll_map.get(key)
+            if not payroll_info:
+                for stored_key, info in payroll_map.items():
+                    if stored_key in key or key in stored_key:
+                        payroll_info = info
+                        break
+
+            net_text = "-"
+            bordro_text = "-"
+            paid_text = "-"
+            remaining_text = "-"
+            month = year = 0
+
+            if payroll_info:
+                rec = payroll_info["record"]
+                month = payroll_info["month"]
+                year = payroll_info["year"]
+                net = float(rec.get("net_salary", 0.0) or 0.0)
+                bordro_amount = net
+                paid_transactions = self._filter_payroll_payment_transactions(
+                    payroll_transactions, payroll_info["name"], month, year
+                )
+                paid_total = sum(float(t.amount or 0.0) for t in paid_transactions)
+                remaining = bordro_amount - paid_total
+                net_text = format_tr(net)
+                bordro_text = format_tr(bordro_amount)
+                paid_text = format_tr(paid_total)
+                remaining_text = format_tr(remaining)
+
+            self.employees_table.setItem(row, 0, QTableWidgetItem(employee.first_name))
+            self.employees_table.setItem(row, 1, QTableWidgetItem(employee.last_name))
+            self.employees_table.setItem(row, 2, QTableWidgetItem(employee.email or "-"))
+            self.employees_table.setItem(row, 3, QTableWidgetItem(employee.phone or "-"))
+            self.employees_table.setItem(row, 4, QTableWidgetItem(
+                employee.start_date.strftime("%d.%m.%Y") if employee.start_date else "-"
+            ))
+            self.employees_table.setItem(row, 5, QTableWidgetItem(format_tr(employee.gross_salary)))
+            self.employees_table.setItem(row, 6, QTableWidgetItem(net_text))
+            self.employees_table.setItem(row, 7, QTableWidgetItem(bordro_text))
+            self.employees_table.setItem(row, 8, QTableWidgetItem(paid_text))
+
+            remaining_item = QTableWidgetItem(remaining_text)
+            if remaining_text != "-":
+                if remaining > 0:
+                    remaining_item.setBackground(QColor("#fff9c4"))
+                elif remaining < 0:
+                    remaining_item.setBackground(QColor("#ffcdd2"))
+                else:
+                    remaining_item.setBackground(QColor("#c8e6c9"))
+            self.employees_table.setItem(row, 9, remaining_item)
+
+            btn_statement = QPushButton("📑 Döküm Aç")
+            btn_statement.setMinimumHeight(24)
+            btn_statement.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #45a049; }
+            """)
+            if payroll_info and month and year:
+                btn_statement.clicked.connect(
+                    lambda checked, n=payroll_info["name"], m=month, y=year: self.show_payroll_payment_statement(n, m, y)
+                )
+            else:
+                btn_statement.setEnabled(False)
+            self.employees_table.setCellWidget(row, 10, btn_statement)
+
+            status = "Aktif" if employee.is_active else "Pasif"
+            self.employees_table.setItem(row, 11, QTableWidgetItem(status))
+            self.employees_table.setItem(row, 12, QTableWidgetItem(str(employee.id)))
+    
+    def show_add_employee_dialog(self):
+        """Yeni çalışan ekle diyaloğu"""
+        from PyQt5.QtWidgets import QDialog, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit
+        from datetime import date
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Yeni Çalışan Ekle")
+        dialog.setGeometry(100, 100, 400, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Ad
+        layout.addWidget(QLabel("Ad:"))
+        first_name_field = QLineEdit()
+        layout.addWidget(first_name_field)
+        
+        # Soyad
+        layout.addWidget(QLabel("Soyad:"))
+        last_name_field = QLineEdit()
+        layout.addWidget(last_name_field)
+        
+        # E-posta
+        layout.addWidget(QLabel("E-posta:"))
+        email_field = QLineEdit()
+        layout.addWidget(email_field)
+        
+        # Telefon
+        layout.addWidget(QLabel("Telefon:"))
+        phone_field = QLineEdit()
+        layout.addWidget(phone_field)
+        
+        # Başlama Tarihi
+        layout.addWidget(QLabel("Başlama Tarihi:"))
+        start_date_field = QDateEdit()
+        start_date_field.setDate(QDate.currentDate())
+        layout.addWidget(start_date_field)
+        
+        # Brüt Maaş
+        layout.addWidget(QLabel("Brüt Maaş (₺):"))
+        gross_salary_field = QDoubleSpinBox()
+        gross_salary_field.setMaximum(999999.99)
+        gross_salary_field.setValue(30000.00)
+        layout.addWidget(gross_salary_field)
+        
+        # SGK Oranı
+        layout.addWidget(QLabel("SGK Oranı (%):"))
+        sgk_rate_field = QDoubleSpinBox()
+        sgk_rate_field.setValue(14.0)
+        layout.addWidget(sgk_rate_field)
+        
+        # İşsizlik Sigortası Oranı
+        layout.addWidget(QLabel("İşsizlik Sig. Oranı (%):"))
+        unemp_rate_field = QDoubleSpinBox()
+        unemp_rate_field.setValue(1.0)
+        layout.addWidget(unemp_rate_field)
+        
+        # Gelir Vergisi Oranı
+        layout.addWidget(QLabel("Gelir Vergisi Oranı (%):"))
+        income_tax_rate_field = QDoubleSpinBox()
+        income_tax_rate_field.setValue(15.0)
+        layout.addWidget(income_tax_rate_field)
+        
+        # Bakmakla Yükümlü Çocuk Sayısı
+        layout.addWidget(QLabel("Bakmakla Yükümlü Çocuk Sayısı:"))
+        child_count_field = QSpinBox()
+        child_count_field.setMaximum(10)
+        child_count_field.setValue(0)
+        layout.addWidget(child_count_field)
+        
+        # Butonlar
+        button_layout = QHBoxLayout()
+        
+        def save_employee():
+            try:
+                from src.services.employee_service import EmployeeService
+                from src.database.db import get_db
+                
+                db = get_db()
+                emp_service = EmployeeService(db)
+                
+                emp_service.create_employee(
+                    first_name=first_name_field.text().strip(),
+                    last_name=last_name_field.text().strip(),
+                    email=email_field.text().strip() or None,
+                    phone=phone_field.text().strip() or None,
+                    start_date=start_date_field.date().toPyDate(),
+                    gross_salary=gross_salary_field.value(),
+                    sgk_rate=sgk_rate_field.value(),
+                    unemployment_rate=unemp_rate_field.value(),
+                    income_tax_rate=income_tax_rate_field.value(),
+                    child_count=child_count_field.value()
+                )
+                db.close()
+                QMessageBox.information(dialog, "Başarılı", "Çalışan kaydedildi")
+                dialog.accept()
+                self.refresh_employees_table()
+            except Exception as e:
+                QMessageBox.critical(dialog, "Hata", f"Çalışan kaydedilemedi:\n{str(e)}")
+        
+        btn_save = QPushButton("💾 Kaydet")
+        btn_save.clicked.connect(save_employee)
+        button_layout.addWidget(btn_save)
+        
+        btn_cancel = QPushButton("❌ İptal")
+        btn_cancel.clicked.connect(dialog.reject)
+        button_layout.addWidget(btn_cancel)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def show_edit_employee_dialog(self):
+        """Çalışan düzenle diyaloğu"""
+        row = self.employees_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Uyarı", "Düzenlemek için bir çalışan seçin")
+            return
+        
+        employee_id = int(self.employees_table.item(row, 7).text())
+        
+        try:
+            from src.services.employee_service import EmployeeService
+            from src.database.db import get_db
+            from PyQt5.QtWidgets import QDialog, QDoubleSpinBox, QSpinBox
+            
+            db = get_db()
+            emp_service = EmployeeService(db)
+            employee = emp_service.get_employee(employee_id)
+            
+            if not employee:
+                db.close()
+                QMessageBox.warning(self, "Hata", "Çalışan bulunamadı")
+                return
+            
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Çalışan Düzenle: {employee.get_full_name()}")
+            dialog.setGeometry(100, 100, 400, 500)
+            
+            layout = QVBoxLayout()
+            
+            layout.addWidget(QLabel("Ad:"))
+            first_name_field = QLineEdit()
+            first_name_field.setText(employee.first_name)
+            layout.addWidget(first_name_field)
+            
+            layout.addWidget(QLabel("Soyad:"))
+            last_name_field = QLineEdit()
+            last_name_field.setText(employee.last_name)
+            layout.addWidget(last_name_field)
+            
+            layout.addWidget(QLabel("E-posta:"))
+            email_field = QLineEdit()
+            email_field.setText(employee.email or "")
+            layout.addWidget(email_field)
+            
+            layout.addWidget(QLabel("Telefon:"))
+            phone_field = QLineEdit()
+            phone_field.setText(employee.phone or "")
+            layout.addWidget(phone_field)
+            
+            layout.addWidget(QLabel("Brüt Maaş (₺):"))
+            gross_salary_field = QDoubleSpinBox()
+            gross_salary_field.setMaximum(999999.99)
+            gross_salary_field.setValue(employee.gross_salary)
+            layout.addWidget(gross_salary_field)
+            
+            layout.addWidget(QLabel("SGK Oranı (%):"))
+            sgk_rate_field = QDoubleSpinBox()
+            sgk_rate_field.setValue(employee.sgk_rate)
+            layout.addWidget(sgk_rate_field)
+            
+            layout.addWidget(QLabel("İşsizlik Sig. Oranı (%):"))
+            unemp_rate_field = QDoubleSpinBox()
+            unemp_rate_field.setValue(employee.unemployment_rate)
+            layout.addWidget(unemp_rate_field)
+            
+            layout.addWidget(QLabel("Gelir Vergisi Oranı (%):"))
+            income_tax_rate_field = QDoubleSpinBox()
+            income_tax_rate_field.setValue(employee.income_tax_rate)
+            layout.addWidget(income_tax_rate_field)
+            
+            layout.addWidget(QLabel("Bakmakla Yükümlü Çocuk Sayısı:"))
+            child_count_field = QSpinBox()
+            child_count_field.setMaximum(10)
+            child_count_field.setValue(getattr(employee, 'child_count', 0))
+            layout.addWidget(child_count_field)
+            
+            button_layout = QHBoxLayout()
+            
+            def update_employee():
+                try:
+                    emp_service.update_employee(
+                        employee_id,
+                        first_name=first_name_field.text().strip(),
+                        last_name=last_name_field.text().strip(),
+                        email=email_field.text().strip() or None,
+                        phone=phone_field.text().strip() or None,
+                        gross_salary=gross_salary_field.value(),
+                        sgk_rate=sgk_rate_field.value(),
+                        unemployment_rate=unemp_rate_field.value(),
+                        income_tax_rate=income_tax_rate_field.value(),
+                        child_count=child_count_field.value()
+                    )
+                    QMessageBox.information(dialog, "Başarılı", "Çalışan güncellendi")
+                    dialog.accept()
+                except Exception as e:
+                    QMessageBox.critical(dialog, "Hata", f"Güncelleme başarısız:\n{str(e)}")
+            
+            btn_save = QPushButton("💾 Kaydet")
+            btn_save.clicked.connect(update_employee)
+            button_layout.addWidget(btn_save)
+            
+            btn_cancel = QPushButton("❌ İptal")
+            btn_cancel.clicked.connect(dialog.reject)
+            button_layout.addWidget(btn_cancel)
+            
+            layout.addLayout(button_layout)
+            dialog.setLayout(layout)
+            dialog.exec_()
+            
+            # İşlem bitikten sonra db kapat ve tabloyu yenile
+            db.close()
+            self.refresh_employees_table()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Düzenlenemedi:\n{str(e)}")
+    
+    def delete_employee(self):
+        """Çalışan sil"""
+        row = self.employees_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Uyarı", "Silmek için bir çalışan seçin")
+            return
+        
+        employee_id = int(self.employees_table.item(row, 7).text())
+        emp_name = self.employees_table.item(row, 0).text() + " " + self.employees_table.item(row, 1).text()
+        
+        reply = QMessageBox.question(self, "Onayla", 
+            f"'{emp_name}' çalışanını silmek istediğinize emin misiniz?",
+            QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            try:
+                from src.services.employee_service import EmployeeService
+                from src.database.db import get_db
+                
+                db = get_db()
+                emp_service = EmployeeService(db)
+                emp_service.delete_employee(employee_id)
+                db.close()
+                QMessageBox.information(self, "Başarılı", "Çalışan silindi")
+                self.refresh_employees_table()
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Silme işlemi başarısız:\n{str(e)}")
+    
+    def create_bulk_payroll_tab(self) -> QWidget:
+        """Toplu bordro hesaplama sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("⚙️ Toplu Bordro Hesaplama")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        layout.addWidget(title)
+
+        # Ay-Yıl Seçimi Grubu
+        select_group = QGroupBox("Bordro Tarihi ve Genel Ayarlar")
+        select_layout = QHBoxLayout()
+        
+        select_layout.addWidget(QLabel("Ay:"))
+        self.bulk_payroll_month = QComboBox()
+        months = {
+            1: "OCAK", 2: "ŞUBAT", 3: "MART", 4: "NİSAN", 5: "MAYIS", 6: "HAZİRAN",
+            7: "TEMMUZ", 8: "AĞUSTOS", 9: "EYLÜL", 10: "EKİM", 11: "KASIM", 12: "ARALIK"
+        }
+        for i in range(1, 13):
+            self.bulk_payroll_month.addItem(months[i], i)
+        self.bulk_payroll_month.setCurrentIndex(datetime.now().month - 1)
+        select_layout.addWidget(self.bulk_payroll_month)
+        
+        select_layout.addWidget(QLabel("Yıl:"))
+        self.bulk_payroll_year = QComboBox()
+        current_year = datetime.now().year
+        for year in range(current_year - 2, current_year + 3):
+            self.bulk_payroll_year.addItem(str(year), year)
+        self.bulk_payroll_year.setCurrentIndex(2)
+        select_layout.addWidget(self.bulk_payroll_year)
+        
+        select_layout.addStretch()
+        select_group.setLayout(select_layout)
+        layout.addWidget(select_group)
+        
+        # Vergi Seçenekleri Grubu
+        options_group = QGroupBox("Vergi Seçenekleri")
+        options_layout = QVBoxLayout()
+        options_two_col = QHBoxLayout()
+        
+        options_left = QVBoxLayout()
+        options_right = QVBoxLayout()
+        
+        self.bulk_asgari_mode_button = QPushButton("🎯 Asgari Ücret Modu: Kapalı")
+        self.bulk_asgari_mode_button.setCheckable(True)
+        self.bulk_asgari_mode_button.setMinimumHeight(34)
+        self.bulk_asgari_mode_button.toggled.connect(self.toggle_bulk_asgari_ucret_mode)
+        options_left.addWidget(self.bulk_asgari_mode_button)
+        
+        self.bulk_apply_min_wage_exemption_check = QCheckBox("Asgari vergi istisnasını uygula")
+        self.bulk_apply_min_wage_exemption_check.setChecked(True)
+        options_left.addWidget(self.bulk_apply_min_wage_exemption_check)
+        
+        min_wage_row = QHBoxLayout()
+        min_wage_row.addWidget(QLabel("Asgari Ücret Brüt (₺):"))
+        self.bulk_min_wage_gross_input = QLineEdit("33030")
+        self.bulk_min_wage_gross_input.setMinimumWidth(160)
+        min_wage_row.addWidget(self.bulk_min_wage_gross_input)
+        options_left.addLayout(min_wage_row)
+        
+        self.bulk_progressive_tax_check = QCheckBox("Kümülatif vergi dilimi hesabı uygula")
+        self.bulk_progressive_tax_check.setChecked(False)  # Default kapalı toplu için
+        options_right.addWidget(self.bulk_progressive_tax_check)
+        
+        brackets_row = QHBoxLayout()
+        brackets_row.addWidget(QLabel("Vergi Dilimleri:"))
+        self.bulk_tax_brackets_input = QLineEdit("158000:15,330000:20,1200000:27,4300000:35,sonsuz:40")
+        self.bulk_tax_brackets_input.setToolTip("Örn: 158000:15,330000:20 (üst:oran%)")
+        brackets_row.addWidget(self.bulk_tax_brackets_input)
+        options_right.addLayout(brackets_row)
+        
+        options_left.addStretch()
+        options_right.addStretch()
+        options_two_col.addLayout(options_left)
+        options_two_col.addLayout(options_right)
+        options_layout.addLayout(options_two_col)
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        # Hesapla Butonu
+        btn_row = QHBoxLayout()
+        btn_calculate = QPushButton("🧮 Toplu Bordroyu Hesapla")
+        btn_calculate.setMinimumHeight(38)
+        btn_calculate.clicked.connect(self.calculate_bulk_payroll)
+        btn_row.addWidget(btn_calculate)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        
+        # Sonuç tablosu
+        self.bulk_payroll_table = QTableWidget()
+        self.bulk_payroll_table.setColumnCount(13)  # +1 Seç checkbox'ı için
+        self.bulk_payroll_table.setHorizontalHeaderLabels([
+            "Seç", "Personel", "Ay Gün", "Çalış.", "Ücretli İzin", "Ücretsiz İz.", 
+            "Brüt", "SGK", "İşsizlik", "Gel.Vergi", "Damga V.", "Muafiyet", "Net"
+        ])
+        self.bulk_payroll_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.bulk_payroll_table)
+        
+        # Özet
+        summary_layout = QHBoxLayout()
+        self.bulk_summary_label = QLabel("Hesaplama sonuçları burada gösterilecektir")
+        summary_layout.addWidget(self.bulk_summary_label)
+        summary_layout.addStretch()
+        
+        # Tümünü Seç / Seçimi Kaldır butonları
+        btn_select_all = QPushButton("✓ Tümünü Seç")
+        btn_select_all.setMaximumWidth(120)
+        btn_select_all.clicked.connect(self.bulk_select_all_employees)
+        summary_layout.addWidget(btn_select_all)
+        
+        btn_deselect_all = QPushButton("✗ Seçimi Kaldır")
+        btn_deselect_all.setMaximumWidth(120)
+        btn_deselect_all.clicked.connect(self.bulk_deselect_all_employees)
+        summary_layout.addWidget(btn_deselect_all)
+        
+        # Bordroyu Kaydet butonu
+        btn_save_payroll = QPushButton("💾 Bordroyu Kaydet")
+        btn_save_payroll.setMinimumHeight(36)
+        btn_save_payroll.setMaximumWidth(180)
+        btn_save_payroll.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        btn_save_payroll.clicked.connect(self.save_bulk_payroll)
+        summary_layout.addWidget(btn_save_payroll)
+        
+        layout.addLayout(summary_layout)
+
+        widget.setLayout(layout)
+        return widget
+    
+    def toggle_bulk_asgari_ucret_mode(self, checked):
+        """Toplu hesaplama için asgari ücret modu toggle et"""
+        text = "🎯 Asgari Ücret Modu: Açık" if checked else "🎯 Asgari Ücret Modu: Kapalı"
+        self.bulk_asgari_mode_button.setText(text)
+    
+    def calculate_bulk_payroll(self):
+        """Tüm çalışanlar için bordro hesapla (TÜM VERGİ SEÇENEKLERİ desteği)"""
+        try:
+            from src.services.employee_service import EmployeeService
+            from src.database.db import get_db
+            
+            def money(value):
+                """Tutarları hassas hesapla ve yuvarla"""
+                return round(float(value) + 1e-9, 2)
+            
+            db = get_db()
+            emp_service = EmployeeService(db)
+            employees = emp_service.get_all_employees(active_only=True)
+            
+            if not employees:
+                QMessageBox.warning(self, "Uyarı", "Aktif çalışan bulunamadı")
+                return
+            
+            month = self.bulk_payroll_month.currentData()
+            year = self.bulk_payroll_year.currentData()
+            min_wage_gross = self._parse_payroll_float(self.bulk_min_wage_gross_input, "Asgari Ücret Brüt")
+            progressive_enabled = self.bulk_progressive_tax_check.isChecked()
+            apply_exemption = self.bulk_apply_min_wage_exemption_check.isChecked()
+            asgari_mode = self.bulk_asgari_mode_button.isChecked()
+            
+            brackets = self._parse_tax_brackets(self.bulk_tax_brackets_input.text()) if progressive_enabled else []
+            
+            # Standart değerler - tüm gün çalışmayı varsayıyoruz
+            month_days = 30
+            worked_days = 30
+            paid_leave_days = 0
+            unpaid_leave_days = 0
+            paid_days = 30
+            day_ratio = 1.0
+            
+            self.bulk_payroll_table.setRowCount(0)
+            total_gross = 0.0
+            total_sgk = 0.0
+            total_unemp = 0.0
+            total_income_tax = 0.0
+            total_stamp_tax = 0.0
+            total_exemptions_amount = 0.0
+            total_net = 0.0
+            
+            # Kümülatif vergi bazı
+            cumulative_base = 0.0
+            
+            for employee in employees:
+                # BRÜT HESAPLAMA
+                gross_salary = employee.gross_salary
+                prorated_gross_salary_raw = gross_salary * day_ratio
+                gross_total_raw = prorated_gross_salary_raw
+                
+                # TAX BASE HESAPLAMA
+                deduction_base_raw = gross_total_raw
+                sgk_deduction_raw = deduction_base_raw * (employee.sgk_rate / 100.0)
+                unemployment_deduction_raw = deduction_base_raw * (employee.unemployment_rate / 100.0)
+                tax_base_raw = max(deduction_base_raw - sgk_deduction_raw - unemployment_deduction_raw, 0)
+                
+                # ÇOCUK İNDİRİMİ
+                child_allowance = getattr(employee, 'child_count', 0) * 346.5
+                reduced_tax_base_raw = max(tax_base_raw - child_allowance, 0)
+                
+                # VERGİ HESAPLAMA - Progressive veya Normal
+                if progressive_enabled and not asgari_mode:
+                    # Kümülatif vergi dilimi kullan
+                    cumulative_base_old = cumulative_base
+                    cumulative_base_new = cumulative_base + reduced_tax_base_raw
+                    income_tax_raw = (
+                        self._compute_progressive_tax(cumulative_base_new, brackets)
+                        - self._compute_progressive_tax(cumulative_base_old, brackets)
+                    )
+                    cumulative_base = cumulative_base_new
+                else:
+                    # Normal vergi hesabı
+                    if asgari_mode:
+                        income_tax_raw = 0.0
+                    else:
+                        income_tax_raw = reduced_tax_base_raw * (employee.income_tax_rate / 100.0)
+                
+                stamp_tax_raw = deduction_base_raw * (employee.stamp_tax_rate / 100.0)
+                
+                # MUAFIYET KONTROLLERI (Asgari Ücret Muafiyeti - her brüt için uygulanabilir!)
+                income_tax_exemption_raw = 0.0
+                stamp_tax_exemption_raw = 0.0
+                
+                if apply_exemption and not asgari_mode:
+                    # Muafiyet her brüt için uygulanabilir - min ücret tutarı kadar
+                    min_sgk_raw = min_wage_gross * (employee.sgk_rate / 100.0)
+                    min_unemployment_raw = min_wage_gross * (employee.unemployment_rate / 100.0)
+                    min_tax_base_raw = max(min_wage_gross - min_sgk_raw - min_unemployment_raw, 0)
+                    
+                    if progressive_enabled:
+                        # Progressive modda muafiyet hesapla
+                        min_wage_income_tax_rate = brackets[0][1] * 100 if brackets else employee.income_tax_rate
+                    else:
+                        min_wage_income_tax_rate = employee.income_tax_rate
+                    
+                    income_tax_exemption_raw = min(
+                        min_tax_base_raw * (min_wage_income_tax_rate / 100.0),
+                        income_tax_raw
+                    )
+                    stamp_tax_exemption_raw = min(
+                        min_wage_gross * (employee.stamp_tax_rate / 100.0),
+                        stamp_tax_raw
+                    )
+                
+                # KESİNTİLER
+                advance = 0.0
+                private_insurance = 0.0
+                other_deductions = 0.0
+                
+                # Vergileri muafiyet sonrası hesapla
+                income_tax_after_exemption = max(income_tax_raw - income_tax_exemption_raw, 0)
+                stamp_tax_after_exemption = max(stamp_tax_raw - stamp_tax_exemption_raw, 0)
+                
+                total_deductions_raw = sgk_deduction_raw + unemployment_deduction_raw + income_tax_after_exemption + stamp_tax_after_exemption
+                additional_deductions_raw = advance + private_insurance + other_deductions
+                total_exemptions_raw = income_tax_exemption_raw + stamp_tax_exemption_raw
+                
+                # SONUÇLAR
+                gross_total = money(gross_total_raw)
+                sgk_deduction = money(sgk_deduction_raw)
+                unemployment_deduction = money(unemployment_deduction_raw)
+                income_tax = money(income_tax_after_exemption)  # MUAFIYET SONRASI
+                stamp_tax = money(stamp_tax_after_exemption)  # MUAFIYET SONRASI
+                total_deductions = money(total_deductions_raw)
+                additional_deductions = money(additional_deductions_raw)
+                total_exemptions = money(total_exemptions_raw)
+                net_salary = money(gross_total_raw - total_deductions_raw - additional_deductions_raw)
+                
+                # TABLOYA EKLE
+                row = self.bulk_payroll_table.rowCount()
+                self.bulk_payroll_table.insertRow(row)
+                
+                # Seç checkbox'ı
+                checkbox_item = QTableWidgetItem()
+                checkbox_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                checkbox_item.setCheckState(Qt.CheckState.Checked)  # Varsayılan seçili
+                checkbox_item.setData(Qt.ItemDataRole.UserRole, employee.id)  # Employee ID sakla
+                self.bulk_payroll_table.setItem(row, 0, checkbox_item)
+                
+                self.bulk_payroll_table.setItem(row, 1, QTableWidgetItem(employee.get_full_name()))
+                self.bulk_payroll_table.setItem(row, 2, QTableWidgetItem("30"))
+                self.bulk_payroll_table.setItem(row, 3, QTableWidgetItem("30"))
+                self.bulk_payroll_table.setItem(row, 4, QTableWidgetItem("0"))
+                self.bulk_payroll_table.setItem(row, 5, QTableWidgetItem("0"))
+                self.bulk_payroll_table.setItem(row, 6, QTableWidgetItem(format_tr(gross_total)))
+                self.bulk_payroll_table.setItem(row, 7, QTableWidgetItem(format_tr(sgk_deduction)))
+                self.bulk_payroll_table.setItem(row, 8, QTableWidgetItem(format_tr(unemployment_deduction)))
+                self.bulk_payroll_table.setItem(row, 9, QTableWidgetItem(format_tr(income_tax)))
+                self.bulk_payroll_table.setItem(row, 10, QTableWidgetItem(format_tr(stamp_tax)))
+                self.bulk_payroll_table.setItem(row, 11, QTableWidgetItem(format_tr(total_exemptions)))
+                self.bulk_payroll_table.setItem(row, 12, QTableWidgetItem(format_tr(net_salary)))
+
+                
+                # TOPLAMLAR
+                total_gross += gross_total
+                total_sgk += sgk_deduction
+                total_unemp += unemployment_deduction
+                total_income_tax += income_tax
+                total_stamp_tax += stamp_tax
+                total_exemptions_amount += total_exemptions
+                total_net += net_salary
+            
+            # ÖZETİ GÜNCELLE
+            self.bulk_summary_label.setText(
+                f"Toplu Brüt: {format_tr(total_gross)} TL | "
+                f"Total Kesinti: {format_tr(money(total_sgk + total_unemp + total_income_tax + total_stamp_tax))} TL | "
+                f"Total Muafiyet: {format_tr(total_exemptions_amount)} TL | "
+                f"Net Toplam (ÖDENECEK): {format_tr(total_net)} TL"
+            )
+            
+            db.close()
+            QMessageBox.information(self, "Başarılı", 
+                f"{len(employees)} çalışan için {month:02d}/{year} bordrosu hesaplandı\n\nNet Toplam: {format_tr(total_net)} TL")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Toplu bordro hesaplaması başarısız:\n{str(e)}")
+    
+    def _save_bulk_payroll_to_db(self, employees, month, year):
+        """Hesaplanan bordroları veritabanına kaydet"""
+        try:
+            from src.database.db import get_db
+            from datetime import datetime
+            
+            db = get_db()
+            
+            for row in range(self.bulk_payroll_table.rowCount()):
+                employee_name = self.bulk_payroll_table.item(row, 1).text()  # +1 checkbox sütunu nedeniyle
+                
+                # Çalışanı bul
+                employee = None
+                for emp in employees:
+                    if emp.get_full_name() == employee_name:
+                        employee = emp
+                        break
+                
+                if not employee:
+                    continue
+                
+                # Tablo hücrelerinden veriler al
+                def get_table_value(col):
+                    item = self.bulk_payroll_table.item(row, col)
+                    if item:
+                        # Türkçe virgülü ve noktayı düzelt
+                        text = item.text().replace(".", "").replace(",", ".")
+                        try:
+                            return float(text)
+                        except:
+                            return 0.0
+                    return 0.0
+                
+                gross_total = get_table_value(6)
+                sgk_deduction = get_table_value(7)
+                unemployment_deduction = get_table_value(8)
+                income_tax = get_table_value(9)
+                stamp_tax = get_table_value(10)
+                total_exemptions = get_table_value(11)
+                net_salary = get_table_value(12)
+                
+                # Bordro kaydı oluştur - Maaş Bordro sistemiyle uyumlu
+                payroll_record = {
+                    "employee": employee_name,
+                    "year": year,
+                    "month": month,
+                    "month_days": 30,
+                    "worked_days": 30,
+                    "paid_leave_days": 0,
+                    "unpaid_leave_days": 0,
+                    "child_count": 0,
+                    "paid_days": 30,
+                    "day_ratio": 1.0,
+                    "gross_salary": employee.gross_salary,
+                    "overtime_hours": 0.0,
+                    "overtime_rate": employee.overtime_rate,
+                    "overtime_amount": 0.0,
+                    "bonus": 0.0,
+                    "meal": 0.0,
+                    "transport": 0.0,
+                    "gross_total": gross_total,
+                    "sgk_rate": employee.sgk_rate,
+                    "sgk_deduction": sgk_deduction,
+                    "unemployment_rate": employee.unemployment_rate,
+                    "unemployment_deduction": unemployment_deduction,
+                    "tax_base": gross_total - sgk_deduction - unemployment_deduction,
+                    "child_allowance": 0.0,
+                    "income_tax_rate": employee.income_tax_rate,
+                    "income_tax": income_tax,
+                    "stamp_tax_rate": employee.stamp_tax_rate,
+                    "stamp_tax": stamp_tax,
+                    "income_tax_exemption": total_exemptions if income_tax > 0 else 0.0,
+                    "stamp_tax_exemption": 0.0,
+                    "total_deductions": sgk_deduction + unemployment_deduction + income_tax + stamp_tax,
+                    "advance": 0.0,
+                    "private_insurance": 0.0,
+                    "other_deductions": 0.0,
+                    "additional_deductions": 0.0,
+                    "total_exemptions": total_exemptions,
+                    "net_salary": net_salary,
+                    "saved_at": datetime.now().isoformat()
+                }
+                
+                # Mevcut kayıtları yükle
+                records = self._load_saved_payroll_records()
+                
+                # Aynı ay/yıl için eski kaydı sil
+                records = [
+                    r for r in records
+                    if not (
+                        str(r.get("employee", "")).strip().lower() == employee_name.strip().lower()
+                        and int(r.get("year", 0)) == year
+                        and int(r.get("month", 0)) == month
+                    )
+                ]
+                
+                # Yeni kaydı ekle
+                records.append(payroll_record)
+                self._save_payroll_records(records)
+            
+            db.close()
+        except Exception as e:
+            print(f"Toplu bordro kaydı hatası: {str(e)}")
+
+    def bulk_select_all_employees(self):
+        """Toplu bordro tablosundaki tüm çalışanları seç"""
+        for row in range(self.bulk_payroll_table.rowCount()):
+            item = self.bulk_payroll_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Checked)
+
+    def bulk_deselect_all_employees(self):
+        """Toplu bordro tablosundaki tüm seçimleri kaldır"""
+        for row in range(self.bulk_payroll_table.rowCount()):
+            item = self.bulk_payroll_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def save_bulk_payroll(self):
+        """Toplu bordro tablosunda seçili olan çalışanların bordrolarını kaydet"""
+        try:
+            from src.database.db import get_db
+            from datetime import datetime
+            
+            db = get_db()
+            selected_rows = []
+            
+            # Seçili çalışanları bul
+            for row in range(self.bulk_payroll_table.rowCount()):
+                checkbox_item = self.bulk_payroll_table.item(row, 0)
+                if checkbox_item and checkbox_item.checkState() == Qt.CheckState.Checked:
+                    selected_rows.append(row)
+            
+            if not selected_rows:
+                QMessageBox.warning(self, "Uyarı", "Kaydetmek için lütfen çalışan seçiniz!")
+                return
+            
+            # Seçili çalışanlar için bordro kaydı yap
+            month = self.bulk_payroll_month.currentData()
+            year = self.bulk_payroll_year.currentData()
+            
+            # Kaydedilen önceki kayıtları al
+            records = self._load_saved_payroll_records()
+            
+            saved_count = 0
+            for row in selected_rows:
+                employee_name = self.bulk_payroll_table.item(row, 1).text()
+                
+                # Aynı ay/yıl için eski kaydı sil
+                records = [r for r in records if not (r.get("employee") == employee_name and 
+                                                      str(r.get("month")) == str(month) and
+                                                      str(r.get("year")) == str(year))]
+                
+                # Tablo hücrelerinden değerleri al
+                def get_value(col):
+                    text = self.bulk_payroll_table.item(row, col).text()
+                    text = text.replace(".", "").replace(",", ".")
+                    try:
+                        return float(text)
+                    except:
+                        return 0.0
+                
+                # Yeni kayıt oluştur
+                payroll_record = {
+                    "employee": employee_name,
+                    "month": int(month),
+                    "year": int(year),
+                    "worked_days": get_value(2),
+                    "paid_leave_days": get_value(3),
+                    "unpaid_leave_days": get_value(4),
+                    "gross_total": get_value(6),
+                    "tax_base": get_value(6),  # Toplu bordro için brüt = tax base
+                    "sgk_deduction": get_value(7),
+                    "unemployment_deduction": get_value(8),
+                    "income_tax": get_value(9),
+                    "stamp_tax": get_value(10),
+                    "net_salary": get_value(12),
+                    "saved_at": datetime.now().isoformat()
+                }
+                records.append(payroll_record)
+                saved_count += 1
+            
+            self._save_payroll_records(records)
+            db.close()
+            QMessageBox.information(self, "Başarılı", f"{saved_count} çalışanın bordrosu kaydedildi!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Bordro kaydı başarısız:\n{str(e)}")
+
+            QMessageBox.information(self, "Başarılı", f"Bordro PDF olarak kaydedildi:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"PDF oluşturulamadı:\n{str(e)}")    
+    def save_google_sheets_settings(self):
+        """Google Sheets ayarlarını kaydet (credentials gerektirmeden)"""
+        try:
+            url = self.gsheets_url_input.text().strip()
+
+            caris_sheet = self.gsheets_caris_sheet_input.text().strip() or "Cariler"
+            trans_sheet = self.gsheets_trans_sheet_input.text().strip() or "İşlemler"
+            gelen_fatura_sheet = self.gsheets_gelen_fatura_sheet_input.text().strip() or "Gelen Fatura"
+            kesilen_fatura_sheet = self.gsheets_kesilen_fatura_sheet_input.text().strip() or "Kesilen Fatura"
+            gider_sheet = self.gsheets_gider_sheet_input.text().strip() or "Gider"
+            gelir_sheet = self.gsheets_gelir_sheet_input.text().strip() or "Gelir"
+            auto_sync = self.gsheets_auto_sync_check.isChecked()
+
+            # Ayarları kaydet
+            UserSettingsService.set_setting(self.user.id, "google_sheets_caris_sheet", caris_sheet)
+            UserSettingsService.set_setting(self.user.id, "google_sheets_trans_sheet", trans_sheet)
+            UserSettingsService.set_setting(self.user.id, "google_sheets_gelen_fatura_sheet", gelen_fatura_sheet)
+            UserSettingsService.set_setting(self.user.id, "google_sheets_kesilen_fatura_sheet", kesilen_fatura_sheet)
+            UserSettingsService.set_setting(self.user.id, "google_sheets_gider_sheet", gider_sheet)
+            UserSettingsService.set_setting(self.user.id, "google_sheets_gelir_sheet", gelir_sheet)
+            UserSettingsService.set_json_setting(self.user.id, "google_sheets_auto_sync", auto_sync)
+            
+            if url:
+                # URL'den Spreadsheet ID'yi çıkar
+                spreadsheet_id = GoogleSheetsService.get_spreadsheet_id_from_url(url)
+                if not spreadsheet_id:
+                    spreadsheet_id = url  # Belki direkt ID verilmiş
+                
+                UserSettingsService.set_setting(self.user.id, "google_sheets_url", url)
+                UserSettingsService.set_setting(self.user.id, "google_sheets_id", spreadsheet_id)
+                
+                # Otomatik senkronizasyonu ayarla
+                if auto_sync:
+                    self.setup_google_sheets_timer()
+                
+                QMessageBox.information(self, "Başarılı", 
+                    "Google Sheets ayarları kaydedildi!\n\n"
+                    "'Şimdi Senkronize Et' butonuna basarak verileri çekebilirsiniz.")
+            else:
+                # URL silinmişse timer'ı durdur
+                if hasattr(self, 'gsheets_timer') and self.gsheets_timer:
+                    self.gsheets_timer.stop()
+                    self.gsheets_timer = None
+                
+                QMessageBox.information(self, "Başarılı", "Ayarlar kaydedildi!")
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Hata", f"Ayarlar kaydedilemedi:\n{str(e)}")
+    
+    def test_google_sheets_connection(self):
+        """Google Sheets bağlantısını test et"""
+        try:
+            if self.gsheets_worker and self.gsheets_worker.isRunning():
+                QMessageBox.information(self, "Bilgi", "Google Sheets işlemi devam ediyor, lütfen bekleyin.")
+                return
+
+            url = self.gsheets_url_input.text().strip()
+            if not url:
+                QMessageBox.warning(self, "Uyarı", "Lütfen Google Sheets URL'si girin!")
+                return
+            
+            spreadsheet_id = GoogleSheetsService.get_spreadsheet_id_from_url(url)
+            if not spreadsheet_id:
+                spreadsheet_id = url
+
+            self._set_gsheets_busy(True)
+            self.gsheets_worker = GoogleSheetsWorker('test', self.user.id, spreadsheet_id)
+            self.gsheets_worker.finished_signal.connect(self._on_gsheets_worker_finished)
+            self.gsheets_worker.start()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Bağlantı testi başarısız:\n{str(e)}")
+    
+    def sync_from_google_sheets(self):
+        """Google Sheets'ten tek yönlü veri aktar"""
+        try:
+            if self.gsheets_worker and self.gsheets_worker.isRunning():
+                QMessageBox.information(self, "Bilgi", "Google Sheets işlemi devam ediyor, lütfen bekleyin.")
+                return
+
+            url = self.gsheets_url_input.text().strip()
+            if not url:
+                QMessageBox.warning(self, "Uyarı", "Lütfen Google Sheets URL'si girin!")
+                return
+            
+            spreadsheet_id = GoogleSheetsService.get_spreadsheet_id_from_url(url)
+            if not spreadsheet_id:
+                spreadsheet_id = url
+            
+
+            caris_sheet = self.gsheets_caris_sheet_input.text().strip() or "Cariler"
+            trans_sheet = self.gsheets_trans_sheet_input.text().strip() or "İşlemler"
+            gelen_fatura_sheet = self.gsheets_gelen_fatura_sheet_input.text().strip() or "Gelen Fatura"
+            kesilen_fatura_sheet = self.gsheets_kesilen_fatura_sheet_input.text().strip() or "Kesilen Fatura"
+            gider_sheet = self.gsheets_gider_sheet_input.text().strip() or "Gider"
+            gelir_sheet = self.gsheets_gelir_sheet_input.text().strip() or "Gelir"
+
+            sheet_mappings = {
+                'caris': caris_sheet,
+                'transactions': trans_sheet,
+                'gelen_fatura': gelen_fatura_sheet,
+                'kesilen_fatura': kesilen_fatura_sheet,
+                'gider': gider_sheet,
+                'gelir': gelir_sheet
+            }
+
+            self._set_gsheets_busy(True)
+            self.gsheets_worker = GoogleSheetsWorker('sync', self.user.id, spreadsheet_id, sheet_mappings)
+            self.gsheets_worker.finished_signal.connect(self._on_gsheets_worker_finished)
+            self.gsheets_worker.start()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Senkronizasyon başarısız:\n{str(e)}")
+
+    def _set_gsheets_busy(self, busy: bool):
+        """Google Sheets butonlarını işlem sırasında kilitle"""
+        if hasattr(self, 'gsheets_test_button') and self.gsheets_test_button:
+            self.gsheets_test_button.setEnabled(not busy)
+            self.gsheets_test_button.setText("⏳ İşleniyor..." if busy else "🔗 Bağlantıyı Test Et")
+
+        if hasattr(self, 'gsheets_sync_button') and self.gsheets_sync_button:
+            self.gsheets_sync_button.setEnabled(not busy)
+            self.gsheets_sync_button.setText("⏳ İşleniyor..." if busy else "🔄 Şimdi Google Sheets'ten Aktar")
+
+    def _on_gsheets_worker_finished(self, operation: str, success: bool, message: str, stats: dict):
+        """Arka plan Google Sheets işlemi tamamlandı"""
+        self._set_gsheets_busy(False)
+
+        if operation == 'test':
+            if success:
+                QMessageBox.information(self, "Başarılı", message)
+            else:
+                if "credentials.json" in message:
+                    QMessageBox.information(self, "Bilgi",
+                        "Google Sheets özelliğini kullanmak için:\n\n"
+                        "1. Google Cloud Console'dan credentials.json indirin\n"
+                        "2. data/google_credentials/ klasörüne koyun\n\n"
+                        "Detaylı bilgi için GOOGLE_SHEETS_SETUP.md dosyasına bakın.\n\n"
+                        "Not: Bu özellik isteğe bağlıdır.")
+                else:
+                    QMessageBox.warning(self, "Bağlantı Hatası", message)
+            return
+
+        if operation == 'sync':
+            if success:
+                last_sync = UserSettingsService.get_setting(self.user.id, "google_sheets_last_sync", None)
+                if last_sync:
+                    last_sync_dt = datetime.fromisoformat(last_sync)
+                    self.gsheets_last_sync_label.setText(f"Son senkronizasyon: {last_sync_dt.strftime('%d.%m.%Y %H:%M')}")
+
+                self.refresh_dashboard()
+                duplicate_items = stats.get('duplicate_transactions', []) if stats else []
+                added_duplicates = 0
+                skipped_duplicates = len(duplicate_items)
+
+                if duplicate_items:
+                    from src.ui.dialogs.duplicate_transactions_dialog import DuplicateTransactionsDialog
+
+                    dialog = DuplicateTransactionsDialog(duplicate_items, self)
+                    if dialog.exec_() == QDialog.Accepted:
+                        selected = dialog.get_selected_row_ids()
+                        for item in duplicate_items:
+                            if item.get('row_key') not in selected:
+                                continue
+                            transaction, _ = TransactionService.create_transaction(
+                                user_id=self.user.id,
+                                transaction_date=item.get('date'),
+                                transaction_type=item.get('transaction_type'),
+                                payment_method=item.get('payment_method'),
+                                customer_name=item.get('customer_name') or "",
+                                description=item.get('description') or "",
+                                amount=float(item.get('amount') or 0.0),
+                                cari_id=item.get('cari_id'),
+                                payment_type=item.get('payment_type')
+                            )
+                            if transaction:
+                                added_duplicates += 1
+
+                        skipped_duplicates = len(duplicate_items) - len(selected)
+                        if added_duplicates:
+                            self.refresh_dashboard()
+
+                if duplicate_items:
+                    message = (
+                        f"{message}\nMükerrer: {len(duplicate_items)}"
+                        f" (eklendi: {added_duplicates}, atlandı: {skipped_duplicates})"
+                    )
+                QMessageBox.information(self, "Başarılı", message)
+            else:
+                QMessageBox.warning(self, "Senkronizasyon Hatası", message)
+    
+    def setup_google_sheets_timer(self):
+        """Google Sheets otomatik senkronizasyon zamanlayıcısı"""
+        try:
+            if hasattr(self, 'gsheets_timer') and self.gsheets_timer:
+                self.gsheets_timer.stop()
+            
+            auto_sync = UserSettingsService.get_json_setting(self.user.id, "google_sheets_auto_sync", False)
+            if not auto_sync:
+                return
+            
+            url = UserSettingsService.get_setting(self.user.id, "google_sheets_url", None)
+            if not url:
+                return
+            
+            # credentials.json yoksa sessizce atla
+            credentials_file = GoogleSheetsService.CREDENTIALS_FILE
+            if not credentials_file.exists():
+                print("Google Sheets credentials.json bulunamadı, otomatik senkronizasyon devre dışı")
+                return
+            
+            # 10 dakikada bir senkronize et
+            self.gsheets_timer = QTimer(self)
+            self.gsheets_timer.timeout.connect(self.auto_sync_google_sheets)
+            self.gsheets_timer.start(10 * 60 * 1000)  # 10 dakika = 600,000 ms
+            
+        except Exception as e:
+            print(f"Google Sheets timer kurulumu hatası: {e}")
+    
+    def auto_sync_google_sheets(self):
+        """Otomatik Google Sheets senkronizasyonu (sessiz)"""
+        try:
+            # credentials.json yoksa sessizce atla
+            credentials_file = GoogleSheetsService.CREDENTIALS_FILE
+            if not credentials_file.exists():
+                return
+            
+            url = UserSettingsService.get_setting(self.user.id, "google_sheets_url", None)
+            if not url:
+                return
+            
+            spreadsheet_id = GoogleSheetsService.get_spreadsheet_id_from_url(url)
+            if not spreadsheet_id:
+                spreadsheet_id = url
+            
+
+            caris_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_caris_sheet", "Cariler")
+            trans_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_trans_sheet", "İşlemler")
+            gelen_fatura_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_gelen_fatura_sheet", "Gelen Fatura")
+            kesilen_fatura_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_kesilen_fatura_sheet", "Kesilen Fatura")
+            gider_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_gider_sheet", "Gider")
+            gelir_sheet = UserSettingsService.get_setting(self.user.id, "google_sheets_gelir_sheet", "Gelir")
+
+            sheet_mappings = {
+                'caris': caris_sheet,
+                'transactions': trans_sheet,
+                'gelen_fatura': gelen_fatura_sheet,
+                'kesilen_fatura': kesilen_fatura_sheet,
+                'gider': gider_sheet,
+                'gelir': gelir_sheet
+            }
+            
+            service = GoogleSheetsService()
+            success, message, stats = service.sync_from_sheets(self.user.id, spreadsheet_id, sheet_mappings)
+            
+            if success:
+                # Dashboard'u sessizce yenile
+                self.refresh_dashboard()
+                print(f"Otomatik senkronizasyon başarılı: {message}")
+            else:
+                # Sadece log'a yaz, kullanıcıyı rahatsız etme
+                print(f"Otomatik senkronizasyon hatası: {message}")
+                
+        except Exception as e:
+            print(f"Otomatik senkronizasyon hatası: {e}")

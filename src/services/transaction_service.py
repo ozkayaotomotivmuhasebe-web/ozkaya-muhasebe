@@ -1,11 +1,45 @@
 from src.database.db import SessionLocal
-from src.database.models import Transaction, Cari, BankAccount, CreditCard, TransactionType, PaymentMethod
+from src.database.models import Transaction, Cari, BankAccount, CreditCard, Loan, TransactionType, PaymentMethod
 from datetime import datetime, date
 from sqlalchemy import func
 
 
 class TransactionService:
     """İşlem yönetimi servisi - Tüm işlemleri buradan yönetiriz"""
+
+    @staticmethod
+    def find_duplicate_transaction(user_id, transaction_date, amount, description, customer_name=None, person=None):
+        """Mükerrer işlem kontrolü (tarih + tutar + açıklama + kişi/müşteri)"""
+        session = SessionLocal()
+        try:
+            def _norm(value):
+                return str(value).strip().casefold() if value is not None else ""
+
+            desc_norm = _norm(description)
+            cust_norm = _norm(customer_name)
+            person_norm = _norm(person)
+
+            if not cust_norm and not person_norm:
+                return None
+
+            candidates = session.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.transaction_date == transaction_date,
+                Transaction.amount == amount
+            ).all()
+
+            for trans in candidates:
+                if _norm(trans.description) != desc_norm:
+                    continue
+                if cust_norm and _norm(trans.customer_name) != cust_norm:
+                    continue
+                if person_norm and _norm(trans.person) != person_norm:
+                    continue
+                return trans
+
+            return None
+        finally:
+            session.close()
     
     @staticmethod
     def create_transaction(user_id, transaction_date, transaction_type, payment_method,
@@ -80,6 +114,24 @@ class TransactionService:
             
             return  # Transfer işleminde başka güncelleme yok
         
+        # NAKİT ÇEKİM - Bankadan nakit çek (banka bakiyesi azalır)
+        if transaction_type == TransactionType.NAKIT_CEKIMI:
+            bank = session.query(BankAccount).filter(
+                BankAccount.id == kwargs.get('bank_account_id')
+            ).first()
+            if bank:
+                bank.balance -= amount
+            return
+        
+        # NAKİT YATIRIM - Bankaya nakit yatır (banka bakiyesi artar)
+        if transaction_type == TransactionType.NAKIT_YATIRIMI:
+            bank = session.query(BankAccount).filter(
+                BankAccount.id == kwargs.get('bank_account_id')
+            ).first()
+            if bank:
+                bank.balance += amount
+            return
+        
         # CARİ HESAP GÜNCELLEMESİ
         # Cari seçilmişse veya ödeme yöntemi CARI ise
         if kwargs.get('cari_id') or payment_method == PaymentMethod.CARI:
@@ -121,6 +173,23 @@ class TransactionService:
                 elif transaction_type == TransactionType.KREDI_KARTI_ODEME:
                     card.current_debt -= amount  # Ödeme yapıldı
                     card.available_limit = card.card_limit - card.current_debt
+
+        # KREDİ GÜNCELLEMESİ (KREDI_ODEME)
+        if transaction_type == TransactionType.KREDI_ODEME:
+            loan_id = kwargs.get('loan_id') or TransactionService._extract_loan_id(kwargs.get('notes'))
+            if loan_id:
+                loan = session.query(Loan).filter(Loan.id == loan_id, Loan.user_id == transaction.user_id).first()
+                if loan:
+                    total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
+                    current_remaining = max(0.0, total_repayment - float(loan.total_paid or 0))
+                    if amount > current_remaining:
+                        raise ValueError(f"Ödeme tutarı kalan kredi bakiyesini ({current_remaining:.2f}) aşamaz")
+                    loan.total_paid += amount
+                    loan.remaining_balance = total_repayment
+                    loan.paid_installments += 1
+                    remaining_after = max(0.0, total_repayment - float(loan.total_paid or 0))
+                    if remaining_after <= 0:
+                        loan.status = 'KAPATILDI'
     
     @staticmethod
     def get_all_transactions(user_id, start_date=None, end_date=None):
@@ -223,6 +292,24 @@ class TransactionService:
                 elif transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
                     cari.balance += amount  # Borcu geri al
         
+        # Nakit çekim geri al (banka bakiyesi artar)
+        if transaction_type == TransactionType.NAKIT_CEKIMI and transaction.bank_account_id:
+            bank = session.query(BankAccount).filter(
+                BankAccount.id == transaction.bank_account_id
+            ).first()
+            if bank:
+                bank.balance += amount
+            return
+        
+        # Nakit yatırım geri al (banka bakiyesi azalır)
+        if transaction_type == TransactionType.NAKIT_YATIRIMI and transaction.bank_account_id:
+            bank = session.query(BankAccount).filter(
+                BankAccount.id == transaction.bank_account_id
+            ).first()
+            if bank:
+                bank.balance -= amount
+            return
+        
         # Banka hesap geri al
         if payment_method == PaymentMethod.BANKA and transaction.bank_account_id:
             bank = session.query(BankAccount).filter(
@@ -247,6 +334,32 @@ class TransactionService:
                 elif transaction_type == TransactionType.KREDI_KARTI_ODEME:
                     card.current_debt += amount  # Ödemeyi geri al
                     card.available_limit = card.card_limit - card.current_debt
+
+        # Kredi geri al
+        if transaction_type == TransactionType.KREDI_ODEME:
+            loan_id = TransactionService._extract_loan_id(transaction.notes)
+            if loan_id:
+                loan = session.query(Loan).filter(Loan.id == loan_id, Loan.user_id == transaction.user_id).first()
+                if loan:
+                    total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
+                    loan.total_paid = max((loan.total_paid or 0) - amount, 0.0)
+                    loan.remaining_balance = total_repayment
+                    loan.paid_installments = max((loan.paid_installments or 0) - 1, 0)
+                    remaining_after = max(0.0, total_repayment - float(loan.total_paid or 0))
+                    if remaining_after > 0 and loan.status == 'KAPATILDI':
+                        loan.status = 'AKTIF'
+
+    @staticmethod
+    def _extract_loan_id(notes):
+        if not notes:
+            return None
+        text = str(notes).strip()
+        if not text.startswith('loan_id:'):
+            return None
+        raw_id = text.split(':', 1)[1].strip()
+        if raw_id.isdigit():
+            return int(raw_id)
+        return None
     
     @staticmethod
     def get_statistics(user_id):

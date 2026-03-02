@@ -10,6 +10,7 @@ from src.services.invoice_service import InvoiceService
 from src.services.cari_service import CariService
 from src.services.bank_service import BankService
 from src.services.auth_service import AuthService
+from src.utils.app_icon import get_app_icon
 import config
 from datetime import datetime, date, timedelta
 
@@ -20,6 +21,9 @@ class MainWindow(QMainWindow):
     def __init__(self, user: User):
         super().__init__()
         self.user = user
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.setWindowTitle(f"{config.APP_NAME} - {user.full_name}")
         self.setGeometry(0, 0, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
         
@@ -54,23 +58,59 @@ class MainWindow(QMainWindow):
         # Tab widget
         self.tabs = QTabWidget()
         
-        # Sekmeler
-        self.tabs.addTab(self.create_dashboard_tab(), "📊 Dashboard")
-        self.tabs.addTab(self.create_invoices_tab(), "📄 Faturalar")
-        self.tabs.addTab(self.create_caris_tab(), "📋 Cari Hesaplar")
-        self.tabs.addTab(self.create_bank_tab(), "🏦 Banka Hesapları")
+        # Sekmeler - Yetkilere göre ekle
+        if self.user.can_view_dashboard:
+            self.tabs.addTab(self.create_dashboard_tab(), "📊 Dashboard")
+        
+        if self.user.can_view_invoices:
+            self.tabs.addTab(self.create_invoices_tab(), "📄 Faturalar")
+        
+        if self.user.can_view_caris:
+            self.tabs.addTab(self.create_caris_tab(), "📋 Cari Hesaplar")
+        
+        if self.user.can_view_banks:
+            self.tabs.addTab(self.create_bank_tab(), "🏦 Banka Hesapları")
+        
+        if self.user.can_view_credit_cards:
+            self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
+        
+        if self.user.can_view_reports:
+            self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
+        
+        # Admin ise kullanıcı yönetimi sekmesi ekle
+        if self.user.role == 'admin':
+            self.tabs.addTab(self.create_user_management_tab(), "👥 Kullanıcı Yönetimi")
+        
+        # Ayarlar her zaman görünsün
         self.tabs.addTab(self.create_settings_tab(), "⚙️ Ayarlar")
         
         layout.addWidget(self.tabs)
         central_widget.setLayout(layout)
+            @staticmethod
+            def format_tr(val):
+                """Türkçe sayı formatı: 7.521,00"""
+                try:
+                    val_float = float(val)
+                except (ValueError, TypeError):
+                    return str(val)
+                s = f"{val_float:.2f}"
+                parts = s.split('.')
+                integer_part = parts[0]
+                decimal_part = parts[1] if len(parts) > 1 else "00"
+                result = ""
+                for i, digit in enumerate(reversed(integer_part)):
+                    if i > 0 and i % 3 == 0:
+                        result = "." + result
+                    result = digit + result
+                return f"{result},{decimal_part}"
         
         self.showMaximized()
     
     def create_dashboard_tab(self) -> QWidget:
         """Dashboard sekmesi"""
         widget = QWidget()
-        layout = QVBoxLayout()
-        
+                    self.lbl_paid_invoices.findChild(QLabel).setText(f"{self.format_tr(stats['paid'])} Ödendi")
+                    self.lbl_pending.findChild(QLabel).setText(f"{self.format_tr(stats['unpaid'])} Beklemede")
         # Başlık
         title = QLabel("📊 Kontrol Paneli")
         title.setFont(QFont("Arial", 16, QFont.Bold))
@@ -79,7 +119,7 @@ class MainWindow(QMainWindow):
         # Dashboard cards
         cards_layout = QHBoxLayout()
         
-        # Toplam Faturalar
+                        self.table_recent.setItem(i, 2, QTableWidgetItem(self.format_tr(inv.total_amount)))
         self.lbl_total_invoices = self.create_dashboard_card("Toplam Faturalar", "0")
         cards_layout.addWidget(self.lbl_total_invoices)
         
@@ -93,8 +133,8 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(cards_layout)
         layout.addSpacing(20)
-        
-        # Son Faturalar
+                    self.table_invoices.setItem(i, 2, QTableWidgetItem(self.format_tr(inv.amount)))
+                    self.table_invoices.setItem(i, 3, QTableWidgetItem(self.format_tr(inv.tax_amount)))
         layout.addWidget(QLabel("📋 Son Faturalar"))
         self.table_recent = QTableWidget()
         self.table_recent.setColumnCount(5)
@@ -108,7 +148,7 @@ class MainWindow(QMainWindow):
         
         # Verileri al
         self.refresh_dashboard()
-        
+                    self.table_caris.setItem(i, 2, QTableWidgetItem(self.format_tr(cari.balance)))
         return widget
     
     def create_dashboard_card(self, title: str, value: str, color: str = "#2196F3") -> QFrame:
@@ -122,7 +162,7 @@ class MainWindow(QMainWindow):
                 padding: 15px;
             }}
         """)
-        
+                    self.table_banks.setItem(i, 2, QTableWidgetItem(f"{self.format_tr(acc.balance)} {acc.currency}"))
         layout = QVBoxLayout()
         
         lbl_title = QLabel(title)
@@ -342,6 +382,134 @@ class MainWindow(QMainWindow):
     def show_change_password_dialog(self):
         """Şifre değiştir dialog'u"""
         QMessageBox.information(self, "Bilgi", "Şifre değiştirme özelliği yakında eklenecek")
+    
+    def create_credit_cards_tab(self) -> QWidget:
+        """Kredi Kartları sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        title = QLabel("💳 Kredi Kartları")
+        title.setFont(QFont("Arial", 16, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Butonlar
+        btn_layout = QHBoxLayout()
+        btn_new = QPushButton("➕ Yeni Kart")
+        btn_layout.addWidget(btn_new)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        # Kredi kartı tablosu
+        self.table_cards = QTableWidget()
+        self.table_cards.setColumnCount(5)
+        self.table_cards.setHorizontalHeaderLabels(["Kart Adı", "Banka", "Son 4 Hane", "Limit", "Kullanım"])
+        self.table_cards.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table_cards)
+        
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def create_reports_tab(self) -> QWidget:
+        """Raporlar sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        title = QLabel("📊 Raporlar ve Analizler")
+        title.setFont(QFont("Arial", 16, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Rapor butonları
+        btn_layout = QVBoxLayout()
+        
+        btn_income = QPushButton("📈 Gelir-Gider Raporu")
+        btn_income.setMinimumHeight(40)
+        btn_layout.addWidget(btn_income)
+        
+        btn_cari = QPushButton("📋 Cari Hesap Raporu")
+        btn_cari.setMinimumHeight(40)
+        btn_layout.addWidget(btn_cari)
+        
+        btn_bank = QPushButton("🏦 Banka Raporu")
+        btn_bank.setMinimumHeight(40)
+        btn_layout.addWidget(btn_bank)
+        
+        layout.addLayout(btn_layout)
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def create_user_management_tab(self) -> QWidget:
+        """Kullanıcı Yönetimi sekmesi - Sadece Admin için"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        title = QLabel("👥 Kullanıcı Yönetimi")
+        title.setFont(QFont("Arial", 16, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Açıklama
+        info = QLabel("Kullanıcıları yönetmek ve yetkilerini düzenlemek için butona tıklayın:")
+        info.setStyleSheet("color: #666; margin: 10px 0;")
+        layout.addWidget(info)
+        
+        # Kullanıcı yönetimi butonu
+        btn_manage = QPushButton("👥 Kullanıcı Yönetimi Panelini Aç")
+        btn_manage.setMinimumHeight(50)
+        btn_manage.setStyleSheet("""
+            QPushButton {
+                background-color: #667eea;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #5568d3; }
+        """)
+        btn_manage.clicked.connect(self.show_user_management_dialog)
+        layout.addWidget(btn_manage)
+        
+        # Yetkiler hakkında bilgi
+        info_box = QFrame()
+        info_box.setStyleSheet("""
+            QFrame {
+                background-color: #e3f2fd;
+                border-left: 4px solid #2196F3;
+                border-radius: 4px;
+                padding: 15px;
+                margin-top: 20px;
+            }
+        """)
+        info_layout = QVBoxLayout()
+        
+        info_title = QLabel("ℹ️ Yetki Sistemi Hakkında")
+        info_title.setFont(QFont("Arial", 12, QFont.Bold))
+        info_layout.addWidget(info_title)
+        
+        info_text = QLabel(
+            "• Her kullanıcı için ayrı ayrı sayfa yetkileri belirleyebilirsiniz\n"
+            "• Dashboard, Faturalar, Cari Hesaplar, Banka Hesapları, Kredi Kartları ve Raporlar\n"
+            "• Kullanıcı sadece yetkisi olan sayfaları görebilir\n"
+            "• Admin rolündeki kullanıcılar varsayılan olarak tüm yetkilere sahiptir"
+        )
+        info_text.setStyleSheet("color: #333; line-height: 1.5;")
+        info_text.setWordWrap(True)
+        info_layout.addWidget(info_text)
+        
+        info_box.setLayout(info_layout)
+        layout.addWidget(info_box)
+        
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def show_user_management_dialog(self):
+        """Kullanıcı yönetimi dialogunu göster"""
+        from src.ui.dialogs.user_management_dialog import UserManagementDialog
+        dialog = UserManagementDialog(self)
+        dialog.exec_()
     
     def logout(self):
         """Çıkış yap"""

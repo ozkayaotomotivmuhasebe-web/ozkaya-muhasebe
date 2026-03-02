@@ -1,9 +1,11 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, 
                            QTableWidgetItem, QMessageBox, QLabel, QLineEdit, QComboBox,
-                           QFormLayout)
+                           QFormLayout, QCheckBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from src.services.admin_service import AdminService
+from src.database.db import SessionLocal
+from src.database.models import User
 
 
 class UserManagementDialog(QDialog):
@@ -78,6 +80,22 @@ class UserManagementDialog(QDialog):
         """)
         self.btn_role.clicked.connect(self.change_user_role)
         btn_layout.addWidget(self.btn_role)
+
+        self.btn_permissions = QPushButton("Yetkiler")
+        self.btn_permissions.setMinimumHeight(35)
+        self.btn_permissions.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #546E7A; }
+        """)
+        self.btn_permissions.clicked.connect(self.show_permissions_dialog)
+        btn_layout.addWidget(self.btn_permissions)
         
         self.btn_delete = QPushButton("Sil")
         self.btn_delete.setMinimumHeight(35)
@@ -219,6 +237,17 @@ class UserManagementDialog(QDialog):
             else:
                 QMessageBox.critical(self, "Hata", msg)
 
+    def show_permissions_dialog(self):
+        """Kullanıcı yetkilerini düzenle"""
+        result = self.get_selected_user()
+        if not result:
+            return
+
+        user_id, _ = result
+        dialog = PermissionsDialog(user_id, self)
+        if dialog.exec_():
+            self.load_users()
+
 
 class NewUserDialog(QDialog):
     """Yeni kullanıcı oluştur dialog"""
@@ -237,20 +266,20 @@ class NewUserDialog(QDialog):
         
         self.input_username = QLineEdit()
         self.input_username.setMinimumHeight(35)
-        layout.addRow("Kullanıcı Adı:", self.input_username)
+        layout.addRow("Kullanıcı Adı: <span style=\"color:#d32f2f\">*</span>", self.input_username)
         
         self.input_email = QLineEdit()
         self.input_email.setMinimumHeight(35)
-        layout.addRow("E-posta:", self.input_email)
+        layout.addRow("E-posta: <span style=\"color:#d32f2f\">*</span>", self.input_email)
         
         self.input_fullname = QLineEdit()
         self.input_fullname.setMinimumHeight(35)
-        layout.addRow("Ad Soyadı:", self.input_fullname)
+        layout.addRow("Ad Soyadı: <span style=\"color:#d32f2f\">*</span>", self.input_fullname)
         
         self.input_password = QLineEdit()
         self.input_password.setMinimumHeight(35)
         self.input_password.setEchoMode(QLineEdit.Password)
-        layout.addRow("Şifre:", self.input_password)
+        layout.addRow("Şifre: <span style=\"color:#d32f2f\">*</span>", self.input_password)
         
         self.combo_role = QComboBox()
         self.combo_role.setMinimumHeight(35)
@@ -333,11 +362,11 @@ class EditUserDialog(QDialog):
         
         self.input_fullname = QLineEdit()
         self.input_fullname.setMinimumHeight(35)
-        layout.addRow("Ad Soyadı:", self.input_fullname)
+        layout.addRow("Ad Soyadı: <span style=\"color:#d32f2f\">*</span>", self.input_fullname)
         
         self.input_email = QLineEdit()
         self.input_email.setMinimumHeight(35)
-        layout.addRow("E-posta:", self.input_email)
+        layout.addRow("E-posta: <span style=\"color:#d32f2f\">*</span>", self.input_email)
         
         btn_layout = QHBoxLayout()
         
@@ -477,6 +506,149 @@ class RoleChangeDialog(QDialog):
         
         if success:
             QMessageBox.information(self, "Başarı", msg)
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Hata", msg)
+
+
+class PermissionsDialog(QDialog):
+    """Kullanıcı yetkileri dialog"""
+
+    def __init__(self, user_id, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.setWindowTitle("Kullanıcı Yetkileri")
+        self.setGeometry(200, 200, 420, 520)
+        self.setMinimumSize(420, 520)
+        self.setModal(True)
+        self.init_ui()
+        self.load_permissions()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+
+        title = QLabel("Sayfa Yetkileri")
+        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        layout.addWidget(title)
+
+        self.chk_dashboard = QCheckBox("Dashboard")
+        self.chk_transactions = QCheckBox("İşlemler")
+        self.chk_invoices = QCheckBox("Faturalar")
+        self.chk_caris = QCheckBox("Cari Hesaplar")
+        self.chk_cari_extract = QCheckBox("Cari Ekstre")
+        self.chk_banks = QCheckBox("Banka Hesapları")
+        self.chk_credit_cards = QCheckBox("Kredi Kartları")
+        self.chk_loans = QCheckBox("Krediler")
+        self.chk_reports = QCheckBox("Raporlar")
+        self.chk_payroll = QCheckBox("Maaş Bordro")
+        self.chk_employees = QCheckBox("Çalışanlar")
+        self.chk_bulk_payroll = QCheckBox("Toplu Bordro")
+        self.chk_payroll_records = QCheckBox("Bordro Kayıtları")
+        self.chk_settings = QCheckBox("Ayarlar")
+        self.chk_admin_panel = QCheckBox("Admin Panel")
+
+        layout.addWidget(self.chk_dashboard)
+        layout.addWidget(self.chk_transactions)
+        layout.addWidget(self.chk_invoices)
+        layout.addWidget(self.chk_caris)
+        layout.addWidget(self.chk_cari_extract)
+        layout.addWidget(self.chk_banks)
+        layout.addWidget(self.chk_credit_cards)
+        layout.addWidget(self.chk_loans)
+        layout.addWidget(self.chk_reports)
+        layout.addWidget(self.chk_payroll)
+        layout.addWidget(self.chk_employees)
+        layout.addWidget(self.chk_bulk_payroll)
+        layout.addWidget(self.chk_payroll_records)
+        layout.addWidget(self.chk_settings)
+        layout.addWidget(self.chk_admin_panel)
+
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("Kaydet")
+        btn_save.setMinimumHeight(32)
+        btn_save.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #45a049; }
+        """)
+        btn_save.clicked.connect(self.save_permissions)
+        btn_layout.addWidget(btn_save)
+
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.setMinimumHeight(32)
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #9E9E9E;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #757575; }
+        """)
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def load_permissions(self):
+        session = SessionLocal()
+        try:
+            user = session.query(User).filter(User.id == self.user_id).first()
+            if not user:
+                QMessageBox.critical(self, "Hata", "Kullanıcı bulunamadı")
+                self.reject()
+                return
+
+            self.chk_dashboard.setChecked(bool(user.can_view_dashboard))
+            self.chk_transactions.setChecked(bool(user.can_view_transactions))
+            self.chk_invoices.setChecked(bool(user.can_view_invoices))
+            self.chk_caris.setChecked(bool(user.can_view_caris))
+            self.chk_cari_extract.setChecked(bool(user.can_view_cari_extract))
+            self.chk_banks.setChecked(bool(user.can_view_banks))
+            self.chk_credit_cards.setChecked(bool(user.can_view_credit_cards))
+            self.chk_loans.setChecked(bool(user.can_view_loans))
+            self.chk_reports.setChecked(bool(user.can_view_reports))
+            self.chk_payroll.setChecked(bool(user.can_view_payroll))
+            self.chk_employees.setChecked(bool(user.can_view_employees))
+            self.chk_bulk_payroll.setChecked(bool(user.can_view_bulk_payroll))
+            self.chk_payroll_records.setChecked(bool(user.can_view_payroll_records))
+            self.chk_settings.setChecked(bool(user.can_view_settings))
+            self.chk_admin_panel.setChecked(bool(user.can_view_admin_panel))
+        finally:
+            session.close()
+
+    def save_permissions(self):
+        success, msg = AdminService.update_user(
+            self.user_id,
+            can_view_dashboard=self.chk_dashboard.isChecked(),
+            can_view_transactions=self.chk_transactions.isChecked(),
+            can_view_invoices=self.chk_invoices.isChecked(),
+            can_view_caris=self.chk_caris.isChecked(),
+            can_view_cari_extract=self.chk_cari_extract.isChecked(),
+            can_view_banks=self.chk_banks.isChecked(),
+            can_view_credit_cards=self.chk_credit_cards.isChecked(),
+            can_view_loans=self.chk_loans.isChecked(),
+            can_view_reports=self.chk_reports.isChecked(),
+            can_view_payroll=self.chk_payroll.isChecked(),
+            can_view_employees=self.chk_employees.isChecked(),
+            can_view_bulk_payroll=self.chk_bulk_payroll.isChecked(),
+            can_view_payroll_records=self.chk_payroll_records.isChecked(),
+            can_view_settings=self.chk_settings.isChecked(),
+            can_view_admin_panel=self.chk_admin_panel.isChecked()
+        )
+
+        if success:
+            QMessageBox.information(self, "Başarı", "Yetkiler güncellendi")
             self.accept()
         else:
             QMessageBox.critical(self, "Hata", msg)

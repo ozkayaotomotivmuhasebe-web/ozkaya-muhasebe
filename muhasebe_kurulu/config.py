@@ -1,8 +1,12 @@
 import os
+import sys
 from pathlib import Path
 
 # Proje kök dizini
-PROJECT_ROOT = Path(__file__).parent
+if getattr(sys, "frozen", False):
+	PROJECT_ROOT = Path(sys.executable).parent
+else:
+	PROJECT_ROOT = Path(__file__).parent
 DATABASE_DIR = PROJECT_ROOT / "data"
 
 # Veritabanı ayarları
@@ -15,7 +19,13 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # Veritabanı arşivleme
-DATABASE_DIR.mkdir(exist_ok=True)
+DATABASE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Kullanıcı oturumu
 SESSION_TIMEOUT = 1800  # 30 dakika
+
+# ─── Otomatik Güncelleme ───────────────────────────────────────────────────────
+# GitHub'da repo oluşturduktan sonra aşağıdaki URL'yi güncelleyin:
+# https://raw.githubusercontent.com/GITHUB_KULLANICI/REPO_ADI/main/version.json
+UPDATE_CHECK_URL = "https://raw.githubusercontent.com/buraktekin060-glitch/ozkaya-muhasebe/main/version.json"
+UPDATE_ENABLED   = True  # GitHub URL ayarlandıktan sonra True yapıldı

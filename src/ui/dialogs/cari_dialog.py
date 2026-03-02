@@ -6,11 +6,12 @@ from src.services.cari_service import CariService
 
 
 class CariDialog(QDialog):
-    def __init__(self, user_id, parent=None, cari_id=None):
+    def __init__(self, user_id, parent=None, cari_id=None, default_type=None):
         super().__init__(parent)
         self.user_id = user_id
         self.cari_id = cari_id
         self.is_edit_mode = cari_id is not None
+        self.default_type = default_type
         self.init_ui()
         if self.is_edit_mode:
             self.load_cari()
@@ -67,7 +68,9 @@ class CariDialog(QDialog):
         # Cari Tipi
         layout.addWidget(QLabel("Cari Tipi <span style=\"color:#d32f2f\">*</span>"))
         self.combo_type = QComboBox()
-        self.combo_type.addItems(["MÜŞTERİ", "TEDARİKÇİ", "HER İKİSİ"])
+        self.combo_type.addItems(["MÜŞTERİ", "TEDARİKÇİ", "HER İKİSİ", "ÖDÜNÇ PARA"])
+        if self.default_type and not self.is_edit_mode:
+            self.combo_type.setCurrentText(self.default_type)
         layout.addWidget(self.combo_type)
         
         # Telefon

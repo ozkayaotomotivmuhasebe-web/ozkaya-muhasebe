@@ -87,3 +87,23 @@ class BankService:
                     account.balance -= amount
             
             return transaction.id
+    
+    @staticmethod
+    def get_bank_statistics(user_id: int) -> dict:
+        """Banka hesapları istatistikleri"""
+        with session_scope() as session:
+            accounts = session.query(BankAccount).filter(
+                BankAccount.user_id == user_id,
+                BankAccount.is_active == True
+            ).all()
+            
+            total_balance = sum(acc.balance for acc in accounts)
+            total_overdraft = sum(acc.overdraft_limit for acc in accounts)
+            total_available = total_balance + total_overdraft
+            
+            return {
+                'total_accounts': len(accounts),
+                'total_balance': total_balance,
+                'total_overdraft': total_overdraft,
+                'total_available': total_available
+            }

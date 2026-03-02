@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import QApplication
 from src.services.auth_service import AuthService
+from src.utils.app_icon import get_app_icon
 import config
 
 class RegisterDialog(QDialog):
@@ -12,6 +13,9 @@ class RegisterDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.username = ""
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.init_ui()
     
     def init_ui(self):
@@ -161,11 +165,11 @@ class RegisterDialog(QDialog):
         
         # Form alanları
         fields = [
-            ("👤", "Ad Soyad", "self.full_name_input", "Adınız ve soyadınız"),
-            ("📧", "Email", "self.email_input", "Email adresiniz"),
-            ("👤", "Kullanıcı Adı", "self.username_input", "Kullanıcı adı (en az 3 karakter)"),
-            ("🔒", "Şifre", "self.password_input", "Güçlü bir şifre (en az 6 karakter)"),
-            ("🔒", "Şifre Onayı", "self.password_confirm", "Şifrenizi tekrar girin")
+            ("👤", "Ad Soyad <span style=\"color:#d32f2f\">*</span>", "self.full_name_input", "Adınız ve soyadınız"),
+            ("📧", "Email <span style=\"color:#d32f2f\">*</span>", "self.email_input", "Email adresiniz"),
+            ("👤", "Kullanıcı Adı <span style=\"color:#d32f2f\">*</span>", "self.username_input", "Kullanıcı adı (en az 3 karakter)"),
+            ("🔒", "Şifre <span style=\"color:#d32f2f\">*</span>", "self.password_input", "Güçlü bir şifre (en az 6 karakter)"),
+            ("🔒", "Şifre Onayı <span style=\"color:#d32f2f\">*</span>", "self.password_confirm", "Şifrenizi tekrar girin")
         ]
         
         inputs = {}

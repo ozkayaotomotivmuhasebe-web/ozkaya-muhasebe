@@ -6,15 +6,15 @@ echo ÖZKAYA Logo ile EXE Oluşturma
 echo ========================================
 echo.
 
-REM Logo kontrol et
-if not exist ICON.ico (
-    echo ✓ Logo oluşturuluyor...
-    python create_logo.py
-    if not exist ICON.ico (
-        echo ❌ HATA: Logo oluşturulamadı!
-        pause
-        exit /b 1
-    )
+REM Logo ve ikon her build'de güncellensin
+echo ✓ Logo ve ikon güncelleniyor...
+python create_logo.py
+set "ICON_FILE=ICON.ico"
+if exist "yeni icon.ico" set "ICON_FILE=yeni icon.ico"
+if not exist "%ICON_FILE%" (
+    echo ❌ HATA: ICON.ico oluşturulamadı!
+    pause
+    exit /b 1
 )
 
 echo.
@@ -27,7 +27,7 @@ echo ✓ Logo ile yeni EXE oluşturuluyor...
 echo   (Bu biraz zaman alabilir...)
 echo.
 
-pyinstaller --onefile --windowed --name "Muhasebe" --icon=ICON.ico main.py
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 main.py
 
 if not exist dist\Muhasebe.exe (
     echo ❌ HATA: EXE oluşturulamadı!
@@ -46,15 +46,42 @@ echo.
 echo Şimdi kurulum paketini güncelleyelim...
 echo.
 
+REM Dist klasörüne güncel icon kopyala
+if exist ICON.ico (
+    copy ICON.ico dist\ /y >nul
+)
+if exist "yeni icon.ico" (
+    copy "yeni icon.ico" dist\ /y >nul
+)
+if exist icon.png (
+    copy icon.png dist\ /y >nul
+)
+if exist logo.png (
+    copy logo.png dist\ /y >nul
+)
+
 REM Mevcut paket güncelle
-if exist muhasebe_kurulu\dist\Muhasebe.exe (
+if exist muhasebe_kurulu (
+    if not exist muhasebe_kurulu\dist mkdir muhasebe_kurulu\dist
     copy dist\Muhasebe.exe muhasebe_kurulu\dist\ /y >nul
-    echo ✓ muhasebe_kurulu klasörü güncellendi
+    copy dist\Muhasebe.exe muhasebe_kurulu\Muhasebe.exe /y >nul
+    if exist ICON.ico copy ICON.ico muhasebe_kurulu\ /y >nul
+    if exist ICON.ico copy ICON.ico muhasebe_kurulu\dist\ /y >nul
+    if exist "yeni icon.ico" copy "yeni icon.ico" muhasebe_kurulu\ /y >nul
+    if exist "yeni icon.ico" copy "yeni icon.ico" muhasebe_kurulu\dist\ /y >nul
+    if exist icon.png copy icon.png muhasebe_kurulu\ /y >nul
+    if exist icon.png copy icon.png muhasebe_kurulu\dist\ /y >nul
+    if exist logo.png copy logo.png muhasebe_kurulu\ /y >nul
+    if exist logo.png copy logo.png muhasebe_kurulu\dist\ /y >nul
+    copy main.py muhasebe_kurulu\ /y >nul
+    copy config.py muhasebe_kurulu\ /y >nul
+    copy requirements.txt muhasebe_kurulu\ /y >nul
+    robocopy src muhasebe_kurulu\src /MIR /XD __pycache__ /NFL /NDL /NJH /NJS >nul
+    echo ✓ muhasebe_kurulu klasoru exe-src-ayarlar ile guncellendi
 )
 
 echo.
-echo Hazır! Masaüstü kısayolunu silip yeniden oluşturalım...
-echo.
+echo ✓ Build tamamlandı, tekrar derleme atlandı.
 
 REM Masaüstü kısayolu
 setlocal enabledelayedexpansion

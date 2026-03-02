@@ -22,6 +22,8 @@ REM Gerekli dosyaları kopyala
 echo ✓ Ana dosyalar kopyalanıyor...
 copy main.py "%OUTPUT_DIR%" >nul
 copy config.py "%OUTPUT_DIR%" >nul
+if exist ICON.ico copy ICON.ico "%OUTPUT_DIR%" >nul
+if exist logo.png copy logo.png "%OUTPUT_DIR%" >nul
 copy requirements.txt "%OUTPUT_DIR%" >nul
 copy PORTABLE_SETUP.md "%OUTPUT_DIR%" >nul
 copy README.md "%OUTPUT_DIR%" >nul
@@ -36,6 +38,11 @@ echo ✓ Çalıştırılabilir dosya kopyalanıyor...
 if exist dist\Muhasebe.exe (
     mkdir "%OUTPUT_DIR%\dist"
     copy dist\Muhasebe.exe "%OUTPUT_DIR%\dist" >nul
+    copy dist\Muhasebe.exe "%OUTPUT_DIR%\Muhasebe.exe" >nul
+)
+
+if exist ICON.ico (
+    copy ICON.ico "%OUTPUT_DIR%\dist" >nul
 )
 
 echo ✓ Kurulum scriptleri kopyalanıyor...
@@ -68,6 +75,7 @@ REM Masaüstü kısayolu oluşturma scripti
     echo     echo Set oLink = oWS.CreateShortcut(strDesktop ^& "\Muhasebe.lnk"^)
     echo     echo oLink.TargetPath = "%%EXE_PATH%%"
     echo     echo oLink.WorkingDirectory = "%%CURRENT_DIR%%"
+    echo     echo oLink.IconLocation = "%%EXE_PATH%%"
     echo     echo oLink.WindowStyle = 1
     echo     echo oLink.Description = "Muhasebe Takip Sistemi"
     echo     echo oLink.Save

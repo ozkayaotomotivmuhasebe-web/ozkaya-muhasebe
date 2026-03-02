@@ -5,6 +5,8 @@ from src.ui.dialogs.login_dialog import LoginDialog
 from src.ui.main_window import MainWindow
 from src.services.auth_service import AuthService
 from src.services.admin_service import AdminService
+from src.utils.app_icon import get_app_icon
+from src.utils.updater import check_and_update
 import config
 
 
@@ -42,6 +44,9 @@ def main():
     
     # PyQt5 uygulamasını oluştur
     app = QApplication(sys.argv)
+    app_icon = get_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     app.setStyleSheet("""
         QWidget { font-size: 10pt; }
         QLabel { font-size: 10pt; }
@@ -68,7 +73,10 @@ def main():
             user = login_dialog.user
             main_window = MainWindow(user)
             main_window.show()
-            
+
+            # Güncelleme kontrolü (arka planda, 2 sn sonra)
+            check_and_update(main_window)
+
             sys.exit(app.exec_())
         else:
             print("Giriş iptal edildi")

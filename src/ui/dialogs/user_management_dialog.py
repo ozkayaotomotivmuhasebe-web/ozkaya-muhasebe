@@ -518,7 +518,8 @@ class PermissionsDialog(QDialog):
         super().__init__(parent)
         self.user_id = user_id
         self.setWindowTitle("Kullanıcı Yetkileri")
-        self.setGeometry(200, 200, 360, 300)
+        self.setGeometry(200, 200, 420, 520)
+        self.setMinimumSize(420, 520)
         self.setModal(True)
         self.init_ui()
         self.load_permissions()
@@ -532,18 +533,36 @@ class PermissionsDialog(QDialog):
         layout.addWidget(title)
 
         self.chk_dashboard = QCheckBox("Dashboard")
+        self.chk_transactions = QCheckBox("İşlemler")
         self.chk_invoices = QCheckBox("Faturalar")
         self.chk_caris = QCheckBox("Cari Hesaplar")
+        self.chk_cari_extract = QCheckBox("Cari Ekstre")
         self.chk_banks = QCheckBox("Banka Hesapları")
         self.chk_credit_cards = QCheckBox("Kredi Kartları")
+        self.chk_loans = QCheckBox("Krediler")
         self.chk_reports = QCheckBox("Raporlar")
+        self.chk_payroll = QCheckBox("Maaş Bordro")
+        self.chk_employees = QCheckBox("Çalışanlar")
+        self.chk_bulk_payroll = QCheckBox("Toplu Bordro")
+        self.chk_payroll_records = QCheckBox("Bordro Kayıtları")
+        self.chk_settings = QCheckBox("Ayarlar")
+        self.chk_admin_panel = QCheckBox("Admin Panel")
 
         layout.addWidget(self.chk_dashboard)
+        layout.addWidget(self.chk_transactions)
         layout.addWidget(self.chk_invoices)
         layout.addWidget(self.chk_caris)
+        layout.addWidget(self.chk_cari_extract)
         layout.addWidget(self.chk_banks)
         layout.addWidget(self.chk_credit_cards)
+        layout.addWidget(self.chk_loans)
         layout.addWidget(self.chk_reports)
+        layout.addWidget(self.chk_payroll)
+        layout.addWidget(self.chk_employees)
+        layout.addWidget(self.chk_bulk_payroll)
+        layout.addWidget(self.chk_payroll_records)
+        layout.addWidget(self.chk_settings)
+        layout.addWidget(self.chk_admin_panel)
 
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("Kaydet")
@@ -591,11 +610,20 @@ class PermissionsDialog(QDialog):
                 return
 
             self.chk_dashboard.setChecked(bool(user.can_view_dashboard))
+            self.chk_transactions.setChecked(bool(user.can_view_transactions))
             self.chk_invoices.setChecked(bool(user.can_view_invoices))
             self.chk_caris.setChecked(bool(user.can_view_caris))
+            self.chk_cari_extract.setChecked(bool(user.can_view_cari_extract))
             self.chk_banks.setChecked(bool(user.can_view_banks))
             self.chk_credit_cards.setChecked(bool(user.can_view_credit_cards))
+            self.chk_loans.setChecked(bool(user.can_view_loans))
             self.chk_reports.setChecked(bool(user.can_view_reports))
+            self.chk_payroll.setChecked(bool(user.can_view_payroll))
+            self.chk_employees.setChecked(bool(user.can_view_employees))
+            self.chk_bulk_payroll.setChecked(bool(user.can_view_bulk_payroll))
+            self.chk_payroll_records.setChecked(bool(user.can_view_payroll_records))
+            self.chk_settings.setChecked(bool(user.can_view_settings))
+            self.chk_admin_panel.setChecked(bool(user.can_view_admin_panel))
         finally:
             session.close()
 
@@ -603,11 +631,20 @@ class PermissionsDialog(QDialog):
         success, msg = AdminService.update_user(
             self.user_id,
             can_view_dashboard=self.chk_dashboard.isChecked(),
+            can_view_transactions=self.chk_transactions.isChecked(),
             can_view_invoices=self.chk_invoices.isChecked(),
             can_view_caris=self.chk_caris.isChecked(),
+            can_view_cari_extract=self.chk_cari_extract.isChecked(),
             can_view_banks=self.chk_banks.isChecked(),
             can_view_credit_cards=self.chk_credit_cards.isChecked(),
-            can_view_reports=self.chk_reports.isChecked()
+            can_view_loans=self.chk_loans.isChecked(),
+            can_view_reports=self.chk_reports.isChecked(),
+            can_view_payroll=self.chk_payroll.isChecked(),
+            can_view_employees=self.chk_employees.isChecked(),
+            can_view_bulk_payroll=self.chk_bulk_payroll.isChecked(),
+            can_view_payroll_records=self.chk_payroll_records.isChecked(),
+            can_view_settings=self.chk_settings.isChecked(),
+            can_view_admin_panel=self.chk_admin_panel.isChecked()
         )
 
         if success:

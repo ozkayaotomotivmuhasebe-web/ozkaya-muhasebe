@@ -20,3 +20,10 @@ pytz==2023.3
 
 # Excel Export
 openpyxl==3.1.2
+xlrd==2.0.1
+
+# Google Sheets Integration
+gspread==6.0.0
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0

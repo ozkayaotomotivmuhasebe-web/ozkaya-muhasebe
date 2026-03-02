@@ -17,10 +17,20 @@ class User(Base):
     full_name = Column(String(100), nullable=False)
     role = Column(String(20), default='user')  # 'admin' or 'user'
     can_view_dashboard = Column(Boolean, default=True)
+    can_view_transactions = Column(Boolean, default=False)
     can_view_invoices = Column(Boolean, default=True)
     can_view_caris = Column(Boolean, default=True)
+    can_view_cari_extract = Column(Boolean, default=False)
     can_view_banks = Column(Boolean, default=True)
+    can_view_credit_cards = Column(Boolean, default=True)
+    can_view_loans = Column(Boolean, default=True)
     can_view_reports = Column(Boolean, default=False)
+    can_view_payroll = Column(Boolean, default=True)
+    can_view_employees = Column(Boolean, default=True)
+    can_view_bulk_payroll = Column(Boolean, default=True)
+    can_view_payroll_records = Column(Boolean, default=True)
+    can_view_settings = Column(Boolean, default=True)
+    can_view_admin_panel = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
     last_login = Column(DateTime, nullable=True)
@@ -32,6 +42,19 @@ class User(Base):
     reports = relationship('Report', back_populates='user')
     credit_cards = relationship('CreditCard', back_populates='user')
     all_transactions = relationship('Transaction', back_populates='user')
+    loans = relationship('Loan', back_populates='user')
+
+
+class UserSetting(Base):
+    __tablename__ = 'user_settings'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    key = Column(String(100), nullable=False)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship('User')
 
 
 class BankAccount(Base):
@@ -52,7 +75,8 @@ class BankAccount(Base):
     user = relationship('User', back_populates='bank_accounts')
     transactions = relationship('BankTransaction', back_populates='bank_account')
     invoices = relationship('Invoice', back_populates='bank_account')
-    all_transactions = relationship('Transaction', back_populates='bank_account')
+    all_transactions = relationship('Transaction', back_populates='bank_account', foreign_keys='Transaction.bank_account_id')
+    destination_transactions = relationship('Transaction', back_populates='destination_bank_account', foreign_keys='Transaction.destination_bank_account_id')
 
 
 class Cari(Base):
@@ -182,6 +206,34 @@ class CreditCard(Base):
     transactions = relationship('Transaction', back_populates='credit_card')
 
 
+class Loan(Base):
+    """Kredi Yönetim Tablosu"""
+    __tablename__ = 'loans'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    loan_name = Column(String(100), nullable=False)  # Örn: "Banka X - İpotekli Kredi"
+    bank_name = Column(String(100), nullable=False)  # Kredi veren banka
+    loan_type = Column(String(50), nullable=False)  # Örn: "İPOTEK", "TAŞIT", "TÜKETICI"
+    loan_amount = Column(Float, nullable=False)  # Alınan toplam kredi
+    remaining_balance = Column(Float, nullable=False)  # Kalan bakiye
+    monthly_payment = Column(Float, default=0.0)  # Aylık taksit tutarı
+    interest_rate = Column(Float, default=0.0)  # Faiz oranı (%)
+    start_date = Column(Date, nullable=False)  # Kredi başlama tarihi
+    end_date = Column(Date, nullable=True)  # Kredi bitiş (vadesini doluş tarihi)
+    due_day = Column(Integer, default=15)  # Ödeme günü (ayın kaçıncı günü)
+    total_paid = Column(Float, default=0.0)  # Toplam ödenen
+    paid_installments = Column(Integer, default=0)  # Ödenen taksit sayısı
+    total_installments = Column(Integer, nullable=True)  # Toplam taksit sayısı
+    status = Column(String(20), default='AKTIF')  # AKTIF, KAPATILDI, IPTAL
+    notes = Column(Text, nullable=True)  # Not/açıklama
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    user = relationship('User', back_populates='loans')
+
+
 class TransactionType(str, enum.Enum):
     GIDER = 'GIDER'  # Giden
     GELIR = 'GELIR'  # Gelen
@@ -194,6 +246,9 @@ class TransactionType(str, enum.Enum):
     EK_HESAP_FAIZLERI = 'EK_HESAP_FAIZLERI'
     KREDI_DOSYA_MASRAFI = 'KREDI_DOSYA_MASRAFI'
     EKSPERTIZ_UCRETI = 'EKSPERTIZ_UCRETI'
+    TRANSFER = 'TRANSFER'  # Banka hesapları arası transfer
+    NAKIT_CEKIMI = 'NAKIT_CEKIMI'  # Bankadan nakit çekim
+    NAKIT_YATIRIMI = 'NAKIT_YATIRIMI'  # Bankaya nakit yatırım
 
 
 class PaymentMethod(str, enum.Enum):
@@ -201,6 +256,7 @@ class PaymentMethod(str, enum.Enum):
     BANKA = 'BANKA'
     KREDI_KARTI = 'KREDI_KARTI'
     CARI = 'CARI'
+    TRANSFER = 'TRANSFER'  # Hesaptan hesaba transfer
 
 
 class Transaction(Base):
@@ -218,6 +274,7 @@ class Transaction(Base):
     # İlişkili hesaplar (hangisi kullanıldıysa)
     cari_id = Column(Integer, ForeignKey('caris.id'), nullable=True)
     bank_account_id = Column(Integer, ForeignKey('bank_accounts.id'), nullable=True)
+    destination_bank_account_id = Column(Integer, ForeignKey('bank_accounts.id'), nullable=True)  # Transfer için hedef
     credit_card_id = Column(Integer, ForeignKey('credit_cards.id'), nullable=True)
     
     # Müşteri/Tedarikçi bilgisi
@@ -242,5 +299,34 @@ class Transaction(Base):
     # İlişkiler
     user = relationship('User', back_populates='all_transactions')
     cari = relationship('Cari', back_populates='transactions')
-    bank_account = relationship('BankAccount', back_populates='all_transactions')
+    bank_account = relationship('BankAccount', back_populates='all_transactions', foreign_keys='Transaction.bank_account_id')
+    destination_bank_account = relationship('BankAccount', back_populates='destination_transactions', foreign_keys='Transaction.destination_bank_account_id')
     credit_card = relationship('CreditCard', back_populates='transactions')
+
+
+class Employee(Base):
+    """Çalışan bilgileri"""
+    __tablename__ = 'employees'
+    
+    id = Column(Integer, primary_key=True)
+    first_name = Column(String(100), nullable=False)
+    last_name = Column(String(100), nullable=False)
+    email = Column(String(100), nullable=True)
+    phone = Column(String(20), nullable=True)
+    start_date = Column(Date, nullable=True)
+    
+    # Varsayılan bordro değerleri
+    gross_salary = Column(Float, default=0.0)
+    overtime_rate = Column(Float, default=150.0)  # %150 mesai
+    sgk_rate = Column(Float, default=14.0)
+    unemployment_rate = Column(Float, default=1.0)
+    income_tax_rate = Column(Float, default=15.0)
+    stamp_tax_rate = Column(Float, default=0.759)
+    child_count = Column(Integer, default=0)  # Bakmakla yükümlü çocuk sayısı
+    
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    def get_full_name(self):
+        return f"{self.first_name} {self.last_name}".strip()

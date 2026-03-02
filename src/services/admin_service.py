@@ -36,11 +36,20 @@ class AdminService:
                 full_name=full_name,
                 role=role,
                 can_view_dashboard=True,
+                can_view_transactions=(role == 'admin'),
                 can_view_invoices=(role == 'admin'),
                 can_view_caris=(role == 'admin'),
+                can_view_cari_extract=(role == 'admin'),
                 can_view_banks=(role == 'admin'),
                 can_view_credit_cards=(role == 'admin'),
-                can_view_reports=(role == 'admin')
+                can_view_loans=(role == 'admin'),
+                can_view_reports=True,
+                can_view_payroll=True,
+                can_view_employees=True,
+                can_view_bulk_payroll=True,
+                can_view_payroll_records=True,
+                can_view_settings=True,
+                can_view_admin_panel=(role == 'admin')
             )
             session.add(new_user)
             session.commit()
@@ -124,17 +133,35 @@ class AdminService:
             user.role = role
             # Admin ise tüm izinleri ver
             if role == 'admin':
+                user.can_view_transactions = True
                 user.can_view_invoices = True
                 user.can_view_caris = True
+                user.can_view_cari_extract = True
                 user.can_view_banks = True
                 user.can_view_credit_cards = True
+                user.can_view_loans = True
                 user.can_view_reports = True
+                user.can_view_payroll = True
+                user.can_view_employees = True
+                user.can_view_bulk_payroll = True
+                user.can_view_payroll_records = True
+                user.can_view_settings = True
+                user.can_view_admin_panel = True
             else:
+                user.can_view_transactions = False
                 user.can_view_invoices = False
                 user.can_view_caris = False
+                user.can_view_cari_extract = False
                 user.can_view_banks = False
                 user.can_view_credit_cards = False
-                user.can_view_reports = False
+                user.can_view_loans = False
+                user.can_view_reports = True
+                user.can_view_payroll = True
+                user.can_view_employees = True
+                user.can_view_bulk_payroll = True
+                user.can_view_payroll_records = True
+                user.can_view_settings = True
+                user.can_view_admin_panel = False
             
             session.commit()
             return True, f"Rol '{role}' olarak değiştirildi"

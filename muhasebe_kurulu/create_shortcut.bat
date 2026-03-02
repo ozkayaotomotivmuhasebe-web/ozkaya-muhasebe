@@ -19,6 +19,7 @@ REM VBScript ile kısayol oluştur
     echo Set oLink = oWS.CreateShortcut(strDesktop ^& "\Muhasebe.lnk"^)
     echo oLink.TargetPath = "%EXE_PATH%"
     echo oLink.WorkingDirectory = "%CURRENT_DIR%"
+    echo oLink.IconLocation = "%EXE_PATH%"
     echo oLink.WindowStyle = 1
     echo oLink.Description = "Muhasebe Takip Sistemi"
     echo oLink.Save

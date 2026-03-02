@@ -85,8 +85,10 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("""
             QMainWindow { background-color: #fafafa; }
             QTabWidget::pane { border: 1px solid #ddd; }
-            QTabBar::tab { background-color: #e0e0e0; padding: 10px 16px; min-height: 28px; }
+            QTabBar::tab { background-color: #e0e0e0; padding: 8px 10px; min-height: 28px; max-width: 140px; }
             QTabBar::tab:selected { background-color: white; }
+            QTabBar::scroller { width: 24px; }
+            QTabBar QToolButton { background-color: #e0e0e0; border: 1px solid #ccc; }
             QLabel { font-size: 10pt; }
             QLineEdit, QComboBox, QDateEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
                 padding: 6px 8px;
@@ -156,6 +158,9 @@ class MainWindow(QMainWindow):
 
         # Tab widget
         self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.ElideRight)
         self.dashboard_tab = None
         
         # Dashboard (izinli ise)
@@ -4480,7 +4485,8 @@ Pasif Kullanıcı: {total_users - active_users}
 
         # ── SOL KENAR ÇUBUĞU ──────────────────────────────────────────────
         sidebar = QWidget()
-        sidebar.setFixedWidth(210)
+        sidebar.setMinimumWidth(190)
+        sidebar.setMaximumWidth(260)
         sidebar.setStyleSheet("background-color: #1a2332;")
         sb_layout = QVBoxLayout(sidebar)
         sb_layout.setContentsMargins(0, 0, 0, 0)
@@ -4506,8 +4512,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 border: none;
                 border-left: 3px solid transparent;
                 text-align: left;
-                padding: 9px 12px;
-                font-size: 9.5pt;
+                padding: 8px 10px;
+                font-size: 9pt;
             }
             QPushButton:hover {
                 background-color: #263545;
@@ -4522,8 +4528,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 border: none;
                 border-left: 3px solid #42A5F5;
                 text-align: left;
-                padding: 9px 12px;
-                font-size: 9.5pt;
+                padding: 8px 10px;
+                font-size: 9pt;
                 font-weight: bold;
             }
         """

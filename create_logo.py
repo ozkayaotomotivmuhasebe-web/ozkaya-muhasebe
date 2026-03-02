@@ -3,11 +3,35 @@
 Modern ve profesyonel tasarım
 """
 
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import math
 
 def create_logo():
     """ÖZKAYA logosu oluştur - Sadece yazı"""
+
+    ico_source = Path("yeni icon.ico")
+    if ico_source.exists():
+        img = Image.open(ico_source).convert("RGBA")
+        if img.size != (512, 512):
+            img = img.resize((512, 512), Image.Resampling.LANCZOS)
+        img.save("logo.png", "PNG")
+        img.save("icon.png", "PNG")
+        img.save("ICON.ico", "ICO")
+        print("✓ logo.png ve icon.png oluşturuldu (yeni icon.ico kaynağından)")
+        print("✓ ICON.ico güncellendi (yeni icon.ico kaynağından)")
+        return "logo.png"
+
+    source_path = Path("icon.png")
+    if source_path.exists():
+        img = Image.open(source_path).convert("RGBA")
+        if img.size != (512, 512):
+            img = img.resize((512, 512), Image.Resampling.LANCZOS)
+        png_path = "logo.png"
+        img.save(png_path, "PNG")
+        print(f"✓ {png_path} oluşturuldu (icon.png kaynağından)")
+        create_ico_from_image(img, "ICON.ico")
+        return png_path
     
     # Yüksek kalite logo
     size = 512
@@ -22,25 +46,41 @@ def create_logo():
         b = int(160 + (220 - 160) * (y / size))
         draw.rectangle([(0, y), (size, y+1)], fill=(r, g, b))
     
-    # ÖZKAYA yazısı - Uygun boyut
+    # ÖZKAYA yazısı - bir tık daha küçük ve güvenli alana sığacak şekilde
+    text = "ÖZKAYA"
     try:
-        font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 120)
+        font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 104)
     except:
         try:
-            font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 120)
+            font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 104)
         except:
             font_large = ImageFont.load_default()
-    
-    # ÖZKAYA yazısı
-    text = "ÖZKAYA"
-    
-    # Yazı konumunu ortala
+
+    # Güvenli alan: ikonun kenarlarında boşluk bırak
+    safe_margin = 70
+    safe_width = size - (safe_margin * 2)
+
     bbox = draw.textbbox((0, 0), text, font=font_large)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    
+
+    # Yazı çok genişse biraz daha küçült
+    if text_width > safe_width:
+        scale = safe_width / text_width
+        scaled_size = max(int(104 * scale), 84)
+        try:
+            font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", scaled_size)
+        except:
+            try:
+                font_large = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", scaled_size)
+            except:
+                font_large = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), text, font=font_large)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
     text_x = (size - text_width) // 2
-    text_y = (size - text_height) // 2 - 20
+    text_y = (size - text_height) // 2
     
     # Yazı gölgesi (shadow)
     shadow_offset = 3

@@ -73,3 +73,13 @@ media/
 
 # Static collected files (production)
 staticfiles/
+
+# Google Credentials (hassas dosyalar)
+data/google_credentials/credentials.json
+data/google_credentials/token.json
+muhasebe_kurulu/data/google_credentials/
+client_secret_*.json
+
+# Büyük executable dosyalar
+muhasebe_kurulu/Muhasebe.exe
+*.exe

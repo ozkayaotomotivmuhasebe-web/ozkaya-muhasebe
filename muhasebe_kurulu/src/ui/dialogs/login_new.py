@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor, QPixmap
 from PyQt5.QtWidgets import QSize
 from src.services.auth_service import AuthService
+from src.utils.app_icon import get_app_icon
 import config
 
 class LoginDialog(QDialog):
@@ -13,6 +14,9 @@ resi - Modern tasarım"""
     def __init__(self):
         super().__init__()
         self.user = None
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.init_ui()
     
     def init_ui(self):
@@ -60,13 +64,13 @@ resi - Modern tasarım"""
         layout.addSpacing(20)
         
         # Username
-        layout.addWidget(QLabel("📧 Kullanıcı Adı:"))
+        layout.addWidget(QLabel("📧 Kullanıcı Adı: <span style=\"color:#d32f2f\">*</span>"))
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Kullanıcı adınızı girin")
         layout.addWidget(self.username_input)
         
         # Password
-        layout.addWidget(QLabel("🔒 Şifre:"))
+        layout.addWidget(QLabel("🔒 Şifre: <span style=\"color:#d32f2f\">*</span>"))
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("Şifrenizi girin")
         self.password_input.setEchoMode(QLineEdit.Password)

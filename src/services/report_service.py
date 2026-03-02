@@ -1,5 +1,5 @@
 from src.database.db import SessionLocal
-from src.database.models import Transaction, Cari, BankAccount, CreditCard, Report
+from src.database.models import Transaction, Cari, BankAccount, CreditCard, Loan, Report
 from datetime import datetime, date
 from sqlalchemy import func
 import json
@@ -134,6 +134,52 @@ class ReportService:
                 'total_available': total_available,
                 'overall_usage_rate': (total_debt / total_limit * 100) if total_limit > 0 else 0,
                 'cards': card_data
+            }
+        finally:
+            session.close()
+
+    @staticmethod
+    def generate_loan_summary_report(user_id):
+        """Kredi özet raporu"""
+        session = SessionLocal()
+        try:
+            loans = session.query(Loan).filter(
+                Loan.user_id == user_id,
+                Loan.is_active == True
+            ).all()
+
+            total_loan_amount = sum(max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) for l in loans)
+            total_paid = sum(l.total_paid for l in loans)
+            total_remaining = sum(
+                max(0.0, max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) - float(l.total_paid or 0))
+                for l in loans
+            )
+            active_loans = sum(1 for l in loans if l.status == 'AKTIF')
+
+            loan_data = [
+                {
+                    'id': l.id,
+                    'loan_name': l.loan_name,
+                    'bank_name': l.bank_name,
+                    'loan_type': l.loan_type,
+                    'loan_amount': max(float(l.remaining_balance or 0), float(l.loan_amount or 0)),
+                    'total_paid': l.total_paid,
+                    'remaining_balance': max(0.0, max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) - float(l.total_paid or 0)),
+                    'monthly_payment': l.monthly_payment,
+                    'status': l.status,
+                    'progress_rate': (l.total_paid / max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) * 100)
+                    if max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) > 0 else 0
+                }
+                for l in loans
+            ]
+
+            return {
+                'total_loans': len(loans),
+                'total_loan_amount': total_loan_amount,
+                'total_paid': total_paid,
+                'total_remaining': total_remaining,
+                'active_loans': active_loans,
+                'loans': loan_data
             }
         finally:
             session.close()

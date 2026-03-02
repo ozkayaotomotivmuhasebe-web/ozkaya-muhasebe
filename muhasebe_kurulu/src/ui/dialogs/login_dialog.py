@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication
 from src.services.auth_service import AuthService
+from src.utils.app_icon import get_app_icon
 import config
 
 class LoginDialog(QDialog):
@@ -12,6 +13,9 @@ class LoginDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.user = None
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.init_ui()
     
     def init_ui(self):
@@ -60,7 +64,7 @@ class LoginDialog(QDialog):
         main_layout.addWidget(subtitle2)
         
         # Kullanıcı Adı
-        main_layout.addWidget(QLabel(" Kullanıcı Adı"))
+        main_layout.addWidget(QLabel(" Kullanıcı Adı <span style=\"color:#d32f2f\">*</span>"))
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Kullanıcı adınızı girin")
         self.username_input.setMinimumHeight(45)
@@ -82,7 +86,7 @@ class LoginDialog(QDialog):
         main_layout.addSpacing(15)
         
         # Şifre
-        main_layout.addWidget(QLabel(" Şifre"))
+        main_layout.addWidget(QLabel(" Şifre <span style=\"color:#d32f2f\">*</span>"))
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("Şifrenizi girin")
         self.password_input.setEchoMode(QLineEdit.Password)

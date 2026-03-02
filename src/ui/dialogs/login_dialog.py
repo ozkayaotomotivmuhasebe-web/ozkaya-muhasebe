@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication
 from src.services.auth_service import AuthService
+from src.utils.app_icon import get_app_icon
 import config
 
 class LoginDialog(QDialog):
@@ -12,6 +13,9 @@ class LoginDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.user = None
+        app_icon = get_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.init_ui()
     
     def init_ui(self):

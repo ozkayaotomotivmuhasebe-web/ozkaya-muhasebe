@@ -34,3 +34,34 @@ class CariService:
         """Cari detayı"""
         with session_scope() as session:
             return session.query(Cari).filter_by(id=cari_id).first()
+
+    @staticmethod
+    def update_cari(cari_id: int, **kwargs) -> Tuple[bool, str]:
+        """Cari bilgilerini güncelle"""
+        try:
+            with session_scope() as session:
+                cari = session.query(Cari).filter_by(id=cari_id).first()
+                if not cari:
+                    return False, "Cari bulunamadı"
+
+                for key, value in kwargs.items():
+                    if hasattr(cari, key):
+                        setattr(cari, key, value)
+
+                return True, "Cari güncellendi"
+        except Exception as e:
+            return False, f"Hata: {str(e)}"
+
+    @staticmethod
+    def delete_cari(cari_id: int) -> Tuple[bool, str]:
+        """Cariyi pasif et"""
+        try:
+            with session_scope() as session:
+                cari = session.query(Cari).filter_by(id=cari_id).first()
+                if not cari:
+                    return False, "Cari bulunamadı"
+
+                cari.is_active = False
+                return True, "Cari pasif edildi"
+        except Exception as e:
+            return False, f"Hata: {str(e)}"

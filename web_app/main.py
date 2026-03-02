@@ -3,6 +3,7 @@ FastAPI Web Application - Muhasebe Sistemi
 """
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from src.database.db import init_db
 from src.services.auth_service import AuthService
 from src.services.admin_service import AdminService
 import config
+from src.utils.app_icon import get_app_icon_path
 
 # FastAPI uygulaması
 app = FastAPI(
@@ -98,6 +100,23 @@ async def root(request: Request):
     if user:
         return RedirectResponse(url="/dashboard")
     return RedirectResponse(url="/login")
+
+
+@app.get("/app-icon")
+async def app_icon():
+    """Uygulama ikon dosyasını döndür"""
+    icon_path = get_app_icon_path()
+    if not icon_path:
+        raise HTTPException(status_code=404, detail="Icon bulunamadı")
+
+    media_type = "image/x-icon" if icon_path.suffix.lower() == ".ico" else "image/png"
+    return FileResponse(path=str(icon_path), media_type=media_type)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Tarayıcı favicon endpoint'i"""
+    return await app_icon()
 
 
 @app.get("/login", response_class=HTMLResponse)

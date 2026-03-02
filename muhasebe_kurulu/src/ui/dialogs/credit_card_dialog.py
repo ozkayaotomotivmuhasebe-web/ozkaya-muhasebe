@@ -6,14 +6,19 @@ from src.services.credit_card_service import CreditCardService
 
 
 class CreditCardDialog(QDialog):
-    def __init__(self, user_id, parent=None):
+    def __init__(self, user_id, parent=None, card_id=None):
         super().__init__(parent)
         self.user_id = user_id
+        self.card_id = card_id
+        self.is_edit_mode = card_id is not None
+        self.current_debt = 0.0
         self.init_ui()
+        if self.is_edit_mode:
+            self.load_card()
     
     def init_ui(self):
         """UI başlat"""
-        self.setWindowTitle("Yeni Kredi Kartı Ekle")
+        self.setWindowTitle("Kredi Kartı Düzenle" if self.is_edit_mode else "Yeni Kredi Kartı Ekle")
         self.setMinimumSize(560, 620)
         self.resize(600, 640)
         self.setStyleSheet("""
@@ -50,38 +55,38 @@ class CreditCardDialog(QDialog):
         layout.setContentsMargins(25, 25, 25, 25)
         
         # Başlık
-        title = QLabel("💳 Yeni Kredi Kartı")
+        title = QLabel("💳 Kredi Kartı Düzenle" if self.is_edit_mode else "💳 Yeni Kredi Kartı")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         
         # Kart Adı
-        layout.addWidget(QLabel("Kart Adı *"))
+        layout.addWidget(QLabel("Kart Adı <span style=\"color:#d32f2f\">*</span>"))
         self.txt_card_name = QLineEdit()
         self.txt_card_name.setPlaceholderText("İş Bankası Platinum")
         layout.addWidget(self.txt_card_name)
         
         # Banka Adı
-        layout.addWidget(QLabel("Banka Adı *"))
+        layout.addWidget(QLabel("Banka Adı <span style=\"color:#d32f2f\">*</span>"))
         self.txt_bank_name = QLineEdit()
         self.txt_bank_name.setPlaceholderText("İş Bankası")
         layout.addWidget(self.txt_bank_name)
         
         # Kart Sahibi
-        layout.addWidget(QLabel("Kart Sahibi *"))
+        layout.addWidget(QLabel("Kart Sahibi <span style=\"color:#d32f2f\">*</span>"))
         self.txt_card_holder = QLineEdit()
         self.txt_card_holder.setPlaceholderText("AHMET YILMAZ")
         layout.addWidget(self.txt_card_holder)
         
         # Son 4 Hane
-        layout.addWidget(QLabel("Son 4 Hane *"))
+        layout.addWidget(QLabel("Son 4 Hane <span style=\"color:#d32f2f\">*</span>"))
         self.txt_last4 = QLineEdit()
         self.txt_last4.setPlaceholderText("1234")
         self.txt_last4.setMaxLength(4)
         layout.addWidget(self.txt_last4)
         
         # Kart Limiti
-        layout.addWidget(QLabel("Kart Limiti (₺) *"))
+        layout.addWidget(QLabel("Kart Limiti (₺) <span style=\"color:#d32f2f\">*</span>"))
         self.txt_limit = QLineEdit()
         self.txt_limit.setPlaceholderText("0.00")
         validator = QDoubleValidator(0.0, 999999999.99, 2)
@@ -106,7 +111,7 @@ class CreditCardDialog(QDialog):
         
         # Butonlar
         btn_layout = QHBoxLayout()
-        btn_save = QPushButton("💾 Kaydet")
+        btn_save = QPushButton("💾 Güncelle" if self.is_edit_mode else "💾 Kaydet")
         btn_save.setStyleSheet("background-color: #4CAF50; color: white;")
         btn_save.clicked.connect(self.save_card)
         btn_layout.addWidget(btn_save)
@@ -120,9 +125,27 @@ class CreditCardDialog(QDialog):
         layout.addLayout(btn_layout)
         
         self.setLayout(layout)
+        self.adjustSize()
+        self.setMinimumSize(self.sizeHint())
     
+    def load_card(self):
+        """Mevcut kartı yükle"""
+        try:
+            card = CreditCardService.get_card_by_id(self.card_id)
+            if card:
+                self.txt_card_name.setText(card.card_name or "")
+                self.txt_bank_name.setText(card.bank_name or "")
+                self.txt_card_holder.setText(card.card_holder or "")
+                self.txt_last4.setText(card.card_number_last4 or "")
+                self.txt_limit.setText(f"{card.card_limit:.2f}")
+                self.spin_closing.setValue(card.closing_day or 1)
+                self.spin_due.setValue(card.due_day or 15)
+                self.current_debt = card.current_debt or 0.0
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Kart yüklenemedi: {str(e)}")
+
     def save_card(self):
-        """Kartı kaydet"""
+        """Kartı kaydet/güncelle"""
         # Validasyon
         card_name = self.txt_card_name.text().strip()
         bank_name = self.txt_bank_name.text().strip()
@@ -159,22 +182,42 @@ class CreditCardDialog(QDialog):
         if card_limit <= 0:
             QMessageBox.warning(self, "Uyarı", "Kart limiti sıfırdan büyük olmalıdır!")
             return
+
+        if self.is_edit_mode and card_limit < self.current_debt:
+            QMessageBox.warning(self, "Uyarı", "Kart limiti mevcut borçtan küçük olamaz!")
+            return
         
         # Kaydet
         try:
-            success, msg = CreditCardService.create_card(
-                user_id=self.user_id,
-                card_name=card_name,
-                card_number_last4=last4,
-                card_holder=card_holder,
-                bank_name=bank_name,
-                card_limit=card_limit,
-                closing_day=self.spin_closing.value(),
-                due_day=self.spin_due.value()
-            )
+            if self.is_edit_mode:
+                success, msg = CreditCardService.update_card(
+                    self.card_id,
+                    card_name=card_name,
+                    card_number_last4=last4,
+                    card_holder=card_holder,
+                    bank_name=bank_name,
+                    card_limit=card_limit,
+                    closing_day=self.spin_closing.value(),
+                    due_day=self.spin_due.value()
+                )
+            else:
+                success, msg = CreditCardService.create_card(
+                    user_id=self.user_id,
+                    card_name=card_name,
+                    card_number_last4=last4,
+                    card_holder=card_holder,
+                    bank_name=bank_name,
+                    card_limit=card_limit,
+                    closing_day=self.spin_closing.value(),
+                    due_day=self.spin_due.value()
+                )
             
             if success:
-                QMessageBox.information(self, "Başarılı", "Kredi kartı eklendi!")
+                QMessageBox.information(
+                    self,
+                    "Başarılı",
+                    "Kredi kartı güncellendi!" if self.is_edit_mode else "Kredi kartı eklendi!"
+                )
                 self.accept()
             else:
                 QMessageBox.critical(self, "Hata", msg)

@@ -6,14 +6,18 @@ from src.services.bank_service import BankService
 
 
 class BankDialog(QDialog):
-    def __init__(self, user_id, parent=None):
+    def __init__(self, user_id, parent=None, account_id=None):
         super().__init__(parent)
         self.user_id = user_id
+        self.account_id = account_id
+        self.is_edit_mode = account_id is not None
         self.init_ui()
+        if self.is_edit_mode:
+            self.load_account()
     
     def init_ui(self):
         """UI başlat"""
-        self.setWindowTitle("Yeni Banka Hesabı Ekle")
+        self.setWindowTitle("Banka Hesabı Düzenle" if self.is_edit_mode else "Yeni Banka Hesabı Ekle")
         self.setMinimumSize(560, 620)
         self.resize(600, 640)
         self.setStyleSheet("""
@@ -50,13 +54,13 @@ class BankDialog(QDialog):
         layout.setContentsMargins(25, 25, 25, 25)
         
         # Başlık
-        title = QLabel("🏦 Yeni Banka Hesabı")
+        title = QLabel("🏦 Banka Hesabı Düzenle" if self.is_edit_mode else "🏦 Yeni Banka Hesabı")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         
         # Banka Adı
-        layout.addWidget(QLabel("Banka Adı *"))
+        layout.addWidget(QLabel("Banka Adı <span style=\"color:#d32f2f\">*</span>"))
         self.txt_bank_name = QLineEdit()
         self.txt_bank_name.setPlaceholderText("Ziraat Bankası")
         layout.addWidget(self.txt_bank_name)
@@ -68,19 +72,19 @@ class BankDialog(QDialog):
         layout.addWidget(self.txt_branch)
         
         # Hesap Numarası
-        layout.addWidget(QLabel("Hesap Numarası *"))
+        layout.addWidget(QLabel("Hesap Numarası <span style=\"color:#d32f2f\">*</span>"))
         self.txt_account_number = QLineEdit()
         self.txt_account_number.setPlaceholderText("TR0000000000000000")
         layout.addWidget(self.txt_account_number)
         
         # Para Birimi
-        layout.addWidget(QLabel("Para Birimi *"))
+        layout.addWidget(QLabel("Para Birimi <span style=\"color:#d32f2f\">*</span>"))
         self.combo_currency = QComboBox()
         self.combo_currency.addItems(["TRY", "USD", "EUR", "GBP"])
         layout.addWidget(self.combo_currency)
         
         # Başlangıç Bakiyesi
-        layout.addWidget(QLabel("Başlangıç Bakiye *"))
+        layout.addWidget(QLabel("Başlangıç Bakiye <span style=\"color:#d32f2f\">*</span>"))
         self.txt_balance = QLineEdit()
         self.txt_balance.setText("0.00")
         self.txt_balance.setPlaceholderText("0.00")
@@ -101,7 +105,7 @@ class BankDialog(QDialog):
         
         # Butonlar
         btn_layout = QHBoxLayout()
-        btn_save = QPushButton("💾 Kaydet")
+        btn_save = QPushButton("💾 Güncelle" if self.is_edit_mode else "💾 Kaydet")
         btn_save.setStyleSheet("background-color: #4CAF50; color: white;")
         btn_save.clicked.connect(self.save_bank)
         btn_layout.addWidget(btn_save)
@@ -115,9 +119,25 @@ class BankDialog(QDialog):
         layout.addLayout(btn_layout)
         
         self.setLayout(layout)
+        self.adjustSize()
+        self.setMinimumSize(self.sizeHint())
     
+    def load_account(self):
+        """Mevcut hesabı yükle"""
+        try:
+            account = BankService.get_account(self.account_id)
+            if account:
+                self.txt_bank_name.setText(account.bank_name or "")
+                self.txt_branch.setText(account.branch or "")
+                self.txt_account_number.setText(account.account_number or "")
+                self.combo_currency.setCurrentText(account.currency or "TRY")
+                self.txt_balance.setText(f"{account.balance:.2f}")
+                self.txt_overdraft_limit.setText(f"{getattr(account, 'overdraft_limit', 0.0):.2f}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Hesap yüklenemedi: {str(e)}")
+
     def save_bank(self):
-        """Banka hesabı kaydet"""
+        """Banka hesabı kaydet/güncelle"""
         # Validasyon
         bank_name = self.txt_bank_name.text().strip()
         branch = self.txt_branch.text().strip()
@@ -156,18 +176,33 @@ class BankDialog(QDialog):
         
         # Kaydet
         try:
-            success, msg = BankService.create_account(
-                user_id=self.user_id,
-                bank_name=bank_name,
-                branch=branch or None,
-                account_number=account_number,
-                balance=balance,
-                currency=currency,
-                overdraft_limit=overdraft_limit
-            )
+            if self.is_edit_mode:
+                success, msg = BankService.update_account(
+                    self.account_id,
+                    bank_name=bank_name,
+                    branch=branch or None,
+                    account_number=account_number,
+                    balance=balance,
+                    currency=currency,
+                    overdraft_limit=overdraft_limit
+                )
+            else:
+                success, msg = BankService.create_account(
+                    user_id=self.user_id,
+                    bank_name=bank_name,
+                    branch=branch or None,
+                    account_number=account_number,
+                    balance=balance,
+                    currency=currency,
+                    overdraft_limit=overdraft_limit
+                )
             
             if success:
-                QMessageBox.information(self, "Başarılı", "Banka hesabı eklendi!")
+                QMessageBox.information(
+                    self,
+                    "Başarılı",
+                    "Banka hesabı güncellendi!" if self.is_edit_mode else "Banka hesabı eklendi!"
+                )
                 self.accept()
             else:
                 QMessageBox.critical(self, "Hata", msg)
