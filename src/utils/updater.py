@@ -258,9 +258,24 @@ def _do_update(parent, download_url, new_ver):
             # Çalışan EXE'yi değiştir
             current_exe = sys.executable
             bat_path = os.path.join(tmp_dir, "_ozkaya_update.bat")
+            # _MEI temp klasörlerini temizleyip eski process ölene kadar bekle
             bat_content = f"""@echo off
+echo Guncelleme basliyor...
+REM Eski process tamamen kapanana kadar bekle
+taskkill /f /im Muhasebe.exe >nul 2>&1
+timeout /t 5 /nobreak >nul
+REM Eski PyInstaller temp klasorlerini temizle (DLL catismasi onler)
+for /d %%i in ("%TEMP%\_MEI*") do rd /s /q "%%i" >nul 2>&1
 timeout /t 2 /nobreak >nul
+REM Yeni EXE'yi yerleştir
 move /y "{new_exe}" "{current_exe}"
+if errorlevel 1 (
+    echo HATA: Dosya tasinamadi, yonetici olarak calistirin!
+    pause
+    del "%~f0"
+    exit /b 1
+)
+timeout /t 2 /nobreak >nul
 start "" "{current_exe}"
 del "%~f0"
 """
