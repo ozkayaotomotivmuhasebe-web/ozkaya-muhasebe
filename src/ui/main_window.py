@@ -960,7 +960,58 @@ class MainWindow(QMainWindow):
         """)
         btn_import_transactions.clicked.connect(self.import_transactions_from_excel)
         filter_layout.addWidget(btn_import_transactions)
-        
+
+        # Toplu Sil butonu
+        self.btn_bulk_delete_toggle = QPushButton("☑️ Toplu Sil")
+        self.btn_bulk_delete_toggle.setMinimumHeight(35)
+        self.btn_bulk_delete_toggle.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #E64A19; }
+        """)
+        self.btn_bulk_delete_toggle.clicked.connect(self.toggle_bulk_delete_mode)
+        filter_layout.addWidget(self.btn_bulk_delete_toggle)
+
+        self.btn_bulk_delete_confirm = QPushButton("🗑️ Seçilenleri Sil")
+        self.btn_bulk_delete_confirm.setMinimumHeight(35)
+        self.btn_bulk_delete_confirm.setStyleSheet("""
+            QPushButton {
+                background-color: #b71c1c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #7f0000; }
+        """)
+        self.btn_bulk_delete_confirm.clicked.connect(self.delete_selected_transactions)
+        self.btn_bulk_delete_confirm.setVisible(False)
+        filter_layout.addWidget(self.btn_bulk_delete_confirm)
+
+        self.btn_bulk_delete_cancel = QPushButton("❌ İptal")
+        self.btn_bulk_delete_cancel.setMinimumHeight(35)
+        self.btn_bulk_delete_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #9E9E9E;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #616161; }
+        """)
+        self.btn_bulk_delete_cancel.clicked.connect(self.toggle_bulk_delete_mode)
+        self.btn_bulk_delete_cancel.setVisible(False)
+        filter_layout.addWidget(self.btn_bulk_delete_cancel)
+
         layout.addLayout(filter_layout)
         
         # İşlemler tablosu - Excel tarzı
@@ -1095,6 +1146,7 @@ class MainWindow(QMainWindow):
             for i, trans in enumerate(transactions):
                 # Tarih
                 date_item = QTableWidgetItem(str(trans.transaction_date))
+                date_item.setData(Qt.UserRole, trans.id)
                 self.table_transactions.setItem(i, 0, date_item)
                 
                 # Tür
@@ -1203,7 +1255,9 @@ class MainWindow(QMainWindow):
             # Tabloyu güncelle (aynı kod yukarıdaki gibi)
             self.table_transactions.setRowCount(len(transactions))
             for i, trans in enumerate(transactions):
-                self.table_transactions.setItem(i, 0, QTableWidgetItem(str(trans.transaction_date)))
+                _d_item = QTableWidgetItem(str(trans.transaction_date))
+                _d_item.setData(Qt.UserRole, trans.id)
+                self.table_transactions.setItem(i, 0, _d_item)
                 type_item = QTableWidgetItem(trans.transaction_type.value)
                 if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
                     type_item.setBackground(Qt.green)
@@ -1294,7 +1348,9 @@ class MainWindow(QMainWindow):
             # Tabloyu güncelle
             self.table_transactions.setRowCount(len(filtered))
             for i, trans in enumerate(filtered):
-                self.table_transactions.setItem(i, 0, QTableWidgetItem(str(trans.transaction_date)))
+                _s_item = QTableWidgetItem(str(trans.transaction_date))
+                _s_item.setData(Qt.UserRole, trans.id)
+                self.table_transactions.setItem(i, 0, _s_item)
                 type_item = QTableWidgetItem(trans.transaction_type.value)
                 if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
                     type_item.setBackground(Qt.green)
@@ -1395,7 +1451,55 @@ class MainWindow(QMainWindow):
                 self.refresh_all_data()
             else:
                 QMessageBox.critical(self, "Hata", f"İşlem silinemedi: {msg}")
-    
+
+    def toggle_bulk_delete_mode(self):
+        """Toplu silme modunu aç/kapat"""
+        self._bulk_delete_mode = not getattr(self, '_bulk_delete_mode', False)
+        if self._bulk_delete_mode:
+            self.table_transactions.setSelectionMode(QTableWidget.MultiSelection)
+            self.btn_bulk_delete_toggle.setVisible(False)
+            self.btn_bulk_delete_confirm.setVisible(True)
+            self.btn_bulk_delete_cancel.setVisible(True)
+            self.table_transactions.clearSelection()
+        else:
+            self.table_transactions.setSelectionMode(QTableWidget.SingleSelection)
+            self.btn_bulk_delete_toggle.setVisible(True)
+            self.btn_bulk_delete_confirm.setVisible(False)
+            self.btn_bulk_delete_cancel.setVisible(False)
+            self.table_transactions.clearSelection()
+
+    def delete_selected_transactions(self):
+        """Seçili işlemleri toplu sil"""
+        selected_rows = set(idx.row() for idx in self.table_transactions.selectedIndexes())
+        if not selected_rows:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz işlemleri seçin.")
+            return
+        reply = QMessageBox.question(
+            self, "Toplu Silme Onayı",
+            f"{len(selected_rows)} adet işlemi silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        errors = []
+        success_count = 0
+        for row in selected_rows:
+            item = self.table_transactions.item(row, 0)
+            if item:
+                tid = item.data(Qt.UserRole)
+                if tid:
+                    ok, msg = TransactionService.delete_transaction(tid)
+                    if ok:
+                        success_count += 1
+                    else:
+                        errors.append(msg)
+        self.toggle_bulk_delete_mode()
+        self.refresh_all_data()
+        if errors:
+            QMessageBox.warning(self, "Sonuç", f"{success_count} işlem silindi.\n{len(errors)} işlem silinemedi.")
+        else:
+            QMessageBox.information(self, "Başarılı", f"{success_count} işlem başarıyla silindi.")
+
     def create_invoices_tab(self) -> QWidget:
         """Faturalar sekmesi"""
         widget = QWidget()
