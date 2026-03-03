@@ -14,7 +14,7 @@ DATABASE_URL = f"sqlite:///{DATABASE_DIR / 'muhasebe.db'}"
 
 # Uygulama ayarları
 APP_NAME = "Muhasebe Takip Sistemi"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.4"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 

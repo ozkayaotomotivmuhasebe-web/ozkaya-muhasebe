@@ -220,7 +220,7 @@ class _VersionCheckThread(QThread):
             remote_ver   = data.get("version", "0.0.0")
             download_url = data.get("download_url", "")
             notes        = data.get("notes", "")
-            if _is_newer(remote_ver, self._current):
+            if _is_newer(remote_ver, self._current) and download_url:
                 self.update_found.emit(self._current, remote_ver, notes, download_url)
         except Exception as e:
             print(f"[Güncelleme] Kontrol hatası: {e}")
