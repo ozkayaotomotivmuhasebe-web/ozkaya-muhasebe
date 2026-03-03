@@ -39,14 +39,36 @@ set "PYTHON_DIR="
 for /f "tokens=*" %%i in ('%VENV_PYTHON% -c "import sys, os; print(os.path.dirname(sys.executable))"') do set "PYTHON_DIR=%%i"
 echo Python dizini: %PYTHON_DIR%
 
-REM VC++ Runtime DLL'leri - python311.dll'nin bağımlılıkları
+REM VC++ Runtime DLL'leri - python311.dll'nin bağımlılıkları (tekrar ekleme yok)
 set "VCRT_ARGS="
-if exist "%PYTHON_DIR%\VCRUNTIME140.dll"   set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140.dll;.""
-if exist "%PYTHON_DIR%\VCRUNTIME140_1.dll" set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140_1.dll;.""
-if exist "%PYTHON_DIR%\MSVCP140.dll"       set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\MSVCP140.dll;.""
-if exist "C:\Windows\System32\VCRUNTIME140.dll"   set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140.dll;.""
-if exist "C:\Windows\System32\VCRUNTIME140_1.dll" set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140_1.dll;.""
-if exist "C:\Windows\System32\MSVCP140.dll"       set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\MSVCP140.dll;.""
+
+REM VCRUNTIME140.dll - Python dir tercihli, yoksa System32
+if exist "%PYTHON_DIR%\VCRUNTIME140.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140.dll;.""
+) else if exist "C:\Windows\System32\VCRUNTIME140.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140.dll;.""
+)
+
+REM VCRUNTIME140_1.dll
+if exist "%PYTHON_DIR%\VCRUNTIME140_1.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140_1.dll;.""
+) else if exist "C:\Windows\System32\VCRUNTIME140_1.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140_1.dll;.""
+)
+
+REM MSVCP140.dll
+if exist "%PYTHON_DIR%\MSVCP140.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\MSVCP140.dll;.""
+) else if exist "C:\Windows\System32\MSVCP140.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\MSVCP140.dll;.""
+)
+
+REM python311.dll'yi de açıkça ekle
+if exist "%PYTHON_DIR%\python311.dll" (
+    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\python311.dll;.""
+)
+
+echo VCRT_ARGS: %VCRT_ARGS%
 
 %VENV_PYTHON% -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 %VCRT_ARGS% main.py
 
