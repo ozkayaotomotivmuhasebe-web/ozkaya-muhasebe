@@ -3355,18 +3355,43 @@ Pasif Kullanıcı: {total_users - active_users}
         """Kredi kartları tablosunu yenile"""
         try:
             cards = CreditCardService.get_all_cards(self.user.id)
+            # Hızlı arama için id→card map
+            card_map = {c.id: c for c in cards}
+
             self.table_credit_cards.setRowCount(len(cards))
             
             for i, card in enumerate(cards):
-                self.table_credit_cards.setItem(i, 0, QTableWidgetItem(card.card_name))
+                is_child = card.parent_card_id is not None
+
+                # Kart adı — ek kart ise 🔗 işareti ekle
+                name_display = f"🔗 {card.card_name}" if is_child else card.card_name
+                self.table_credit_cards.setItem(i, 0, QTableWidgetItem(name_display))
                 self.table_credit_cards.setItem(i, 1, QTableWidgetItem(card.bank_name))
                 self.table_credit_cards.setItem(i, 2, QTableWidgetItem(f"****{card.card_number_last4}"))
-                self.table_credit_cards.setItem(i, 3, QTableWidgetItem(f"{format_tr(card.card_limit)} ₺"))
+
+                # Limit — ek kart ise "Paylaşımlı" göster
+                if is_child:
+                    parent = card_map.get(card.parent_card_id)
+                    parent_name = parent.card_name if parent else "?"
+                    limit_item = QTableWidgetItem(f"Paylaşımlı ({parent_name})")
+                    limit_item.setForeground(Qt.darkMagenta)
+                else:
+                    limit_item = QTableWidgetItem(f"{format_tr(card.card_limit)} ₺")
+                self.table_credit_cards.setItem(i, 3, limit_item)
+
                 self.table_credit_cards.setItem(i, 4, QTableWidgetItem(f"{format_tr(card.current_debt)} ₺"))
                 self.table_credit_cards.setItem(i, 5, QTableWidgetItem(f"{format_tr(card.available_limit)} ₺"))
                 
                 status = "Aktif" if card.is_active else "Pasif"
                 self.table_credit_cards.setItem(i, 6, QTableWidgetItem(status))
+
+                # Ek kart satırlarına hafif mor arka plan ver
+                if is_child:
+                    _shared_bg = QColor(243, 229, 245)
+                    for col in range(7):
+                        item = self.table_credit_cards.item(i, col)
+                        if item:
+                            item.setBackground(_shared_bg)
                 
                 # Butonlar
                 action_widget = QWidget()

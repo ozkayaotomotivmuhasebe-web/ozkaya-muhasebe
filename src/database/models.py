@@ -201,9 +201,14 @@ class CreditCard(Base):
     due_day = Column(Integer, default=15)  # Son ödeme günü
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
+    # Ortak limit: Bu kart başka bir kartın limitini paylaşıyorsa parent kartın id'si
+    parent_card_id = Column(Integer, ForeignKey('credit_cards.id'), nullable=True)
     
     user = relationship('User', back_populates='credit_cards')
     transactions = relationship('Transaction', back_populates='credit_card')
+    # Ek kartlar (aynı limiti paylaşan)
+    child_cards = relationship('CreditCard', foreign_keys='CreditCard.parent_card_id',
+                               backref='parent_card', lazy='dynamic')
 
 
 class Loan(Base):

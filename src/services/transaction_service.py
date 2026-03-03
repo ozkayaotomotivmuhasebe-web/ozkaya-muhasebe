@@ -169,10 +169,10 @@ class TransactionService:
             if card:
                 if transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
                     card.current_debt += amount  # Borç arttı
-                    card.available_limit = card.card_limit - card.current_debt
                 elif transaction_type == TransactionType.KREDI_KARTI_ODEME:
                     card.current_debt -= amount  # Ödeme yapıldı
-                    card.available_limit = card.card_limit - card.current_debt
+                # Ortak limit grubundaki tüm kartların available_limit'ini yeniden hesapla
+                TransactionService._recalc_card_group(session, card)
 
         # KREDİ GÜNCELLEMESİ (KREDI_ODEME)
         if transaction_type == TransactionType.KREDI_ODEME:
@@ -330,10 +330,10 @@ class TransactionService:
             if card:
                 if transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
                     card.current_debt -= amount  # Borcu geri al
-                    card.available_limit = card.card_limit - card.current_debt
                 elif transaction_type == TransactionType.KREDI_KARTI_ODEME:
                     card.current_debt += amount  # Ödemeyi geri al
-                    card.available_limit = card.card_limit - card.current_debt
+                # Ortak limit grubundaki tüm kartların available_limit'ini yeniden hesapla
+                TransactionService._recalc_card_group(session, card)
 
         # Kredi geri al
         if transaction_type == TransactionType.KREDI_ODEME:
@@ -348,6 +348,20 @@ class TransactionService:
                     remaining_after = max(0.0, total_repayment - float(loan.total_paid or 0))
                     if remaining_after > 0 and loan.status == 'KAPATILDI':
                         loan.status = 'AKTIF'
+
+    @staticmethod
+    def _recalc_card_group(session, card):
+        """Ortak limitli gruptaki tüm kartların available_limit değerini güncelle."""
+        parent = (session.query(CreditCard).filter(CreditCard.id == card.parent_card_id).first()
+                  if card.parent_card_id else card)
+        if not parent:
+            return
+        children = session.query(CreditCard).filter(CreditCard.parent_card_id == parent.id).all()
+        total_debt = parent.current_debt + sum(c.current_debt for c in children)
+        shared_available = parent.card_limit - total_debt
+        parent.available_limit = shared_available
+        for child in children:
+            child.available_limit = shared_available
 
     @staticmethod
     def _extract_loan_id(notes):
