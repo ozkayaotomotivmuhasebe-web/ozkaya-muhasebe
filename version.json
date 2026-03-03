@@ -1,5 +1,5 @@
-{
-  "version": "1.0.6",
-  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.6/Muhasebe.exe",
-  "notes": "- Çeşitli düzenleme ve iyileştirmeler yapıldı\n- Google Sheets tutar aktarma düzeltildi\n- İşlemler tablosu sayı formatı düzeltiidi\n- Veritabanı güncellemeler otomatik uygulanıyor"
+﻿{
+  "version": "1.0.7",
+  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.7/Muhasebe.exe",
+  "notes": "- Google Sheets banka hesabi otomatik secimi duzeltildi\n- Google Sheets KK (kredi karti) otomatik aciliyor\n- Senkronizasyonda atlanan/hatali satir sayisi gosteriliyor\n- Cesitli duzeltmeler"
 }
