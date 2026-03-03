@@ -287,8 +287,83 @@ class GoogleSheetsService:
         
         return stats
     
+    # ------------------------------------------------------------------ #
+    #  Excel import ile aynı mantık: her satır kendi session'ında işlenir #
+    # ------------------------------------------------------------------ #
+
+    def _gs_find_or_create_bank(self, user_id: int, payment_name: str):
+        """Banka hesabını bul veya yeni oluştur (BankService ile kendi session'ında)."""
+        from src.services.bank_service import BankService
+        name = payment_name.strip()
+        name_up = name.upper()
+        accounts = BankService.get_accounts(user_id)
+        for acc in accounts:
+            bn = (acc.bank_name or "").strip().upper()
+            an = (acc.account_number or "").strip().upper()
+            ib = (acc.iban or "").strip().upper()
+            if bn and (bn in name_up or name_up in bn):
+                return acc.id
+            if an and an in name_up:
+                return acc.id
+            if ib and ib in name_up:
+                return acc.id
+        # Bulunamadı → yeni hesap oluştur
+        auto_no = f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S%f')[-12:]}"
+        ok, _ = BankService.create_account(user_id, name, auto_no, currency='TRY', balance=0.0, branch='OTOMATIK')
+        logger.info(f"GS: Yeni banka hesabı oluşturuldu: '{name}'")
+        if ok:
+            accounts2 = BankService.get_accounts(user_id)
+            for acc in accounts2:
+                if (acc.bank_name or "").strip().upper() == name_up:
+                    return acc.id
+            if accounts2:
+                return accounts2[-1].id
+        return None
+
+    def _gs_find_or_create_credit_card(self, user_id: int, payment_name: str):
+        """Kredi kartını bul veya yeni oluştur (CreditCardService ile kendi session'ında)."""
+        from src.services.credit_card_service import CreditCardService
+        name = payment_name.strip()
+        name_up = name.upper()
+        cards = CreditCardService.get_active_cards(user_id)
+        for card in cards:
+            cn = (card.card_name or "").strip().upper()
+            bn = (card.bank_name or "").strip().upper()
+            if cn and (cn in name_up or name_up in cn):
+                return card.id
+            if bn and (bn in name_up or name_up in bn):
+                return card.id
+        # Bulunamadı → yeni kart oluştur
+        card, _ = CreditCardService.create_card(
+            user_id, card_name=name, card_number_last4='0000',
+            card_holder='OTOMATIK', bank_name=name,
+            card_limit=100000.0, closing_day=1, due_day=15
+        )
+        logger.info(f"GS: Yeni kredi kartı oluşturuldu: '{name}'")
+        return card.id if card else None
+
+    def _gs_find_cari(self, user_id: int, cari_name: str):
+        """Cari bul veya oluştur, cari_id döndür."""
+        from src.services.cari_service import CariService
+        with session_scope() as s:
+            cari = s.query(Cari).filter_by(user_id=user_id, name=cari_name).first()
+            if cari:
+                return cari.id
+        # Yoksa oluştur
+        ok, _ = CariService.create_cari(user_id, cari_name, "MÜŞTERİ")
+        if ok:
+            with session_scope() as s:
+                cari = s.query(Cari).filter_by(user_id=user_id, name=cari_name).first()
+                if cari:
+                    return cari.id
+        return None
+
     def _sync_transactions(self, user_id: int, worksheet, override_type=None) -> Dict:
-        """İşlemleri Google Sheets'ten çek"""
+        """İşlemleri Google Sheets'ten çek.
+        
+        Her satır bağımsız session ile işlenir (Excel import ile aynı yöntem).
+        Bu sayede bir satırda hata olursa diğer satırlar etkilenmez.
+        """
         stats = {
             'added': 0,
             'updated': 0,
@@ -336,234 +411,179 @@ class GoogleSheetsService:
                 logger.warning("İşlem sayfasında 'Tarih' veya 'Tutar' sütunu bulunamadı")
                 return stats
             
-            with session_scope() as session:
-                for row_idx, row in enumerate(rows, start=2):
-                    if len(row) <= col_map['amount'] or not row[col_map['amount']].strip():
+            # Her satırı BAĞIMSIZ işle — paylaşılan session yok
+            for row_idx, row in enumerate(rows, start=2):
+                if len(row) <= col_map['amount'] or not row[col_map['amount']].strip():
+                    continue
+                
+                try:
+                    # Tarihi parse et
+                    date_str = row[col_map['date']].strip()
+                    trans_date = None
+                    for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                        try:
+                            trans_date = datetime.strptime(date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                    if trans_date is None:
+                        logger.warning(f"Tarih formatı tanınmıyor: {date_str}")
+                        stats['errors'].append(f"Satır {row_idx}: Tarih formatı tanınmıyor ({date_str})")
                         continue
                     
-                    try:
-                        # Tarihi parse et
-                        date_str = row[col_map['date']].strip()
-                        # Farklı tarih formatlarını dene
-                        for fmt in ['%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
-                            try:
-                                trans_date = datetime.strptime(date_str, fmt).date()
-                                break
-                            except ValueError:
-                                continue
-                        else:
-                            logger.warning(f"Tarih formatı tanınmıyor: {date_str}")
-                            continue
+                    # Tutarı parse et - Türkçe format destekle
+                    amount_str = row[col_map['amount']].strip().replace('\xa0', '').replace('₺', '').replace('TL', '').replace(' ', '')
+                    if ',' in amount_str:
+                        amount_str = amount_str.replace('.', '').replace(',', '.')
+                    elif amount_str.count('.') > 1:
+                        amount_str = amount_str.replace('.', '')
+                    amount = float(amount_str)
+                    
+                    # İşlem türü
+                    if override_type is not None:
+                        trans_type = override_type
+                    else:
+                        trans_type = TransactionType.GELIR
+                        if 'type' in col_map and len(row) > col_map['type']:
+                            type_str = row[col_map['type']].strip().upper()
+                            if 'GİDER' in type_str or 'EXPENSE' in type_str:
+                                trans_type = TransactionType.GIDER
+                            elif 'FATURA' in type_str:
+                                trans_type = TransactionType.KESILEN_FATURA if amount > 0 else TransactionType.GELEN_FATURA
+                    
+                    # Cari bul / oluştur (kendi session'ında)
+                    cari_id = None
+                    customer_name = ""
+                    if 'cari' in col_map and len(row) > col_map['cari']:
+                        cari_name = row[col_map['cari']].strip()
+                        if cari_name:
+                            customer_name = cari_name
+                            cari_id = self._gs_find_cari(user_id, cari_name)
+                    
+                    # Açıklama / Konu / Kişi
+                    description = row[col_map['description']].strip() if 'description' in col_map and len(row) > col_map['description'] else ''
+                    subject = row[col_map['subject']].strip() if 'subject' in col_map and len(row) > col_map['subject'] else None
+                    person = row[col_map['person']].strip() if 'person' in col_map and len(row) > col_map['person'] else None
+                    
+                    # Ödeme şekli
+                    payment_type = row[col_map['payment_type']].strip() if 'payment_type' in col_map and len(row) > col_map['payment_type'] else None
+                    logger.info(f"Satır {row_idx}: payment_type = '{payment_type}'")
+                    
+                    # Ödeme yöntemi ve hesap ID'lerini belirle
+                    payment_method = PaymentMethod.NAKIT
+                    bank_account_id = None
+                    credit_card_id = None
+                    
+                    if payment_type:
+                        pt_up = payment_type.upper()
                         
-                        # Tutarı parse et - Türkçe format destekle (1.234,56 veya 1.234.567 veya 1234.56)
-                        amount_str = row[col_map['amount']].strip().replace('\xa0', '').replace('₺', '').replace('TL', '').replace(' ', '')
-                        if ',' in amount_str:
-                            # Türkçe format: binlik nokta, ondalık virgül → 1.234,56
-                            amount_str = amount_str.replace('.', '').replace(',', '.')
-                        elif amount_str.count('.') > 1:
-                            # Birden fazla nokta = binlik ayırıcı → 1.234.567
-                            amount_str = amount_str.replace('.', '')
-                        amount = float(amount_str)
-                        
-                        # İşlem türü
-                        if override_type is not None:
-                            trans_type = override_type
-                        else:
-                            trans_type = TransactionType.GELIR
-                            if 'type' in col_map and len(row) > col_map['type']:
-                                type_str = row[col_map['type']].strip().upper()
-                                if 'GİDER' in type_str or 'EXPENSE' in type_str:
-                                    trans_type = TransactionType.GIDER
-                                elif 'FATURA' in type_str:
-                                    trans_type = TransactionType.KESILEN_FATURA if amount > 0 else TransactionType.GELEN_FATURA
-                        
-                        # Cari bul
-                        cari_id = None
-                        customer_name = ""
-                        if 'cari' in col_map and len(row) > col_map['cari']:
-                            cari_name = row[col_map['cari']].strip()
-                            if cari_name:
-                                cari = session.query(Cari).filter_by(user_id=user_id, name=cari_name).first()
-                                if not cari:
-                                    # CariService ile ekle
-                                    from src.services.cari_service import CariService
-                                    ok, _ = CariService.create_cari(user_id, cari_name, "MÜŞTERİ")
-                                    if ok:
-                                        cari = session.query(Cari).filter_by(user_id=user_id, name=cari_name).first()
-                                if cari:
-                                    cari_id = cari.id
-                                customer_name = cari_name
-                        
-                        # Açıklama
-                        description = row[col_map['description']].strip() if 'description' in col_map and len(row) > col_map['description'] else ''
-                        
-                        # Konu
-                        subject = row[col_map['subject']].strip() if 'subject' in col_map and len(row) > col_map['subject'] else None
-                        
-                        # Ödeyen Kişi
-                        person = row[col_map['person']].strip() if 'person' in col_map and len(row) > col_map['person'] else None
-                        
-                        # Ödeme Şekli (payment_type - string)
-                        payment_type = row[col_map['payment_type']].strip() if 'payment_type' in col_map and len(row) > col_map['payment_type'] else None
-                        logger.info(f"Satır {row_idx}: payment_type = '{payment_type}'")
-                        
-                        # Ödeme yöntemi ve hesap bilgilerini belirle
-                        payment_method = PaymentMethod.NAKIT
-                        bank_account_id = None
-                        credit_card_id = None
-                        
-                        if payment_type:
-                            payment_type_upper = payment_type.upper()
-                            
-                            # NAKİT kontrolü
-                            if 'NAKİT' in payment_type_upper or 'NAKIT' in payment_type_upper or 'CASH' in payment_type_upper:
-                                payment_method = PaymentMethod.NAKIT
-                            
-                            # CARİ kontrolü
-                            elif 'CARİ' in payment_type_upper or 'CARI' in payment_type_upper:
-                                payment_method = PaymentMethod.CARI
+                        if 'NAKİT' in pt_up or 'NAKIT' in pt_up or 'CASH' in pt_up:
+                            payment_method = PaymentMethod.NAKIT
 
-                            # BANKA HESABI kontrolü (genel "Banka Hesabı" metni)
-                            elif 'BANKA HESAB' in payment_type_upper:
+                        elif 'CARİ' in pt_up or 'CARI' in pt_up:
+                            payment_method = PaymentMethod.CARI
+
+                        elif 'BANKA HESAB' in pt_up:
+                            # Genel "Banka Hesabı" → ilk aktif banka hesabını seç
+                            payment_method = PaymentMethod.BANKA
+                            from src.services.bank_service import BankService
+                            accounts = BankService.get_accounts(user_id)
+                            if accounts:
+                                bank_account_id = accounts[0].id
+
+                        elif 'KK' in pt_up or 'KREDİ' in pt_up or 'KREDI' in pt_up:
+                            # Kredi kartı: bul veya oluştur
+                            payment_method = PaymentMethod.KREDI_KARTI
+                            credit_card_id = self._gs_find_or_create_credit_card(user_id, payment_type)
+
+                        else:
+                            # Spesifik banka/kart adı: önce banka, sonra kart, bulamazsa banka oluştur
+                            from src.services.bank_service import BankService
+                            from src.services.credit_card_service import CreditCardService
+                            # Banka hesaplarında ara
+                            found_bank_id = None
+                            for acc in BankService.get_accounts(user_id):
+                                bn = (acc.bank_name or "").strip().upper()
+                                an = (acc.account_number or "").strip().upper()
+                                ib = (acc.iban or "").strip().upper()
+                                if bn and (bn in pt_up or pt_up in bn):
+                                    found_bank_id = acc.id; break
+                                if an and an in pt_up:
+                                    found_bank_id = acc.id; break
+                                if ib and ib in pt_up:
+                                    found_bank_id = acc.id; break
+                            if found_bank_id:
                                 payment_method = PaymentMethod.BANKA
-                                # İlk aktif banka hesabını otomatik seç
-                                first_bank = session.query(BankAccount).filter(
-                                    BankAccount.user_id == user_id,
-                                    BankAccount.is_active == True
-                                ).first()
-                                if first_bank:
-                                    bank_account_id = first_bank.id
-
-                            # KK / KREDİ KART kontrolü
-                            elif 'KK' in payment_type_upper or 'KREDİ' in payment_type_upper or 'KREDI' in payment_type_upper:
-                                payment_method = PaymentMethod.KREDI_KARTI
-                                # Kredi kartlarında ara
-                                credit_card = session.query(CreditCard).filter(
-                                    CreditCard.user_id == user_id,
-                                    CreditCard.is_active == True
-                                ).filter(
-                                    (CreditCard.card_name.ilike(f'%{payment_type}%')) |
-                                    (CreditCard.card_number_last4.ilike(f'%{payment_type}%')) |
-                                    (CreditCard.bank_name.ilike(f'%{payment_type}%'))
-                                ).first()
-                                if credit_card:
-                                    credit_card_id = credit_card.id
-                                else:
-                                    # Bulunamazsa payment_type adıyla yeni kredi kartı oluştur
-                                    auto_no = f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S%f')[-12:]}"
-                                    new_card = CreditCard(
-                                        user_id=user_id,
-                                        card_name=payment_type,
-                                        card_number_last4='0000',
-                                        card_holder='OTOMATIK',
-                                        bank_name=payment_type,
-                                        is_active=True
-                                    )
-                                    session.add(new_card)
-                                    session.flush()
-                                    credit_card_id = new_card.id
-                                    logger.info(f"Yeni kredi kartı oluşturuldu: '{payment_type}' -> id={new_card.id}")
-
-                            # Diğer durumda hesap numarası/adı olabilir - banka hesabı ara
+                                bank_account_id = found_bank_id
                             else:
-                                # Önce banka hesaplarında ara
-                                bank_account = session.query(BankAccount).filter(
-                                    BankAccount.user_id == user_id,
-                                    BankAccount.is_active == True
-                                ).filter(
-                                    (BankAccount.account_number.ilike(f'%{payment_type}%')) |
-                                    (BankAccount.bank_name.ilike(f'%{payment_type}%')) |
-                                    (BankAccount.iban.ilike(f'%{payment_type}%'))
-                                ).first()
-                                
-                                if bank_account:
-                                    payment_method = PaymentMethod.BANKA
-                                    bank_account_id = bank_account.id
+                                # Kredi kartlarında ara
+                                found_card_id = None
+                                for card in CreditCardService.get_active_cards(user_id):
+                                    cn = (card.card_name or "").strip().upper()
+                                    cbn = (card.bank_name or "").strip().upper()
+                                    if cn and (cn in pt_up or pt_up in cn):
+                                        found_card_id = card.id; break
+                                    if cbn and (cbn in pt_up or pt_up in cbn):
+                                        found_card_id = card.id; break
+                                if found_card_id:
+                                    payment_method = PaymentMethod.KREDI_KARTI
+                                    credit_card_id = found_card_id
                                 else:
-                                    # Bulunamazsa kredi kartlarında ara
-                                    credit_card = session.query(CreditCard).filter(
-                                        CreditCard.user_id == user_id,
-                                        CreditCard.is_active == True
-                                    ).filter(
-                                        (CreditCard.card_name.ilike(f'%{payment_type}%')) |
-                                        (CreditCard.card_number_last4.ilike(f'%{payment_type}%')) |
-                                        (CreditCard.bank_name.ilike(f'%{payment_type}%'))
-                                    ).first()
-                                    
-                                    if credit_card:
-                                        payment_method = PaymentMethod.KREDI_KARTI
-                                        credit_card_id = credit_card.id
-                                    else:
-                                        # Hiçbiri bulunmazsa payment_type adıyla yeni banka hesabı oluştur
-                                        payment_method = PaymentMethod.BANKA
-                                        auto_no = f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S%f')[-12:]}"
-                                        new_bank = BankAccount(
-                                            user_id=user_id,
-                                            bank_name=payment_type,
-                                            account_number=auto_no,
-                                            currency='TRY',
-                                            balance=0.0,
-                                            is_active=True
-                                        )
-                                        session.add(new_bank)
-                                        session.flush()
-                                        bank_account_id = new_bank.id
-                                        logger.info(f"Yeni banka hesabı oluşturuldu: '{payment_type}' -> id={new_bank.id}")
-                        
-                        # Aynı işlem var mı kontrol et (tarih + tutar + açıklama)
-                        existing = TransactionService.find_duplicate_transaction(
-                            user_id,
-                            trans_date,
-                            amount,
-                            description,
-                            customer_name=customer_name,
-                            person=person
-                        )
-
-                        if existing:
-                            stats['skipped'] += 1
-                            stats['duplicates'] += 1
-                            stats['duplicate_transactions'].append({
-                                'row_key': row_idx,
-                                'row_label': str(row_idx),
-                                'date': trans_date,
-                                'customer_name': customer_name,
-                                'amount': amount,
-                                'description': description,
-                                'subject': subject,
-                                'person': person,
-                                'transaction_type': trans_type,
-                                'payment_method': payment_method,
-                                'cari_id': cari_id,
-                                'payment_type': payment_type or payment_method.value
-                            })
-                            continue
-                        
-                        # Yeni işlem oluştur
-                        new_transaction = Transaction(
-                            user_id=user_id,
-                            transaction_type=trans_type,
-                            amount=amount,
-                            transaction_date=trans_date,
-                            description=description,
-                            subject=subject,
-                            person=person,
-                            customer_name=customer_name,
-                            payment_method=payment_method,
-                            cari_id=cari_id,
-                            bank_account_id=bank_account_id,
-                            credit_card_id=credit_card_id,
-                            payment_type=payment_type or payment_method.value
-                        )
-                        session.add(new_transaction)
-                        stats['added'] += 1
-                        
-                    except Exception as e:
-                        logger.warning(f"Satır parse hatası: {e}, satır: {row}")
-                        stats['errors'].append(f"Satır {row_idx}: {str(e)}")
+                                    # Hiçbiri yok → yeni banka hesabı oluştur
+                                    payment_method = PaymentMethod.BANKA
+                                    bank_account_id = self._gs_find_or_create_bank(user_id, payment_type)
+                    
+                    # Mükerrer kontrol (kendi session'ında)
+                    existing = TransactionService.find_duplicate_transaction(
+                        user_id, trans_date, amount, description,
+                        customer_name=customer_name, person=person
+                    )
+                    if existing:
+                        stats['skipped'] += 1
+                        stats['duplicates'] += 1
+                        stats['duplicate_transactions'].append({
+                            'row_key': row_idx,
+                            'row_label': str(row_idx),
+                            'date': trans_date,
+                            'customer_name': customer_name,
+                            'amount': amount,
+                            'description': description,
+                            'subject': subject,
+                            'person': person,
+                            'transaction_type': trans_type,
+                            'payment_method': payment_method,
+                            'cari_id': cari_id,
+                            'payment_type': payment_type or payment_method.value
+                        })
                         continue
+                    
+                    # İşlemi oluştur — TransactionService kendi session'ını yönetir
+                    new_tx, msg = TransactionService.create_transaction(
+                        user_id=user_id,
+                        transaction_date=trans_date,
+                        transaction_type=trans_type,
+                        payment_method=payment_method,
+                        customer_name=customer_name,
+                        description=description,
+                        amount=amount,
+                        cari_id=cari_id,
+                        bank_account_id=bank_account_id,
+                        credit_card_id=credit_card_id,
+                        subject=subject,
+                        person=person,
+                        payment_type=payment_type or payment_method.value
+                    )
+                    if new_tx:
+                        stats['added'] += 1
+                    else:
+                        stats['errors'].append(f"Satır {row_idx}: {msg}")
+                    
+                except Exception as e:
+                    logger.warning(f"Satır parse hatası: {e}, satır: {row}", exc_info=True)
+                    stats['errors'].append(f"Satır {row_idx}: {str(e)}")
+                    continue
             
-            logger.info(f"İşlem senkronizasyonu: {stats['added']} eklendi, {stats['skipped']} atlandı")
+            logger.info(f"İşlem senkronizasyonu: {stats['added']} eklendi, {stats['skipped']} atlandı, {len(stats['errors'])} hata")
             
         except Exception as e:
             logger.error(f"İşlem senkronizasyon hatası: {e}", exc_info=True)
