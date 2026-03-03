@@ -27,7 +27,21 @@ echo ✓ Logo ile yeni EXE oluşturuluyor...
 echo   (Bu biraz zaman alabilir...)
 echo.
 
-python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 main.py
+REM Python DLL'lerini bul (VC++ Runtime dahil etmek için)
+set "PYTHON_DIR="
+for /f "tokens=*" %%i in ('python -c "import sys, os; print(os.path.dirname(sys.executable))"') do set "PYTHON_DIR=%%i"
+echo Python dizini: %PYTHON_DIR%
+
+REM VC++ Runtime DLL'leri - python311.dll'nin bağımlılıkları
+set "VCRT_ARGS="
+if exist "%PYTHON_DIR%\VCRUNTIME140.dll"   set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140.dll;.""
+if exist "%PYTHON_DIR%\VCRUNTIME140_1.dll" set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\VCRUNTIME140_1.dll;.""
+if exist "%PYTHON_DIR%\MSVCP140.dll"       set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\MSVCP140.dll;.""
+if exist "C:\Windows\System32\VCRUNTIME140.dll"   set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140.dll;.""
+if exist "C:\Windows\System32\VCRUNTIME140_1.dll" set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140_1.dll;.""
+if exist "C:\Windows\System32\MSVCP140.dll"       set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\MSVCP140.dll;.""
+
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 %VCRT_ARGS% main.py
 
 if not exist dist\Muhasebe.exe (
     echo ❌ HATA: EXE oluşturulamadı!
