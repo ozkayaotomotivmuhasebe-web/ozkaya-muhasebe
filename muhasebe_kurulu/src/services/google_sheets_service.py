@@ -344,8 +344,14 @@ class GoogleSheetsService:
                             logger.warning(f"Tarih formatı tanınmıyor: {date_str}")
                             continue
                         
-                        # Tutarı parse et
-                        amount_str = row[col_map['amount']].strip().replace(',', '.').replace(' ', '')
+                        # Tutarı parse et - Türkçe format destekle (1.234,56 veya 1.234.567 veya 1234.56)
+                        amount_str = row[col_map['amount']].strip().replace('\xa0', '').replace('₺', '').replace('TL', '').replace(' ', '')
+                        if ',' in amount_str:
+                            # Türkçe format: binlik nokta, ondalık virgül → 1.234,56
+                            amount_str = amount_str.replace('.', '').replace(',', '.')
+                        elif amount_str.count('.') > 1:
+                            # Birden fazla nokta = binlik ayırıcı → 1.234.567
+                            amount_str = amount_str.replace('.', '')
                         amount = float(amount_str)
                         
                         # İşlem türü

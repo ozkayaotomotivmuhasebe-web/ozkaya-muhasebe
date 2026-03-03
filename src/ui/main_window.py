@@ -1270,7 +1270,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
                 
@@ -1363,7 +1363,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
                 
