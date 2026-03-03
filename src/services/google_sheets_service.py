@@ -139,6 +139,8 @@ class GoogleSheetsService:
             stats = {
                 'transactions_added': 0,
                 'transactions_updated': 0,
+                'transactions_skipped': 0,
+                'transactions_errors': 0,
                 'caris_added': 0,
                 'gelen_fatura_added': 0,
                 'kesilen_fatura_added': 0,
@@ -163,6 +165,8 @@ class GoogleSheetsService:
                     trans_stats = self._sync_transactions(user_id, worksheet)
                     stats['transactions_added'] = trans_stats['added']
                     stats['transactions_updated'] = trans_stats['updated']
+                    stats['transactions_skipped'] += trans_stats.get('skipped', 0)
+                    stats['transactions_errors'] += len(trans_stats.get('errors', []))
                 except gspread.exceptions.WorksheetNotFound:
                     stats['errors'].append(f"'{sheet_mappings['transactions']}' sayfası bulunamadı")
 
@@ -182,6 +186,8 @@ class GoogleSheetsService:
                         stats[stat_key] = trans_stats['added']
                         stats['transactions_added'] += trans_stats['added']
                         stats['transactions_updated'] += trans_stats['updated']
+                        stats['transactions_skipped'] += trans_stats.get('skipped', 0)
+                        stats['transactions_errors'] += len(trans_stats.get('errors', []))
                     except gspread.exceptions.WorksheetNotFound:
                         stats['errors'].append(f"'{sheet_mappings[key]}' sayfası bulunamadı")
 
@@ -198,8 +204,12 @@ class GoogleSheetsService:
                 msg += f", Gider: {stats['gider_added']}"
             if stats['gelir_added']:
                 msg += f", Gelir: {stats['gelir_added']}"
+            if stats['transactions_skipped']:
+                msg += f"\n⚠️ Atlandı (zaten var): {stats['transactions_skipped']} işlem"
+            if stats['transactions_errors']:
+                msg += f"\n❌ Hatalı satır: {stats['transactions_errors']} (tarih/tutar formatı kontrol edin)"
             if stats['errors']:
-                msg += f"\n⚠️ Uyarılar: {', '.join(stats['errors'])}"
+                msg += f"\n⚠️ Sayfa uyarıları: {', '.join(stats['errors'])}"
 
             return True, msg, stats
 
@@ -284,7 +294,8 @@ class GoogleSheetsService:
             'updated': 0,
             'skipped': 0,
             'duplicates': 0,
-            'duplicate_transactions': []
+            'duplicate_transactions': [],
+            'errors': []
         }
         
         try:
@@ -549,6 +560,7 @@ class GoogleSheetsService:
                         
                     except Exception as e:
                         logger.warning(f"Satır parse hatası: {e}, satır: {row}")
+                        stats['errors'].append(f"Satır {row_idx}: {str(e)}")
                         continue
             
             logger.info(f"İşlem senkronizasyonu: {stats['added']} eklendi, {stats['skipped']} atlandı")
