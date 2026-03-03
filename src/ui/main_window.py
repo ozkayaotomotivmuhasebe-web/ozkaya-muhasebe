@@ -961,6 +961,22 @@ class MainWindow(QMainWindow):
         btn_import_transactions.clicked.connect(self.import_transactions_from_excel)
         filter_layout.addWidget(btn_import_transactions)
 
+        btn_export_transactions = QPushButton("📤 Excel'e Aktar")
+        btn_export_transactions.setMinimumHeight(35)
+        btn_export_transactions.setStyleSheet("""
+            QPushButton {
+                background-color: #1D6F42;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #155232; }
+        """)
+        btn_export_transactions.clicked.connect(self.export_transactions_to_excel)
+        filter_layout.addWidget(btn_export_transactions)
+
         # Toplu Sil butonu
         self.btn_bulk_delete_toggle = QPushButton("☑️ Toplu Sil")
         self.btn_bulk_delete_toggle.setMinimumHeight(35)
@@ -3028,6 +3044,106 @@ Pasif Kullanıcı: {total_users - active_users}
             except Exception:
                 continue
         return None
+
+    def export_transactions_to_excel(self):
+        """Mevcut işlemleri Excel dosyasına aktar"""
+        from PyQt5.QtWidgets import QFileDialog
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from src.utils.helpers import format_tr
+        import os
+
+        try:
+            transactions = TransactionService.get_all_transactions(self.user.id)
+            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
+
+            if not transactions:
+                QMessageBox.information(self, "Bilgi", "Aktaracak işlem bulunamadı.")
+                return
+
+            # Dosya kaydetme dialogı
+            from datetime import date
+            default_name = f"Islemler_{date.today().strftime('%Y%m%d')}.xlsx"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Excel Dosyası Kaydet", default_name,
+                "Excel Dosyası (*.xlsx)"
+            )
+            if not file_path:
+                return
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "İşlemler"
+
+            # Başlık stili
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill("solid", fgColor="1D6F42")
+            header_align = Alignment(horizontal="center", vertical="center")
+            thin = Side(style="thin", color="AAAAAA")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            headers = ["Tarih", "Tür", "Müşteri", "Açıklama", "Ödeme Şekli", "Konu", "Ödeyen Kişi", "Tutar (₺)"]
+            col_widths = [14, 18, 22, 30, 18, 20, 20, 16]
+
+            for col, (h, w) in enumerate(zip(headers, col_widths), start=1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = border
+                ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = w
+
+            ws.row_dimensions[1].height = 22
+
+            # Veri satırları
+            number_align = Alignment(horizontal="right")
+            for row_idx, trans in enumerate(transactions, start=2):
+                payment_text = self._get_payment_method_display_text(
+                    trans.payment_method.value, trans.payment_type
+                ) if trans.payment_method else ""
+                values = [
+                    str(trans.transaction_date),
+                    trans.transaction_type.value if trans.transaction_type else "",
+                    trans.customer_name or "",
+                    trans.description or "",
+                    payment_text,
+                    trans.subject or "",
+                    trans.person or "",
+                    trans.amount,
+                ]
+                for col, val in enumerate(values, start=1):
+                    cell = ws.cell(row=row_idx, column=col, value=val)
+                    cell.border = border
+                    if col == 8:  # Tutar sütunu
+                        cell.number_format = '#,##0.00'
+                        cell.alignment = number_align
+                # Satır rengi (gelir/gider)
+                if trans.transaction_type and trans.transaction_type.value in ["Gelir", "Kesilen Fatura"]:
+                    row_fill = PatternFill("solid", fgColor="E8F5E9")
+                elif trans.transaction_type and trans.transaction_type.value in ["Gider", "Gelen Fatura"]:
+                    row_fill = PatternFill("solid", fgColor="FFEBEE")
+                else:
+                    row_fill = PatternFill("solid", fgColor="FFFFFF")
+                for col in range(1, 9):
+                    ws.cell(row=row_idx, column=col).fill = row_fill
+
+            # Toplam satırı
+            total_row = len(transactions) + 2
+            ws.cell(row=total_row, column=7, value="TOPLAM:").font = Font(bold=True)
+            ws.cell(row=total_row, column=8, value=sum(t.amount for t in transactions))
+            ws.cell(row=total_row, column=8).number_format = '#,##0.00'
+            ws.cell(row=total_row, column=8).font = Font(bold=True)
+            ws.cell(row=total_row, column=8).alignment = number_align
+
+            wb.save(file_path)
+            QMessageBox.information(self, "Başarılı",
+                f"{len(transactions)} işlem başarıyla aktarıldı.\n{file_path}")
+
+            # Dosyayı otomatik aç
+            os.startfile(file_path)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarım hatası:\n{str(e)}")
 
     def import_transactions_from_excel(self):
         """Gelişmiş Banka/Kredi Kartı ekstresini ithal et - Sütun eşleştirmesi, hızlı kurallar, vb."""
