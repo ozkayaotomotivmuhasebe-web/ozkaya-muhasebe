@@ -1,5 +1,5 @@
 {
-  "version": "1.0.5",
-  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.5/Muhasebe.exe",
-  "notes": "- Kredi kartı sistemi güncellendi\n- Ortak limit özelliği eklendi: iki kart aynı limiti paylaşabilir (ek kart desteği)\n- Ek kartlar tabloda mor renk ile gösterilir"
+  "version": "1.0.6",
+  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.0.6/Muhasebe.exe",
+  "notes": "- Çeşitli düzenleme ve iyileştirmeler yapıldı\n- Google Sheets tutar aktarma düzeltildi\n- İşlemler tablosu sayı formatı düzeltiidi\n- Veritabanı güncellemeler otomatik uygulanıyor"
 }
