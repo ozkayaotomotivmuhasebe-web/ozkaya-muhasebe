@@ -411,6 +411,17 @@ class GoogleSheetsService:
                             # CARİ kontrolü
                             elif 'CARİ' in payment_type_upper or 'CARI' in payment_type_upper:
                                 payment_method = PaymentMethod.CARI
+
+                            # BANKA HESABI kontrolü (genel "Banka Hesabı" metni)
+                            elif 'BANKA HESAB' in payment_type_upper:
+                                payment_method = PaymentMethod.BANKA
+                                # İlk aktif banka hesabını otomatik seç
+                                first_bank = session.query(BankAccount).filter(
+                                    BankAccount.user_id == user_id,
+                                    BankAccount.is_active == True
+                                ).first()
+                                if first_bank:
+                                    bank_account_id = first_bank.id
                             
                             # Diğer durumda hesap numarası/adı olabilir - banka hesabı ara
                             else:
@@ -442,8 +453,14 @@ class GoogleSheetsService:
                                         payment_method = PaymentMethod.KREDI_KARTI
                                         credit_card_id = credit_card.id
                                     else:
-                                        # Hiçbiri bulunmazsa varsayılan olarak BANKA
+                                        # Hiçbiri bulunmazsa varsayılan olarak BANKA + ilk hesabı seç
                                         payment_method = PaymentMethod.BANKA
+                                        first_bank = session.query(BankAccount).filter(
+                                            BankAccount.user_id == user_id,
+                                            BankAccount.is_active == True
+                                        ).first()
+                                        if first_bank:
+                                            bank_account_id = first_bank.id
                         
                         # Aynı işlem var mı kontrol et (tarih + tutar + açıklama)
                         existing = TransactionService.find_duplicate_transaction(
