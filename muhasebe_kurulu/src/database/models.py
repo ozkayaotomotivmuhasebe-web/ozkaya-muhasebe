@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, Enum, Date
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from datetime import datetime
 import enum
 import json
@@ -201,9 +201,15 @@ class CreditCard(Base):
     due_day = Column(Integer, default=15)  # Son ödeme günü
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
+    # Ortak limit: Bu kart başka bir kartın limitini paylaşıyorsa parent kartın id'si
+    parent_card_id = Column(Integer, ForeignKey('credit_cards.id'), nullable=True)
     
     user = relationship('User', back_populates='credit_cards')
     transactions = relationship('Transaction', back_populates='credit_card')
+    # Ek kartlar (aynı limiti paylaşan)
+    child_cards = relationship('CreditCard', foreign_keys=[parent_card_id],
+                               backref=backref('parent_card', remote_side=[id]),
+                               lazy='dynamic')
 
 
 class Loan(Base):

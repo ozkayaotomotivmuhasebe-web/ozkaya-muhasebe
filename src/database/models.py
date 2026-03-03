@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, Enum, Date
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from datetime import datetime
 import enum
 import json
@@ -207,8 +207,9 @@ class CreditCard(Base):
     user = relationship('User', back_populates='credit_cards')
     transactions = relationship('Transaction', back_populates='credit_card')
     # Ek kartlar (aynı limiti paylaşan)
-    child_cards = relationship('CreditCard', foreign_keys='CreditCard.parent_card_id',
-                               backref='parent_card', lazy='dynamic')
+    child_cards = relationship('CreditCard', foreign_keys=[parent_card_id],
+                               backref=backref('parent_card', remote_side=[id]),
+                               lazy='dynamic')
 
 
 class Loan(Base):
