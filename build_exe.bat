@@ -6,9 +6,16 @@ echo ÖZKAYA Logo ile EXE Oluşturma
 echo ========================================
 echo.
 
+REM Venv Python'ı kullan (PyQt5 dahil)
+set "VENV_PYTHON=C:\Users\aryam\AppData\Local\Programs\Python\Python311\python.exe"
+if not exist "%VENV_PYTHON%" (
+    set "VENV_PYTHON=.venv\Scripts\python.exe"
+)
+if not exist "%VENV_PYTHON%" set "VENV_PYTHON=python"
+
 REM Logo ve ikon her build'de güncellensin
 echo ✓ Logo ve ikon güncelleniyor...
-python create_logo.py
+%VENV_PYTHON% create_logo.py
 set "ICON_FILE=ICON.ico"
 if exist "yeni icon.ico" set "ICON_FILE=yeni icon.ico"
 if not exist "%ICON_FILE%" (
@@ -29,7 +36,7 @@ echo.
 
 REM Python DLL'lerini bul (VC++ Runtime dahil etmek için)
 set "PYTHON_DIR="
-for /f "tokens=*" %%i in ('python -c "import sys, os; print(os.path.dirname(sys.executable))"') do set "PYTHON_DIR=%%i"
+for /f "tokens=*" %%i in ('%VENV_PYTHON% -c "import sys, os; print(os.path.dirname(sys.executable))"') do set "PYTHON_DIR=%%i"
 echo Python dizini: %PYTHON_DIR%
 
 REM VC++ Runtime DLL'leri - python311.dll'nin bağımlılıkları
@@ -41,7 +48,7 @@ if exist "C:\Windows\System32\VCRUNTIME140.dll"   set "VCRT_ARGS=%VCRT_ARGS% --a
 if exist "C:\Windows\System32\VCRUNTIME140_1.dll" set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\VCRUNTIME140_1.dll;.""
 if exist "C:\Windows\System32\MSVCP140.dll"       set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\MSVCP140.dll;.""
 
-python -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 %VCRT_ARGS% main.py
+%VENV_PYTHON% -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 %VCRT_ARGS% main.py
 
 if not exist dist\Muhasebe.exe (
     echo ❌ HATA: EXE oluşturulamadı!
