@@ -422,7 +422,37 @@ class GoogleSheetsService:
                                 ).first()
                                 if first_bank:
                                     bank_account_id = first_bank.id
-                            
+
+                            # KK / KREDİ KART kontrolü
+                            elif 'KK' in payment_type_upper or 'KREDİ' in payment_type_upper or 'KREDI' in payment_type_upper:
+                                payment_method = PaymentMethod.KREDI_KARTI
+                                # Kredi kartlarında ara
+                                credit_card = session.query(CreditCard).filter(
+                                    CreditCard.user_id == user_id,
+                                    CreditCard.is_active == True
+                                ).filter(
+                                    (CreditCard.card_name.ilike(f'%{payment_type}%')) |
+                                    (CreditCard.card_number_last4.ilike(f'%{payment_type}%')) |
+                                    (CreditCard.bank_name.ilike(f'%{payment_type}%'))
+                                ).first()
+                                if credit_card:
+                                    credit_card_id = credit_card.id
+                                else:
+                                    # Bulunamazsa payment_type adıyla yeni kredi kartı oluştur
+                                    auto_no = f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S%f')[-12:]}"
+                                    new_card = CreditCard(
+                                        user_id=user_id,
+                                        card_name=payment_type,
+                                        card_number_last4='0000',
+                                        card_holder='OTOMATIK',
+                                        bank_name=payment_type,
+                                        is_active=True
+                                    )
+                                    session.add(new_card)
+                                    session.flush()
+                                    credit_card_id = new_card.id
+                                    logger.info(f"Yeni kredi kartı oluşturuldu: '{payment_type}' -> id={new_card.id}")
+
                             # Diğer durumda hesap numarası/adı olabilir - banka hesabı ara
                             else:
                                 # Önce banka hesaplarında ara
