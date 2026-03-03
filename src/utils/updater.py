@@ -121,7 +121,7 @@ class DownloadDialog(QDialog):
 # Güncelleme Teklif Dialog
 # ─────────────────────────────────────────────────────────
 class UpdateDialog(QDialog):
-    def __init__(self, current: str, new_ver: str, notes: str, parent=None):
+    def __init__(self, current: str, new_ver: str, notes: str, parent=None, has_download: bool = True):
         super().__init__(parent)
         self.setWindowTitle("🔄 Güncelleme Mevcut")
         self.setModal(True)
@@ -155,32 +155,50 @@ class UpdateDialog(QDialog):
             notes_box.setStyleSheet("background:#f5f5f5; border:1px solid #ddd; border-radius:4px;")
             layout.addWidget(notes_box)
 
-        info = QLabel("⚠️ Uygulama güncellendikten sonra otomatik yeniden başlayacak.")
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #666; font-size: 9pt;")
-        layout.addWidget(info)
+        if has_download:
+            info = QLabel("⚠️ Uygulama güncellendikten sonra otomatik yeniden başlayacak.")
+            info.setWordWrap(True)
+            info.setStyleSheet("color: #666; font-size: 9pt;")
+            layout.addWidget(info)
+        else:
+            info = QLabel("ℹ️ Bu güncelleme otomatik yüklendi. Uygulamayı yeniden başlatmanız yeterli.")
+            info.setWordWrap(True)
+            info.setStyleSheet("color: #1565C0; font-size: 9pt;")
+            layout.addWidget(info)
 
         btn_layout = QHBoxLayout()
-        btn_later = QPushButton("⏭️  Sonra Hatırlat")
-        btn_later.setMinimumHeight(36)
-        btn_later.setStyleSheet("""
-            QPushButton { background:#9E9E9E; color:white; border:none; border-radius:4px;
-                          padding:8px 16px; font-size:10pt; }
-            QPushButton:hover { background:#757575; }
-        """)
-        btn_later.clicked.connect(self.reject)
 
-        btn_update = QPushButton("✅  Şimdi Güncelle")
-        btn_update.setMinimumHeight(36)
-        btn_update.setStyleSheet("""
-            QPushButton { background:#1565C0; color:white; border:none; border-radius:4px;
-                          padding:8px 16px; font-size:10pt; font-weight:bold; }
-            QPushButton:hover { background:#0D47A1; }
-        """)
-        btn_update.clicked.connect(self.accept)
+        if has_download:
+            btn_later = QPushButton("⏭️  Sonra Hatırlat")
+            btn_later.setMinimumHeight(36)
+            btn_later.setStyleSheet("""
+                QPushButton { background:#9E9E9E; color:white; border:none; border-radius:4px;
+                              padding:8px 16px; font-size:10pt; }
+                QPushButton:hover { background:#757575; }
+            """)
+            btn_later.clicked.connect(self.reject)
+            btn_layout.addWidget(btn_later)
 
-        btn_layout.addWidget(btn_later)
-        btn_layout.addWidget(btn_update)
+            btn_update = QPushButton("✅  Şimdi Güncelle")
+            btn_update.setMinimumHeight(36)
+            btn_update.setStyleSheet("""
+                QPushButton { background:#1565C0; color:white; border:none; border-radius:4px;
+                              padding:8px 16px; font-size:10pt; font-weight:bold; }
+                QPushButton:hover { background:#0D47A1; }
+            """)
+            btn_update.clicked.connect(self.accept)
+            btn_layout.addWidget(btn_update)
+        else:
+            btn_ok = QPushButton("✅  Tamam")
+            btn_ok.setMinimumHeight(36)
+            btn_ok.setStyleSheet("""
+                QPushButton { background:#2E7D32; color:white; border:none; border-radius:4px;
+                              padding:8px 20px; font-size:10pt; font-weight:bold; }
+                QPushButton:hover { background:#1B5E20; }
+            """)
+            btn_ok.clicked.connect(self.accept)
+            btn_layout.addWidget(btn_ok)
+
         layout.addLayout(btn_layout)
 
 
@@ -202,7 +220,7 @@ class _VersionCheckThread(QThread):
             remote_ver   = data.get("version", "0.0.0")
             download_url = data.get("download_url", "")
             notes        = data.get("notes", "")
-            if _is_newer(remote_ver, self._current) and download_url:
+            if _is_newer(remote_ver, self._current):
                 self.update_found.emit(self._current, remote_ver, notes, download_url)
         except Exception as e:
             print(f"[Güncelleme] Kontrol hatası: {e}")
@@ -228,9 +246,10 @@ def check_and_update(parent=None):
         thread = _VersionCheckThread(url, current)
 
         def _on_update_found(cur, remote, notes, dl_url):
-            dlg = UpdateDialog(cur, remote, notes, parent)
+            dlg = UpdateDialog(cur, remote, notes, parent, has_download=bool(dl_url))
             if dlg.exec_() == QDialog.Accepted:
-                _do_update(parent, dl_url, remote)
+                if dl_url:
+                    _do_update(parent, dl_url, remote)
 
         thread.update_found.connect(_on_update_found)
         # parent'e referans tutturarak GC'den korunur
