@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QComboBox, QMessageBox, QSpinBox)
+                             QLineEdit, QPushButton, QComboBox, QMessageBox, QSpinBox, QCheckBox)
 from PyQt5.QtGui import QFont, QDoubleValidator
 from PyQt5.QtCore import Qt
 from src.services.credit_card_service import CreditCardService
@@ -12,6 +12,7 @@ class CreditCardDialog(QDialog):
         self.card_id = card_id
         self.is_edit_mode = card_id is not None
         self.current_debt = 0.0
+        self._parent_cards = []  # (id, name) listesi
         self.init_ui()
         if self.is_edit_mode:
             self.load_card()
@@ -93,6 +94,25 @@ class CreditCardDialog(QDialog):
         validator.setNotation(QDoubleValidator.StandardNotation)
         self.txt_limit.setValidator(validator)
         layout.addWidget(self.txt_limit)
+
+        # --- Ortak Limit Bölümü ---
+        self.chk_shared = QCheckBox("🔗 Bu kart başka bir kartla ortak limit kullanıyor (ek kart)")
+        self.chk_shared.setStyleSheet("font-size: 10pt; color: #7B1FA2; font-weight: bold;")
+        layout.addWidget(self.chk_shared)
+
+        self.lbl_parent = QLabel("Ana Kart (limit bu karttan alınır):")
+        self.lbl_parent.setVisible(False)
+        layout.addWidget(self.lbl_parent)
+
+        self.cmb_parent = QComboBox()
+        self.cmb_parent.setVisible(False)
+        self.cmb_parent.setPlaceholderText("Ana kart seçin...")
+        layout.addWidget(self.cmb_parent)
+
+        self._load_parent_cards()
+
+        self.chk_shared.stateChanged.connect(self._on_shared_changed)
+        # -------------------------
         
         # Hesap Kesim Günü
         day_layout = QHBoxLayout()
@@ -128,6 +148,36 @@ class CreditCardDialog(QDialog):
         self.adjustSize()
         self.setMinimumSize(self.sizeHint())
     
+    def _load_parent_cards(self):
+        """Ana kart listesini yükle"""
+        self._parent_cards = []
+        self.cmb_parent.clear()
+        try:
+            cards = CreditCardService.get_parent_cards(self.user_id)
+            for card in cards:
+                # Düzenleme modunda kartın kendisini listeden çıkar
+                if self.is_edit_mode and card.id == self.card_id:
+                    continue
+                self._parent_cards.append(card)
+                self.cmb_parent.addItem(f"{card.card_name} (****{card.card_number_last4}) — Limit: {card.card_limit:,.0f} ₺")
+        except Exception as e:
+            print(f"Ana kart listesi yükleme hatası: {e}")
+
+    def _on_shared_changed(self, state):
+        """Ortak limit checkbox değişince"""
+        is_shared = state == Qt.Checked
+        self.lbl_parent.setVisible(is_shared)
+        self.cmb_parent.setVisible(is_shared)
+        if is_shared:
+            self.txt_limit.setReadOnly(True)
+            self.txt_limit.setStyleSheet("background-color: #f0f0f0; color: #888; border: 1px solid #ddd; border-radius: 4px; padding: 8px;")
+            self.txt_limit.setPlaceholderText("Ana kartın limiti kullanılır")
+            self.txt_limit.clear()
+        else:
+            self.txt_limit.setReadOnly(False)
+            self.txt_limit.setStyleSheet("")
+            self.txt_limit.setPlaceholderText("0.00")
+
     def load_card(self):
         """Mevcut kartı yükle"""
         try:
@@ -141,6 +191,15 @@ class CreditCardDialog(QDialog):
                 self.spin_closing.setValue(card.closing_day or 1)
                 self.spin_due.setValue(card.due_day or 15)
                 self.current_debt = card.current_debt or 0.0
+
+                # Ortak limit durumu
+                if card.parent_card_id:
+                    self.chk_shared.setChecked(True)
+                    # Combo'da doğru kartı seç
+                    for idx, pc in enumerate(self._parent_cards):
+                        if pc.id == card.parent_card_id:
+                            self.cmb_parent.setCurrentIndex(idx)
+                            break
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Kart yüklenemedi: {str(e)}")
 
@@ -152,6 +211,16 @@ class CreditCardDialog(QDialog):
         card_holder = self.txt_card_holder.text().strip()
         last4 = self.txt_last4.text().strip()
         limit_text = self.txt_limit.text().strip()
+
+        # Ortak limit seçimi
+        is_shared = self.chk_shared.isChecked()
+        parent_card_id = None
+        if is_shared:
+            idx = self.cmb_parent.currentIndex()
+            if idx < 0 or idx >= len(self._parent_cards):
+                QMessageBox.warning(self, "Uyarı", "Lütfen ortak limit için ana kartı seçin!")
+                return
+            parent_card_id = self._parent_cards[idx].id
         
         if not card_name:
             QMessageBox.warning(self, "Uyarı", "Lütfen kart adı giriniz!")
@@ -168,24 +237,26 @@ class CreditCardDialog(QDialog):
         if not last4 or len(last4) != 4:
             QMessageBox.warning(self, "Uyarı", "Lütfen son 4 hane giriniz (4 rakam)!")
             return
-        
-        if not limit_text:
-            QMessageBox.warning(self, "Uyarı", "Lütfen kart limiti giriniz!")
-            return
-        
-        try:
-            card_limit = float(limit_text.replace(',', '.'))
-        except ValueError:
-            QMessageBox.warning(self, "Uyarı", "Geçersiz limit formatı!")
-            return
-        
-        if card_limit <= 0:
-            QMessageBox.warning(self, "Uyarı", "Kart limiti sıfırdan büyük olmalıdır!")
-            return
 
-        if self.is_edit_mode and card_limit < self.current_debt:
-            QMessageBox.warning(self, "Uyarı", "Kart limiti mevcut borçtan küçük olamaz!")
-            return
+        # Limit yalnızca bağımsız kart için zorunlu
+        card_limit = 0.0
+        if not is_shared:
+            if not limit_text:
+                QMessageBox.warning(self, "Uyarı", "Lütfen kart limiti giriniz!")
+                return
+            try:
+                card_limit = float(limit_text.replace(',', '.'))
+            except ValueError:
+                QMessageBox.warning(self, "Uyarı", "Geçersiz limit formatı!")
+                return
+
+            if card_limit <= 0:
+                QMessageBox.warning(self, "Uyarı", "Kart limiti sıfırdan büyük olmalıdır!")
+                return
+
+            if self.is_edit_mode and card_limit < self.current_debt:
+                QMessageBox.warning(self, "Uyarı", "Kart limiti mevcut borçtan küçük olamaz!")
+                return
         
         # Kaydet
         try:
@@ -198,7 +269,8 @@ class CreditCardDialog(QDialog):
                     bank_name=bank_name,
                     card_limit=card_limit,
                     closing_day=self.spin_closing.value(),
-                    due_day=self.spin_due.value()
+                    due_day=self.spin_due.value(),
+                    parent_card_id=parent_card_id
                 )
             else:
                 success, msg = CreditCardService.create_card(
@@ -209,7 +281,8 @@ class CreditCardDialog(QDialog):
                     bank_name=bank_name,
                     card_limit=card_limit,
                     closing_day=self.spin_closing.value(),
-                    due_day=self.spin_due.value()
+                    due_day=self.spin_due.value(),
+                    parent_card_id=parent_card_id
                 )
             
             if success:

@@ -8,9 +8,15 @@ class TransactionService:
     """İşlem yönetimi servisi - Tüm işlemleri buradan yönetiriz"""
 
     @staticmethod
-    def find_duplicate_transaction(user_id, transaction_date, amount, description, customer_name=None, person=None):
-        """Mükerrer işlem kontrolü (tarih + tutar + açıklama + kişi/müşteri)"""
-        session = SessionLocal()
+    def find_duplicate_transaction(user_id, transaction_date, amount, description, customer_name=None, person=None, session=None):
+        """Mükerrer işlem kontrolü (tarih + tutar + açıklama + kişi/müşteri)
+        
+        session parametresi verilirse o session kullanılır ve kapatılmaz.
+        Verilmezse yeni bir session açılır ve finally'de kapatılır.
+        """
+        external_session = session is not None
+        if not external_session:
+            session = SessionLocal()
         try:
             def _norm(value):
                 return str(value).strip().casefold() if value is not None else ""
@@ -21,6 +27,10 @@ class TransactionService:
 
             if not cust_norm and not person_norm:
                 return None
+
+            # Flush yaparak session içindeki pending nesneleri de sorgulaya ekle
+            if external_session:
+                session.flush()
 
             candidates = session.query(Transaction).filter(
                 Transaction.user_id == user_id,
@@ -39,7 +49,8 @@ class TransactionService:
 
             return None
         finally:
-            session.close()
+            if not external_session:
+                session.close()
     
     @staticmethod
     def create_transaction(user_id, transaction_date, transaction_type, payment_method,

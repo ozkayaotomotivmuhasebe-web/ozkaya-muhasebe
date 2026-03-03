@@ -961,6 +961,22 @@ class MainWindow(QMainWindow):
         btn_import_transactions.clicked.connect(self.import_transactions_from_excel)
         filter_layout.addWidget(btn_import_transactions)
 
+        btn_export_transactions = QPushButton("📤 Excel'e Aktar")
+        btn_export_transactions.setMinimumHeight(35)
+        btn_export_transactions.setStyleSheet("""
+            QPushButton {
+                background-color: #1D6F42;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #155232; }
+        """)
+        btn_export_transactions.clicked.connect(self.export_transactions_to_excel)
+        filter_layout.addWidget(btn_export_transactions)
+
         # Toplu Sil butonu
         self.btn_bulk_delete_toggle = QPushButton("☑️ Toplu Sil")
         self.btn_bulk_delete_toggle.setMinimumHeight(35)
@@ -1270,7 +1286,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
                 
@@ -1363,7 +1379,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                amount_item = QTableWidgetItem(f"{trans.amount:,.2f} ₺")
+                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
                 
@@ -3029,6 +3045,106 @@ Pasif Kullanıcı: {total_users - active_users}
                 continue
         return None
 
+    def export_transactions_to_excel(self):
+        """Mevcut işlemleri Excel dosyasına aktar"""
+        from PyQt5.QtWidgets import QFileDialog
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from src.utils.helpers import format_tr
+        import os
+
+        try:
+            transactions = TransactionService.get_all_transactions(self.user.id)
+            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
+
+            if not transactions:
+                QMessageBox.information(self, "Bilgi", "Aktaracak işlem bulunamadı.")
+                return
+
+            # Dosya kaydetme dialogı
+            from datetime import date
+            default_name = f"Islemler_{date.today().strftime('%Y%m%d')}.xlsx"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Excel Dosyası Kaydet", default_name,
+                "Excel Dosyası (*.xlsx)"
+            )
+            if not file_path:
+                return
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "İşlemler"
+
+            # Başlık stili
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill("solid", fgColor="1D6F42")
+            header_align = Alignment(horizontal="center", vertical="center")
+            thin = Side(style="thin", color="AAAAAA")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            headers = ["Tarih", "Tür", "Müşteri", "Açıklama", "Ödeme Şekli", "Konu", "Ödeyen Kişi", "Tutar (₺)"]
+            col_widths = [14, 18, 22, 30, 18, 20, 20, 16]
+
+            for col, (h, w) in enumerate(zip(headers, col_widths), start=1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = border
+                ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = w
+
+            ws.row_dimensions[1].height = 22
+
+            # Veri satırları
+            number_align = Alignment(horizontal="right")
+            for row_idx, trans in enumerate(transactions, start=2):
+                payment_text = self._get_payment_method_display_text(
+                    trans.payment_method.value, trans.payment_type
+                ) if trans.payment_method else ""
+                values = [
+                    str(trans.transaction_date),
+                    trans.transaction_type.value if trans.transaction_type else "",
+                    trans.customer_name or "",
+                    trans.description or "",
+                    payment_text,
+                    trans.subject or "",
+                    trans.person or "",
+                    trans.amount,
+                ]
+                for col, val in enumerate(values, start=1):
+                    cell = ws.cell(row=row_idx, column=col, value=val)
+                    cell.border = border
+                    if col == 8:  # Tutar sütunu
+                        cell.number_format = '#,##0.00'
+                        cell.alignment = number_align
+                # Satır rengi (gelir/gider)
+                if trans.transaction_type and trans.transaction_type.value in ["Gelir", "Kesilen Fatura"]:
+                    row_fill = PatternFill("solid", fgColor="E8F5E9")
+                elif trans.transaction_type and trans.transaction_type.value in ["Gider", "Gelen Fatura"]:
+                    row_fill = PatternFill("solid", fgColor="FFEBEE")
+                else:
+                    row_fill = PatternFill("solid", fgColor="FFFFFF")
+                for col in range(1, 9):
+                    ws.cell(row=row_idx, column=col).fill = row_fill
+
+            # Toplam satırı
+            total_row = len(transactions) + 2
+            ws.cell(row=total_row, column=7, value="TOPLAM:").font = Font(bold=True)
+            ws.cell(row=total_row, column=8, value=sum(t.amount for t in transactions))
+            ws.cell(row=total_row, column=8).number_format = '#,##0.00'
+            ws.cell(row=total_row, column=8).font = Font(bold=True)
+            ws.cell(row=total_row, column=8).alignment = number_align
+
+            wb.save(file_path)
+            QMessageBox.information(self, "Başarılı",
+                f"{len(transactions)} işlem başarıyla aktarıldı.\n{file_path}")
+
+            # Dosyayı otomatik aç
+            os.startfile(file_path)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarım hatası:\n{str(e)}")
+
     def import_transactions_from_excel(self):
         """Gelişmiş Banka/Kredi Kartı ekstresini ithal et - Sütun eşleştirmesi, hızlı kurallar, vb."""
         from src.ui.dialogs.advanced_bank_import_dialog import AdvancedBankImportDialog
@@ -3355,18 +3471,43 @@ Pasif Kullanıcı: {total_users - active_users}
         """Kredi kartları tablosunu yenile"""
         try:
             cards = CreditCardService.get_all_cards(self.user.id)
+            # Hızlı arama için id→card map
+            card_map = {c.id: c for c in cards}
+
             self.table_credit_cards.setRowCount(len(cards))
             
             for i, card in enumerate(cards):
-                self.table_credit_cards.setItem(i, 0, QTableWidgetItem(card.card_name))
+                is_child = card.parent_card_id is not None
+
+                # Kart adı — ek kart ise 🔗 işareti ekle
+                name_display = f"🔗 {card.card_name}" if is_child else card.card_name
+                self.table_credit_cards.setItem(i, 0, QTableWidgetItem(name_display))
                 self.table_credit_cards.setItem(i, 1, QTableWidgetItem(card.bank_name))
                 self.table_credit_cards.setItem(i, 2, QTableWidgetItem(f"****{card.card_number_last4}"))
-                self.table_credit_cards.setItem(i, 3, QTableWidgetItem(f"{format_tr(card.card_limit)} ₺"))
+
+                # Limit — ek kart ise "Paylaşımlı" göster
+                if is_child:
+                    parent = card_map.get(card.parent_card_id)
+                    parent_name = parent.card_name if parent else "?"
+                    limit_item = QTableWidgetItem(f"Paylaşımlı ({parent_name})")
+                    limit_item.setForeground(Qt.darkMagenta)
+                else:
+                    limit_item = QTableWidgetItem(f"{format_tr(card.card_limit)} ₺")
+                self.table_credit_cards.setItem(i, 3, limit_item)
+
                 self.table_credit_cards.setItem(i, 4, QTableWidgetItem(f"{format_tr(card.current_debt)} ₺"))
                 self.table_credit_cards.setItem(i, 5, QTableWidgetItem(f"{format_tr(card.available_limit)} ₺"))
                 
                 status = "Aktif" if card.is_active else "Pasif"
                 self.table_credit_cards.setItem(i, 6, QTableWidgetItem(status))
+
+                # Ek kart satırlarına hafif mor arka plan ver
+                if is_child:
+                    _shared_bg = QColor(243, 229, 245)
+                    for col in range(7):
+                        item = self.table_credit_cards.item(i, col)
+                        if item:
+                            item.setBackground(_shared_bg)
                 
                 # Butonlar
                 action_widget = QWidget()
@@ -4590,7 +4731,8 @@ Pasif Kullanıcı: {total_users - active_users}
 
         # ── SOL KENAR ÇUBUĞU ──────────────────────────────────────────────
         sidebar = QWidget()
-        sidebar.setFixedWidth(210)
+        sidebar.setMinimumWidth(190)
+        sidebar.setMaximumWidth(260)
         sidebar.setStyleSheet("background-color: #1a2332;")
         sb_layout = QVBoxLayout(sidebar)
         sb_layout.setContentsMargins(0, 0, 0, 0)
@@ -4616,8 +4758,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 border: none;
                 border-left: 3px solid transparent;
                 text-align: left;
-                padding: 9px 12px;
-                font-size: 9.5pt;
+                padding: 8px 10px;
+                font-size: 9pt;
             }
             QPushButton:hover {
                 background-color: #263545;
@@ -4632,8 +4774,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 border: none;
                 border-left: 3px solid #42A5F5;
                 text-align: left;
-                padding: 9px 12px;
-                font-size: 9.5pt;
+                padding: 8px 10px;
+                font-size: 9pt;
                 font-weight: bold;
             }
         """
@@ -4654,6 +4796,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ("odeme",       "💸",  "Ödeme Dağılımı"),
             ("haftalik",    "📈",  "Haftalık Trend"),
             ("maas",        "👷",  "Maaş Ödemeleri"),
+            ("konu_gider",  "🏷️",  "Konuya Göre Giderler"),
         ]
 
         for key, icon, label in report_menu:
@@ -4762,6 +4905,21 @@ Pasif Kullanıcı: {total_users - active_users}
             qb.clicked.connect(lambda checked=False, rt=rtype: self._set_date_range(rt))
             fb_layout.addWidget(qb)
 
+        # Konu filtresi (sadece konu_gider raporu için görünür)
+        self.report_konu_label = QLabel("🏷️ Konu:")
+        self.report_konu_label.setStyleSheet("border:none; background:transparent;")
+        self.report_konu_label.setVisible(False)
+        fb_layout.addWidget(self.report_konu_label)
+
+        self.report_konu_filter = QComboBox()
+        self.report_konu_filter.setMinimumHeight(30)
+        self.report_konu_filter.setMinimumWidth(180)
+        self.report_konu_filter.setVisible(False)
+        self.report_konu_filter.currentIndexChanged.connect(
+            lambda: self._generate_sidebar_report("konu_gider") if self._current_report_key == "konu_gider" else None
+        )
+        fb_layout.addWidget(self.report_konu_filter)
+
         fb_layout.addStretch()
         r_layout.addWidget(filter_bar)
 
@@ -4831,8 +4989,15 @@ Pasif Kullanıcı: {total_users - active_users}
             "odeme":       "💸  Ödeme Dağılımı",
             "haftalik":    "📈  Haftalık Trend",
             "maas":        "👷  Maaş Ödemeleri",
+            "konu_gider":  "🏷️  Konuya Göre Giderler",
         }
         self.report_page_title.setText(titles.get(key, "📊  Raporlar"))
+
+        # Konu filtresi görünürlüğü
+        if hasattr(self, 'report_konu_filter'):
+            is_konu = key == "konu_gider"
+            self.report_konu_label.setVisible(is_konu)
+            self.report_konu_filter.setVisible(is_konu)
 
         self.report_display.setHtml("<p style='color:#666; padding:20px;'>⏳ Rapor oluşturuluyor...</p>")
 
@@ -4867,6 +5032,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_weekly_trend_report(start_date, end_date)
             elif key == "maas":
                 html = self._generate_payroll_report(start_date, end_date)
+            elif key == "konu_gider":
+                html = self._generate_konu_gider_report(start_date, end_date)
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
@@ -6165,6 +6332,138 @@ Pasif Kullanıcı: {total_users - active_users}
                 bold=[False, True, True, True, False, False, False, False], bg=bg
             )
         html += '</table>'
+        return html
+
+    def _generate_konu_gider_report(self, start_date, end_date):
+        """Konuya göre gider raporu — işlemler sayfasındaki konu alanına göre filtreli"""
+        from src.database.db import SessionLocal
+        from src.database.models import Transaction, TransactionType
+
+        session = SessionLocal()
+        try:
+            # Seçilen tarih aralığındaki tüm GIDER işlemlerini çek
+            transactions = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_type == TransactionType.GIDER,
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date,
+            ).order_by(Transaction.transaction_date.desc()).all()
+
+            # Tüm benzersiz konu değerlerini belirle
+            all_subjects = sorted(set((t.subject or "—") for t in transactions))
+        finally:
+            session.close()
+
+        # Konu filtre combosu'nu doldur (sinyalleri blokla)
+        combo = self.report_konu_filter
+        combo.blockSignals(True)
+        prev = combo.currentText()
+        combo.clear()
+        combo.addItem("🔍 Tümü")
+        for s in all_subjects:
+            combo.addItem(s)
+        idx = combo.findText(prev)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+        # Seçili konuya göre filtrele
+        selected = combo.currentText()
+        if selected and selected != "🔍 Tümü":
+            filtered = [t for t in transactions if (t.subject or "—") == selected]
+            subtitle_konu = f" — Konu: {selected}"
+        else:
+            filtered = transactions
+            subtitle_konu = " — Tüm Konular"
+
+        toplam = sum(t.amount for t in filtered)
+        sayi   = len(filtered)
+
+        # KPI istatistikleri: konuya göre toplam
+        from collections import defaultdict
+        konu_totals = defaultdict(lambda: {"sayi": 0, "tutar": 0.0})
+        for t in filtered:
+            k = t.subject or "—"
+            konu_totals[k]["sayi"]  += 1
+            konu_totals[k]["tutar"] += t.amount
+
+        html  = self._rh("🏷️", "Konuya Göre Gider Raporu",
+                         f"{start_date} — {end_date}{subtitle_konu}", "#B71C1C")
+        html += self._kpi_row([
+            ("📋", "İşlem Sayısı",  str(sayi),               "#546E7A"),
+            ("📉", "Toplam Gider",  f"{toplam:,.2f} ₺",      "#B71C1C"),
+            ("🏷️", "Konu Adedi",   str(len(konu_totals)),    "#37474F"),
+        ])
+
+        # Konu başlıklı toplam tutar KPI kartları
+        if konu_totals:
+            KONU_COLORS = [
+                "#1565C0", "#2E7D32", "#6A1B9A", "#E65100",
+                "#00695C", "#AD1457", "#4527A0", "#283593",
+                "#558B2F", "#BF360C",
+            ]
+            sorted_konular = sorted(konu_totals.items(), key=lambda x: -x[1]["tutar"])
+            chunk_size = 4
+            for chunk_start in range(0, len(sorted_konular), chunk_size):
+                chunk = sorted_konular[chunk_start:chunk_start + chunk_size]
+                kpi_items = []
+                for ci, (konu, info) in enumerate(chunk):
+                    color = KONU_COLORS[(chunk_start + ci) % len(KONU_COLORS)]
+                    konu_label = konu if len(konu) <= 22 else konu[:20] + "…"
+                    kpi_items.append(
+                        ("🏷️", konu_label, f"{info['tutar']:,.2f} ₺", color)
+                    )
+                html += self._kpi_row(kpi_items)
+
+        # Konu bazında özet tablo
+        html += self._section("🏷️ Konu Bazında Özet", "#B71C1C")
+        html += self._table_header(["Konu", "İşlem Sayısı", "Toplam Tutar (₺)", "Oran"])
+        for i, (konu, info) in enumerate(
+                sorted(konu_totals.items(), key=lambda x: -x[1]["tutar"])):
+            pct = (info["tutar"] / toplam * 100) if toplam else 0
+            bg  = "#FAFAFA" if i % 2 else "white"
+            html += self._tr(
+                [konu, str(info["sayi"]),
+                 f'{info["tutar"]:,.2f}',
+                 self._progress_bar_html(pct)],
+                [None, "#546E7A", "#C62828", None],
+                bg=bg
+            )
+        if konu_totals:
+            html += self._tr(
+                ["<b>TOPLAM</b>", f"<b>{sayi}</b>", f"<b>{toplam:,.2f}</b>", ""],
+                [None, None, "#B71C1C", None], bold=True, bg="#FFEBEE"
+            )
+        html += "</table><br>"
+
+        # Detay tablosu
+        if filtered:
+            html += self._section(
+                f"📋 İşlem Detayları ({len(filtered)} kayıt)", "#37474F")
+            html += self._table_header(
+                ["Tarih", "Müşteri Ünvanı", "Açıklama", "Konu",
+                 "Ödeme Şekli", "Ödeyen Kişi", "Tutar (₺)"])
+            for i, t in enumerate(filtered):
+                bg = "#FAFAFA" if i % 2 else "white"
+                html += self._tr(
+                    [str(t.transaction_date),
+                     t.customer_name or "—",
+                     (t.description or "")[:60],
+                     t.subject or "—",
+                     t.payment_type or (t.payment_method.value if t.payment_method else "—"),
+                     t.person or "—",
+                     f'{t.amount:,.2f}'],
+                    [None, None, "#546E7A", "#B71C1C", None, None, "#C62828"],
+                    bg=bg
+                )
+            html += "</table>"
+        else:
+            html += f"""
+            <div style='margin:20px; padding:16px; background:#FFF8F8;
+                        border-left:4px solid #EF9A9A; border-radius:4px;'>
+                <span style='color:#C62828; font-weight:bold;'>
+                    ℹ️ Seçilen tarih aralığında ve konuda gider işlemi bulunamadı.</span>
+            </div>"""
+
         return html
 
     def _generate_nakit_kasasi_report(self, start_date, end_date):
