@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, scoped_session, Session
 from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
@@ -38,9 +38,23 @@ SessionLocal = scoped_session(sessionmaker(
     expire_on_commit=False
 ))
 
+def _run_migrations():
+    """Eksik sütunları otomatik ekle"""
+    with engine.connect() as conn:
+        # credit_cards.parent_card_id
+        try:
+            conn.execute(text("SELECT parent_card_id FROM credit_cards LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE credit_cards ADD COLUMN parent_card_id INTEGER REFERENCES credit_cards(id)"))
+                conn.commit()
+            except Exception:
+                pass
+
 def init_db():
     """Tüm tabloları oluştur"""
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
 
 def get_db() -> Session:
     """Veritabanı session'ı al"""
