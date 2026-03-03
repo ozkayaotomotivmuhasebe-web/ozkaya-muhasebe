@@ -453,14 +453,21 @@ class GoogleSheetsService:
                                         payment_method = PaymentMethod.KREDI_KARTI
                                         credit_card_id = credit_card.id
                                     else:
-                                        # Hiçbiri bulunmazsa varsayılan olarak BANKA + ilk hesabı seç
+                                        # Hiçbiri bulunmazsa payment_type adıyla yeni banka hesabı oluştur
                                         payment_method = PaymentMethod.BANKA
-                                        first_bank = session.query(BankAccount).filter(
-                                            BankAccount.user_id == user_id,
-                                            BankAccount.is_active == True
-                                        ).first()
-                                        if first_bank:
-                                            bank_account_id = first_bank.id
+                                        auto_no = f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S%f')[-12:]}"
+                                        new_bank = BankAccount(
+                                            user_id=user_id,
+                                            bank_name=payment_type,
+                                            account_number=auto_no,
+                                            currency='TRY',
+                                            balance=0.0,
+                                            is_active=True
+                                        )
+                                        session.add(new_bank)
+                                        session.flush()
+                                        bank_account_id = new_bank.id
+                                        logger.info(f"Yeni banka hesabı oluşturuldu: '{payment_type}' -> id={new_bank.id}")
                         
                         # Aynı işlem var mı kontrol et (tarih + tutar + açıklama)
                         existing = TransactionService.find_duplicate_transaction(
