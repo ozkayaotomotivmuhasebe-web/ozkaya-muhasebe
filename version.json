@@ -1,5 +1,1 @@
-﻿{
-  "version": "1.1.0",
-  "download_url": "https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.1.0/Muhasebe.exe",
-  "notes": "- Kira Takip Sistemi eklendi\n- Kira takip sayfasina Excel'e aktar / Excel'den aktar butonlari eklendi\n- Kira odeme gecikme takibi guncellendi\n- Genel performans iyilestirmeleri"
-}
+{"version":"1.1.0","download_url":"https://github.com/buraktekin060-glitch/ozkaya-muhasebe/releases/download/v1.1.0/Muhasebe.exe","notes":"- Kira Takip Sistemi eklendi\n- Excele aktar / Excelden aktar butonlari eklendi\n- Kira odeme gecikme takibi guncellendi\n- Genel performans iyilestirmeleri"}

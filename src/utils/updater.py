@@ -216,7 +216,7 @@ class _VersionCheckThread(QThread):
     def run(self):
         try:
             with urllib.request.urlopen(self._url, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(resp.read().decode('utf-8-sig'))
             remote_ver   = data.get("version", "0.0.0")
             download_url = data.get("download_url", "")
             notes        = data.get("notes", "")
