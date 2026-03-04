@@ -7,12 +7,13 @@ from pathlib import Path
 from datetime import date, datetime
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QTabBar,
     QTableWidget, QTableWidgetItem, QLabel, QPushButton, QComboBox,
     QFrame, QDialog, QFormLayout, QLineEdit, QDateEdit,
     QDoubleSpinBox, QTextEdit, QMenu, QMessageBox, QColorDialog,
+    QAbstractItemView,
 )
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush
 
 # ── Sabitler ────────────────────────────────────────────────────────────────
@@ -33,6 +34,86 @@ TAB_COLORS = [
 ]
 
 DATA_DIR = Path("data")
+
+# ── Yeniden Boyutlandırılabilir Sekme Çubuğu ────────────────────────────────
+class ResizableTabBar(QTabBar):
+    """Sağ kenardan sürükleyerek yeniden boyutlandırılabilir sekme çubuğu."""
+    widthsChanged = pyqtSignal()
+    EDGE = 7  # px — sağ kenar algılama eşiği
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._custom_widths: dict = {}  # {index: width_px}
+        self._drag_idx = -1
+        self._drag_start_x = 0
+        self._drag_start_w = 0
+        self.setMouseTracking(True)
+
+    def tabSizeHint(self, index):
+        hint = super().tabSizeHint(index)
+        if index in self._custom_widths:
+            hint.setWidth(self._custom_widths[index])
+        return hint
+
+    def minimumTabSizeHint(self, index):
+        hint = super().minimumTabSizeHint(index)
+        if index in self._custom_widths:
+            hint.setWidth(min(self._custom_widths[index], hint.width()))
+        return hint
+
+    def _edge_tab(self, pos):
+        for i in range(self.count()):
+            r = self.tabRect(i)
+            if abs(pos.x() - r.right()) <= self.EDGE and r.top() <= pos.y() <= r.bottom():
+                return i
+        return -1
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            idx = self._edge_tab(ev.pos())
+            if idx >= 0:
+                self._drag_idx = idx
+                self._drag_start_x = ev.globalX()
+                self._drag_start_w = self.tabRect(idx).width()
+                ev.accept()
+                return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._drag_idx >= 0:
+            delta = ev.globalX() - self._drag_start_x
+            new_w = max(60, self._drag_start_w + delta)
+            self._custom_widths[self._drag_idx] = new_w
+            # setIconSize, Qt'nin iç layoutTabs()'ını zorla tetikler
+            self.setIconSize(self.iconSize())
+            ev.accept()
+            return
+        edge = self._edge_tab(ev.pos())
+        self.setCursor(Qt.SizeHorCursor if edge >= 0 else Qt.ArrowCursor)
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag_idx >= 0 and ev.button() == Qt.LeftButton:
+            self._drag_idx = -1
+            self.widthsChanged.emit()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def get_widths_by_name(self) -> dict:
+        """Sekme adı → genişlik sözlüğü döner (JSON kaydetmek için)."""
+        return {self.tabText(i): w for i, w in self._custom_widths.items()}
+
+    def apply_widths_by_name(self, name_widths: dict):
+        """Sekme adı → genişlik sözlüğünden genişlikleri uygular."""
+        self._custom_widths.clear()
+        for i in range(self.count()):
+            name = self.tabText(i)
+            if name in name_widths:
+                self._custom_widths[i] = int(name_widths[name])
+        self.updateGeometry()
+        self.update()
+
 
 # ── Yardımcı Dialoglar ───────────────────────────────────────────────────────
 
@@ -233,6 +314,11 @@ class ContractDialog(QDialog):
         self.tutar_edit.setSingleStep(500); self.tutar_edit.setSuffix(" TL"); self.tutar_edit.setDecimals(0)
         if edit_mode: self.tutar_edit.setValue(contract.get("tutar",0))
         lay.addRow("Aylık Tutar:", self.tutar_edit)
+        self.konu_edit = QLineEdit()
+        self.konu_edit.setPlaceholderText("örn: kira  |  aidat  |  depo (zorunlu)")
+        if edit_mode: self.konu_edit.setText(contract.get("aciklama_kw", "kira"))
+        else: self.konu_edit.setText("kira")
+        lay.addRow("İşlem Konusu:", self.konu_edit)
         btn = QHBoxLayout()
         ci = QPushButton("İptal"); ci.clicked.connect(self.reject)
         si = QPushButton("Kaydet"); si.clicked.connect(self.accept)
@@ -242,11 +328,12 @@ class ContractDialog(QDialog):
 
     def get_data(self):
         return {
-            "kiraci":     self.kiraci_edit.text().strip(),
-            "bas":        self.bas.date().toString("dd.MM.yyyy"),
-            "bit":        self.bit.date().toString("dd.MM.yyyy"),
-            "tutar":      float(self.tutar_edit.value()),
-            "odeme_gunu": self.odeme_edit.text().strip(),
+            "kiraci":      self.kiraci_edit.text().strip(),
+            "bas":         self.bas.date().toString("dd.MM.yyyy"),
+            "bit":         self.bit.date().toString("dd.MM.yyyy"),
+            "tutar":       float(self.tutar_edit.value()),
+            "odeme_gunu":  self.odeme_edit.text().strip(),
+            "aciklama_kw": self.konu_edit.text().strip().lower() or "kira",
         }
 
 
@@ -334,9 +421,14 @@ class TahsilatWidget(QWidget):
     def _build(self):
         lay = QVBoxLayout(self); lay.setContentsMargins(8,8,8,8); lay.setSpacing(6)
 
+        _title_fs   = 13
+        _kpi_val_fs = 16
+        _kpi_lbl_fs = 10
+        _btn_fs     = 10
+
         # Üst bar
         top = QHBoxLayout()
-        lbl = QLabel(self.title); lbl.setFont(QFont("Arial",12,QFont.Bold))
+        lbl = QLabel(self.title); lbl.setFont(QFont("Arial", _title_fs, QFont.Bold))
         lbl.setStyleSheet(f"color:{self.hdr_color};padding:2px;"); top.addWidget(lbl)
         top.addStretch()
         top.addWidget(QLabel("Yıl:"))
@@ -347,7 +439,7 @@ class TahsilatWidget(QWidget):
         top.addWidget(self.yc)
         ab = QPushButton("+ Kiracı Ekle")
         ab.setStyleSheet(f"background:{self.hdr_color};color:white;font-weight:bold;"
-                         "padding:5px 12px;border-radius:5px;")
+                         f"padding:5px 12px;border-radius:5px;font-size:{_btn_fs}pt;")
         ab.clicked.connect(self._add); top.addWidget(ab)
         lay.addLayout(top)
 
@@ -358,11 +450,11 @@ class TahsilatWidget(QWidget):
                          ("kalan","—","#c62828")]:
             f = QFrame(); f.setStyleSheet(f"QFrame{{background:{c};border-radius:7px;padding:3px;}}")
             lv = QVBoxLayout(f); lv.setContentsMargins(10,6,10,6)
-            vl = QLabel(v); vl.setFont(QFont("Arial",16,QFont.Bold))
+            vl = QLabel(v); vl.setFont(QFont("Arial", _kpi_val_fs, QFont.Bold))
             vl.setStyleSheet("color:white;"); vl.setAlignment(Qt.AlignCenter)
             nm = {"toplam":"Toplam Kiracı","odendi":"Bu Ay Ödedi","bekliyor":"Bu Ay Bekliyor",
                   "gelir":"Bu Ay Tahsilat","kalan":"Bu Ay Kalan Tahsilat"}
-            tl = QLabel(nm[k]); tl.setStyleSheet("color:rgba(255,255,255,.85);font-size:9pt;")
+            tl = QLabel(nm[k]); tl.setStyleSheet(f"color:rgba(255,255,255,.85);font-size:{_kpi_lbl_fs}pt;")
             tl.setAlignment(Qt.AlignCenter)
             lv.addWidget(vl); lv.addWidget(tl); f.vl = vl; self.kpis[k] = f; kr.addWidget(f)
         lay.addLayout(kr)
@@ -375,12 +467,22 @@ class TahsilatWidget(QWidget):
         self.tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl.setAlternatingRowColors(False)
         self.tbl.verticalHeader().setVisible(False)
-        self.tbl.horizontalHeader().setDefaultSectionSize(90)
+        from PyQt5.QtWidgets import QHeaderView
+        hdr = self.tbl.horizontalHeader()
+        hdr.setDefaultSectionSize(100)
+        hdr.setMinimumSectionSize(70)
+        hdr.setDefaultAlignment(Qt.AlignCenter)
+        hdr.setMinimumHeight(36)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setFont(QFont("Arial", 10, QFont.Bold))
+        self.tbl.setSizeAdjustPolicy(QAbstractItemView.AdjustToContents)
+        self.tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         hc = self.hdr_color
         self.tbl.setStyleSheet(
-            f"QTableWidget{{gridline-color:#ddd;font-size:9pt;}}"
+            f"QTableWidget{{gridline-color:#ddd;font-size:10pt;}}"
             f"QHeaderView::section{{background:{hc};color:white;font-weight:bold;"
-            f"padding:4px 2px;border:1px solid {hc};}}"
+            f"font-size:10pt;padding:4px 6px;border:1px solid {hc};"
+            f"min-height:36px;}}"
         )
         lay.addWidget(self.tbl)
 
@@ -436,6 +538,15 @@ class TahsilatWidget(QWidget):
                     bk += 1 if this_month else 0; kalan += c["tutar"] if this_month else 0
                 elif d.startswith("KISMI:"):
                     txt, bg = d[6:], C_KISMI
+                    if this_month:
+                        import re as _re
+                        _km = _re.search(r'Odenen[:\s]+([\d.,]+)', d[6:], _re.IGNORECASE)
+                        if _km:
+                            _paid = float(_km.group(1).replace(".", "").replace(",", "."))
+                            th    += _paid
+                            kalan += max(0.0, c["tutar"] - _paid)
+                        else:
+                            kalan += c["tutar"]
                 else:
                     txt, bg = "", C_ODENMEDI
                 it = QTableWidgetItem(txt); it.setBackground(QBrush(bg))
@@ -454,10 +565,9 @@ class TahsilatWidget(QWidget):
             for c2 in range(ms):
                 it2 = self.tbl.item(row, c2)
                 if it2: it2.setBackground(QBrush(bbg))
-            self.tbl.setRowHeight(row, 27)
+            self.tbl.setRowHeight(row, 30)
 
-        self.tbl.resizeColumnsToContents()
-        if self.tbl.columnWidth(0) < 200: self.tbl.setColumnWidth(0, 200)
+        self._fit_columns()
         self.kpis["toplam"].vl.setText(str(len(self.contracts)))
         self.kpis["odendi"].vl.setText(str(od))
         self.kpis["bekliyor"].vl.setText(str(bk))
@@ -525,7 +635,10 @@ class TahsilatWidget(QWidget):
         # Otomatik DB işlem kaydı oluştur
         if self.create_tx_cb:
             try:
-                self.create_tx_cb(cr["kiraci"], ay, float(cr.get("tutar", 0)), odeme_bilgi)
+                self.create_tx_cb(
+                    cr["kiraci"], ay, float(cr.get("tutar", 0)),
+                    odeme_bilgi, cr.get("aciklama_kw", "kira")
+                )
             except Exception:
                 pass
 
@@ -572,6 +685,34 @@ class TahsilatWidget(QWidget):
 
     def _year_chg(self, t):
         self.year = int(t); self._load(); self._notify()
+
+    def _fit_columns(self):
+        """Sütunları viewport genişliğine oransal olarak dağıt."""
+        if not hasattr(self, "tbl") or self.tbl.columnCount() < 18:
+            return
+        avail = self.tbl.viewport().width()
+        if avail <= 0:
+            return
+        # Oransal sabit genişlikler
+        c_kiraci = max(130, int(avail * 0.13))
+        c_date   = max(68,  int(avail * 0.061))
+        c_tutar  = max(75,  int(avail * 0.068))
+        c_not    = max(80,  int(avail * 0.07))
+        # Ay sütunları için kalan alan
+        fixed = c_kiraci + c_date * 3 + c_tutar + c_not
+        c_ay  = max(58, int((avail - fixed) / 12))
+        self.tbl.setColumnWidth(0, c_kiraci)
+        for col in range(1, 4):
+            self.tbl.setColumnWidth(col, c_date)
+        self.tbl.setColumnWidth(4, c_tutar)
+        for col in range(5, 17):
+            self.tbl.setColumnWidth(col, c_ay)
+        self.tbl.setColumnWidth(17, c_not)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "tbl"):
+            self._fit_columns()
 
     def _add(self):
         dlg = ContractDialog(parent=self)
@@ -631,9 +772,14 @@ class KiraTakipWidget(QWidget):
                     "tab_name": self.tabs.tabText(i),
                     **w.to_dict(),
                 })
+        tab_widths = {}
+        tb = self.tabs.tabBar()
+        if isinstance(tb, ResizableTabBar):
+            tab_widths = tb.get_widths_by_name()
         try:
             self.data_file.write_text(
-                json.dumps({"tabs": tabs_data}, ensure_ascii=False, indent=2),
+                json.dumps({"tabs": tabs_data, "tab_widths": tab_widths},
+                           ensure_ascii=False, indent=2),
                 encoding="utf-8"
             )
         except Exception as e:
@@ -659,7 +805,15 @@ class KiraTakipWidget(QWidget):
                 on_change  = self._save,
                 create_tx_cb = self._create_kira_transaction,
             )
-            self.tabs.addTab(w, td.get("tab_name","Sekme"))
+            idx = self.tabs.addTab(w, td.get("tab_name","Sekme"))
+            self.tabs.setTabToolTip(idx, td.get("tab_name","Sekme"))
+
+        # Kayıtlı sekme genişliklerini geri yükle
+        saved_widths = data.get("tab_widths", {})
+        if saved_widths:
+            tb = self.tabs.tabBar()
+            if isinstance(tb, ResizableTabBar):
+                tb.apply_widths_by_name(saved_widths)
 
     # ── UI inşası ─────────────────────────────────────────────────────────────
     def _build(self):
@@ -690,16 +844,29 @@ class KiraTakipWidget(QWidget):
             "background:#43a047;color:white;font-weight:bold;padding:4px 14px;"
             "border-radius:5px;font-size:9pt;")
         add_btn.clicked.connect(self._add_tab)
-        tb.addWidget(self._rename_btn); tb.addWidget(self._del_btn); tb.addWidget(add_btn)
+        save_widths_btn = QPushButton("💾 Kaydet")
+        save_widths_btn.setToolTip("Sekme genişliklerini kaydet")
+        save_widths_btn.setStyleSheet(
+            "background:#546e7a;color:white;padding:4px 10px;border-radius:5px;font-size:9pt;")
+        save_widths_btn.clicked.connect(self._save)
+        tb.addWidget(self._rename_btn); tb.addWidget(self._del_btn)
+        tb.addWidget(add_btn); tb.addWidget(save_widths_btn)
         tb_frame = QWidget(); tb_frame.setLayout(tb)
         tb_frame.setStyleSheet("background:#eceff1;border-bottom:1px solid #cfd8dc;")
         lay.addWidget(tb_frame)
 
         # Sekmeler
         self.tabs = QTabWidget()
+        _rbar = ResizableTabBar()
+        _rbar.widthsChanged.connect(self._save)
+        self.tabs.setTabBar(_rbar)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideNone)
         self.tabs.setStyleSheet(
-            "QTabBar::tab{padding:8px 16px;font-size:10pt;font-weight:bold;min-width:120px;}"
+            "QTabBar::tab{padding:8px 18px;font-size:11pt;font-weight:bold;}"
             "QTabBar::tab:selected{background:white;}"
+            "QTabBar::scroller{width:26px;}"
+            "QTabBar QToolButton{background:#eceff1;border:1px solid #ccc;border-radius:3px;}"
         )
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_ctx_menu)
@@ -720,20 +887,23 @@ class KiraTakipWidget(QWidget):
         w = TahsilatWidget(d["title"], d["color"], [], {}, on_change=self._save,
                            create_tx_cb=self._create_kira_transaction)
         self.tabs.addTab(w, d["tab_name"])
+        self.tabs.setTabToolTip(self.tabs.count()-1, d["tab_name"])
         self.tabs.setCurrentIndex(self.tabs.count()-1)
         self._save()
 
     # ── DB Senkronizasyon ─────────────────────────────────────────────────────
-    def _create_kira_transaction(self, kiraci: str, ay: int, tutar: float, odeme_bilgi: dict):
+    def _create_kira_transaction(self, kiraci: str, ay: int, tutar: float,
+                                     odeme_bilgi: dict, aciklama_kw: str = "kira"):
         """Kira Takip'te ÖDENDİ işaretlenince otomatik DB işlem kaydı oluşturur."""
         if not self.user_id:
             return
+        kw = self._tr_lower(aciklama_kw.strip() or "kira")
         try:
             from src.services.transaction_service import TransactionService
             from src.database.models import TransactionType, PaymentMethod
             from datetime import date as _d
             cur_year = date.today().year
-            # Aynı ay için aynı kiracıdan kira işlemi zaten var mı?
+            # Aynı ay + aynı kiracı + aynı konu için işlem zaten var mı?
             existing = TransactionService.get_all_transactions(
                 self.user_id,
                 start_date=_d(cur_year, ay, 1),
@@ -741,13 +911,13 @@ class KiraTakipWidget(QWidget):
             )
             for t in existing:
                 if (self._tr_lower(t.customer_name.strip()) == self._tr_lower(kiraci.strip()) and
-                        ("kira" in self._tr_lower(t.subject or "") or
-                         "kira" in self._tr_lower(t.description or ""))):
+                        (kw in self._tr_lower(t.subject or "") or
+                         kw in self._tr_lower(t.description or ""))):
                     return  # Zaten kayıtlı
             # Ödeme detayından tarih ve banka bilgisini al
             tx_date = _d(cur_year, ay, date.today().day if ay == date.today().month else 1)
             banka_adi = ""
-            aciklama = "Kira Ödemesi"
+            aciklama = f"{AYLAR_TR[ay-1]} {aciklama_kw.upper()} ÖDEMESİ"
             if odeme_bilgi:
                 banka_adi = odeme_bilgi.get("banka", "").strip()
                 aciklama_d = odeme_bilgi.get("aciklama", "").strip()
@@ -767,7 +937,7 @@ class KiraTakipWidget(QWidget):
                 customer_name=kiraci,
                 description=aciklama,
                 amount=tutar,
-                subject="KİRA ÖDEMESİ",
+                subject=aciklama_kw.upper() + " ÖDEMESİ",
                 payment_type=banka_adi or None,
             )
         except Exception as e:
@@ -809,6 +979,18 @@ class KiraTakipWidget(QWidget):
             if not years:
                 return
 
+            # Tüm sekmelerdeki sözleşmelerden kullanılan konu kelimelerini topla
+            all_kws = set()
+            for i in range(self.tabs.count()):
+                w = self.tabs.widget(i)
+                if isinstance(w, TahsilatWidget):
+                    for c in w.contracts:
+                        kw = self._tr_lower(c.get("aciklama_kw", "kira").strip() or "kira")
+                        all_kws.add(kw)
+            if not all_kws:
+                all_kws = {"kira"}
+
+            # pay_map anahtarı: (konu_kw, kiraci_key, ay)
             year_pay = {}
             for yr in years:
                 txns = TransactionService.get_all_transactions(
@@ -821,17 +1003,17 @@ class KiraTakipWidget(QWidget):
                 for t in txns:
                     subj = self._tr_lower(t.subject or "")
                     desc = self._tr_lower(t.description or "")
-                    if "kira" not in subj and "kira" not in desc:
-                        continue
-                    cn  = self._tr_lower(t.customer_name.strip())
-                    ay  = t.transaction_date.month
-                    key = (cn, ay)
-                    pay_map[key]    = pay_map.get(key, 0.0) + float(t.amount or 0)
-                    pay_detail[key] = {
-                        "tarih":    t.transaction_date.strftime("%d.%m.%Y"),
-                        "banka":    t.payment_type or "",
-                        "aciklama": t.description or "",
-                    }
+                    cn   = self._tr_lower(t.customer_name.strip())
+                    ay   = t.transaction_date.month
+                    for kw in all_kws:
+                        if kw in subj or kw in desc:
+                            key = (kw, cn, ay)
+                            pay_map[key]    = pay_map.get(key, 0.0) + float(t.amount or 0)
+                            pay_detail[key] = {
+                                "tarih":    t.transaction_date.strftime("%d.%m.%Y"),
+                                "banka":    t.payment_type or "",
+                                "aciklama": t.description or "",
+                            }
                 year_pay[yr] = (pay_map, pay_detail)
 
             changed = False
@@ -846,6 +1028,7 @@ class KiraTakipWidget(QWidget):
                     kiraci_key = self._tr_lower(c["kiraci"].strip())
                     cid        = int(c["id"])
                     monthly    = float(c.get("tutar", 0))
+                    c_kw       = self._tr_lower(c.get("aciklama_kw", "kira").strip() or "kira")
                     try:
                         bas = _dt.strptime(c["bas"], "%d.%m.%Y").date()
                         bit = _dt.strptime(c["bit"], "%d.%m.%Y").date()
@@ -858,7 +1041,7 @@ class KiraTakipWidget(QWidget):
                         if not in_c:
                             continue
 
-                        key       = (kiraci_key, ay)
+                        key       = (c_kw, kiraci_key, ay)
                         cur_durum = w.payments.get(cid, {}).get(ay, "ODENMEDI")
 
                         if key in pay_map:
@@ -1071,6 +1254,7 @@ class KiraTakipWidget(QWidget):
         if dlg.exec_() != QDialog.Accepted: return
         d = dlg.get_data()
         self.tabs.setTabText(idx, d["tab_name"])
+        self.tabs.setTabToolTip(idx, d["tab_name"])
         w.title = d["title"]; w.hdr_color = d["color"]; w._load()
         self._save()
 
