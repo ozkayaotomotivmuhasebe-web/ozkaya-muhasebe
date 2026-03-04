@@ -547,6 +547,7 @@ class PermissionsDialog(QDialog):
         self.chk_payroll_records = QCheckBox("Bordro Kayıtları")
         self.chk_settings = QCheckBox("Ayarlar")
         self.chk_admin_panel = QCheckBox("Admin Panel")
+        self.chk_kira_takip = QCheckBox("Kira Takip")
 
         layout.addWidget(self.chk_dashboard)
         layout.addWidget(self.chk_transactions)
@@ -563,6 +564,7 @@ class PermissionsDialog(QDialog):
         layout.addWidget(self.chk_payroll_records)
         layout.addWidget(self.chk_settings)
         layout.addWidget(self.chk_admin_panel)
+        layout.addWidget(self.chk_kira_takip)
 
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("Kaydet")
@@ -624,6 +626,7 @@ class PermissionsDialog(QDialog):
             self.chk_payroll_records.setChecked(bool(user.can_view_payroll_records))
             self.chk_settings.setChecked(bool(user.can_view_settings))
             self.chk_admin_panel.setChecked(bool(user.can_view_admin_panel))
+            self.chk_kira_takip.setChecked(bool(getattr(user, 'can_view_kira_takip', True)))
         finally:
             session.close()
 
@@ -644,7 +647,8 @@ class PermissionsDialog(QDialog):
             can_view_bulk_payroll=self.chk_bulk_payroll.isChecked(),
             can_view_payroll_records=self.chk_payroll_records.isChecked(),
             can_view_settings=self.chk_settings.isChecked(),
-            can_view_admin_panel=self.chk_admin_panel.isChecked()
+            can_view_admin_panel=self.chk_admin_panel.isChecked(),
+            can_view_kira_takip=self.chk_kira_takip.isChecked()
         )
 
         if success:

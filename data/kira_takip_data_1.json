@@ -1,0 +1,71 @@
+{
+  "tabs": [
+    {
+      "tab_name": "TORBALI KİRA",
+      "title": "TORBALI KİRA",
+      "hdr_color": "#c2185b",
+      "year": 2026,
+      "contracts": [
+        {
+          "kiraci": "BURAK TEKİN",
+          "bas": "04.03.2026",
+          "bit": "04.03.2027",
+          "tutar": 10000.0,
+          "odeme_gunu": "5",
+          "id": 1
+        }
+      ],
+      "payments": {
+        "1": {
+          "3": "ODENDI",
+          "5": "KISMI:Odenen: 9.000 TL | Kalan: 1.000 TL"
+        }
+      },
+      "odeme_detay": {
+        "1": {
+          "3": {
+            "tarih": "05.03.2026",
+            "banka": "BANKA",
+            "aciklama": "MART KİRA ÖDEMESİ"
+          },
+          "5": {
+            "tarih": "05.05.2026",
+            "banka": "BANKA",
+            "aciklama": "MAYIS KİRA ÖDEMESİ"
+          }
+        }
+      },
+      "yil_nots": {}
+    },
+    {
+      "tab_name": "TORBALI AİDAT",
+      "title": "TORBALI AİDAT",
+      "hdr_color": "#7b1fa2",
+      "year": 2026,
+      "contracts": [],
+      "payments": {},
+      "odeme_detay": {},
+      "yil_nots": {}
+    },
+    {
+      "tab_name": "DÜKKANLAR",
+      "title": "DÜKKANLAR",
+      "hdr_color": "#1565c0",
+      "year": 2026,
+      "contracts": [],
+      "payments": {},
+      "odeme_detay": {},
+      "yil_nots": {}
+    },
+    {
+      "tab_name": "GAZİANTEP",
+      "title": "GAZİANTEP",
+      "hdr_color": "#2e7d32",
+      "year": 2026,
+      "contracts": [],
+      "payments": {},
+      "odeme_detay": {},
+      "yil_nots": {}
+    }
+  ]
+}

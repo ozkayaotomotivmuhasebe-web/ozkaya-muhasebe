@@ -20,6 +20,7 @@ from src.services.user_settings_service import UserSettingsService
 from src.services.google_sheets_service import GoogleSheetsService
 from src.utils.app_icon import get_app_icon
 from src.utils.helpers import format_currency_tr, format_tr
+from src.ui.kira_takip import KiraTakipWidget
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 from pathlib import Path
@@ -185,6 +186,8 @@ class MainWindow(QMainWindow):
                 self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
             if self.user.can_view_loans:
                 self.tabs.addTab(self.create_loans_tab(), "📊 Krediler")
+            if getattr(self.user, 'can_view_kira_takip', True):
+                self.tabs.addTab(self.create_kira_takip_tab(), "🏠 Kira Takip")
             if self.user.can_view_reports:
                 self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
             if self.user.can_view_payroll:
@@ -213,6 +216,8 @@ class MainWindow(QMainWindow):
                 self.tabs.addTab(self.create_credit_cards_tab(), "💳 Kredi Kartları")
             if self.user.can_view_loans:
                 self.tabs.addTab(self.create_loans_tab(), "📊 Krediler")
+            if getattr(self.user, 'can_view_kira_takip', True):
+                self.tabs.addTab(self.create_kira_takip_tab(), "🏠 Kira Takip")
             if self.user.can_view_reports:
                 self.tabs.addTab(self.create_reports_tab(), "📊 Raporlar")
             if self.user.can_view_payroll:
@@ -307,6 +312,7 @@ class MainWindow(QMainWindow):
             ("credit_card_total_debt", "Kredi Kartı Toplam Borç", "#FF9800"),
             ("loan_total_debt", "Kredi Toplam Borç", "#E91E63"),
             ("borrow_total_debt", "Ödünç Borçlar Toplamı", "#795548"),
+            ("kira_monthly", "Kira (Bu Ay Tahsilat)", "#1565C0"),
         ]
 
     def _get_dashboard_card_keys(self):
@@ -315,11 +321,14 @@ class MainWindow(QMainWindow):
         if not keys:
             UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", default_keys)
             return default_keys
-        # Kullanıcının kayıtlı seçimini olduğu gibi döndir.
-        # (Eski kod burada "eksik" gördüğü kartları otomatik ekliyor ve
-        # kullanıcının kaldırdığı kartları geri getiriyordu.)
-        valid_keys = [k for k in default_keys]  # tanımlı sıralamayı koru
-        return [k for k in keys if k in valid_keys]
+        # Yeni eklenen kart tanımları otomatik olarak mevcut kullanıcılara da eklensin
+        valid_keys = [k for k in default_keys]
+        merged = [k for k in keys if k in valid_keys]
+        new_keys = [k for k in default_keys if k not in keys]
+        if new_keys:
+            merged = merged + new_keys
+            UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", merged)
+        return merged
 
     def _set_dashboard_card_value(self, key, value):
         if not hasattr(self, "dashboard_cards"):
@@ -531,7 +540,37 @@ class MainWindow(QMainWindow):
             self._set_dashboard_card_value("credit_card_total_debt", format_currency_tr(credit_card_total_debt))
             self._set_dashboard_card_value("loan_total_debt", format_currency_tr(loan_total_debt))
             self._set_dashboard_card_value("borrow_total_debt", format_currency_tr(borrow_total_debt))
-            
+
+            # ── Kira Takip: Bu ay beklenen tahsilat ──────────────────────
+            try:
+                import json
+                from pathlib import Path
+                _kira_file = Path("data") / f"kira_takip_data_{self.user.id}.json"
+                _kira_monthly = 0.0
+                if _kira_file.exists():
+                    _kira_data = json.loads(_kira_file.read_text(encoding="utf-8"))
+                    _cur_month = date.today().month
+                    _cur_year  = date.today().year
+                    for _tab in _kira_data.get("tabs", []):
+                        if _tab.get("year", _cur_year) != _cur_year:
+                            continue
+                        _payments = {}
+                        for _pid, _pv in _tab.get("payments", {}).items():
+                            _payments[int(_pid)] = {int(_m): _s for _m, _s in _pv.items()}
+                        for _c in _tab.get("contracts", []):
+                            _cid = int(_c.get("id", -1))
+                            _durum = _payments.get(_cid, {}).get(_cur_month, "ODENMEDI")
+                            if _durum == "ODENDI":
+                                _kira_monthly += float(_c.get("tutar", 0))
+                            elif isinstance(_durum, str) and _durum.startswith("KISMI:"):
+                                try:
+                                    _kira_monthly += float(_durum[6:].replace(".","").replace(",","."))
+                                except Exception:
+                                    pass
+                self._set_dashboard_card_value("kira_monthly", format_currency_tr(_kira_monthly))
+            except Exception:
+                pass
+
             # Bugün yapılacak ödemeleri göster (yalnızca bugün tarihli işlemler + vadesi bugün olan krediler)
             from datetime import date
             today = date.today()
@@ -2234,6 +2273,10 @@ Pasif Kullanıcı: {total_users - active_users}
         widget.setLayout(layout)
         return widget
     
+    def create_kira_takip_tab(self) -> QWidget:
+        """Kira Takip sekmesi"""
+        return KiraTakipWidget(user_id=self.user.id)
+
     def show_user_management(self):
         """Kullanıcı yönetimi dialog'unu aç"""
         dialog = UserManagementDialog(self)
@@ -4797,6 +4840,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ("haftalik",    "📈",  "Haftalık Trend"),
             ("maas",        "👷",  "Maaş Ödemeleri"),
             ("konu_gider",  "🏷️",  "Konuya Göre Giderler"),
+            ("kira_takip", "🏠",  "Kira Takip Raporu"),
         ]
 
         for key, icon, label in report_menu:
@@ -4990,6 +5034,7 @@ Pasif Kullanıcı: {total_users - active_users}
             "haftalik":    "📈  Haftalık Trend",
             "maas":        "👷  Maaş Ödemeleri",
             "konu_gider":  "🏷️  Konuya Göre Giderler",
+            "kira_takip": "🏠  Kira Takip Raporu",
         }
         self.report_page_title.setText(titles.get(key, "📊  Raporlar"))
 
@@ -5034,6 +5079,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_payroll_report(start_date, end_date)
             elif key == "konu_gider":
                 html = self._generate_konu_gider_report(start_date, end_date)
+            elif key == "kira_takip":
+                html = self._generate_kira_takip_report()
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
@@ -6463,6 +6510,279 @@ Pasif Kullanıcı: {total_users - active_users}
                 <span style='color:#C62828; font-weight:bold;'>
                     ℹ️ Seçilen tarih aralığında ve konuda gider işlemi bulunamadı.</span>
             </div>"""
+
+        return html
+
+    def _generate_kira_takip_report(self):
+        """Kira Takip raporu — JSON veri dosyasından okur ve tüm sekmeleri özetler."""
+        import json
+        from pathlib import Path
+        from datetime import date, datetime
+
+        AYLAR = ["OCAK", "ŞUBAT", "MART", "NİSAN", "MAYIS", "HAZİRAN",
+                 "TEMMUZ", "AĞUSTOS", "EYLÜL", "EKİM", "KASIM", "ARALIK"]
+
+        data_file = Path("data") / f"kira_takip_data_{self.user.id}.json"
+        if not data_file.exists():
+            html  = self._rh("🏠", "Kira Takip Raporu", "Henüz veri yok", "#1565C0")
+            html += """
+            <div style='margin:20px; padding:16px; background:#E3F2FD;
+                        border-left:4px solid #1565C0; border-radius:4px;'>
+                <span style='color:#0D47A1; font-weight:bold;'>
+                    ℹ️ Kira Takip sekmesine gidip kiracı ve sekme ekleyiniz.</span>
+            </div>"""
+            return html
+
+        try:
+            raw = json.loads(data_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            return f"<p style='color:red; padding:20px;'>Veri yüklenirken hata: {e}</p>"
+
+        tabs = raw.get("tabs", [])
+        if not tabs:
+            html  = self._rh("🏠", "Kira Takip Raporu", "Sekme bulunamadı", "#1565C0")
+            html += "<p style='padding:20px; color:#555;'>Kira Takip sekmesinde henüz sekme oluşturulmamış.</p>"
+            return html
+
+        today = date.today()
+        cur_year  = today.year
+        cur_month = today.month
+
+        # ── Genel KPI hesapla ─────────────────────────────────────────────
+        total_tenants    = 0
+        grand_expected   = 0.0
+        grand_collected  = 0.0
+        grand_pending    = 0.0
+        cur_month_expected  = 0.0
+        cur_month_collected = 0.0
+
+        for tab in tabs:
+            contracts = tab.get("contracts", [])
+            payments  = tab.get("payments", {})
+            year      = tab.get("year", cur_year)
+
+            for c in contracts:
+                total_tenants += 1
+                cid   = c["id"]
+                tutar = float(c.get("tutar", 0))
+                pays  = {int(m): v for m, v in payments.get(str(cid), {}).items()}
+
+                try:
+                    bas = datetime.strptime(c["bas"], "%d.%m.%Y").date()
+                    bit = datetime.strptime(c["bit"], "%d.%m.%Y").date()
+                except Exception:
+                    continue
+
+                for ay in range(1, 13):
+                    try:
+                        ay_date = date(year, ay, 1)
+                    except ValueError:
+                        continue
+                    bas_first = bas.replace(day=1)
+                    bit_first = bit.replace(day=1)
+                    if not (bas_first <= ay_date <= bit_first):
+                        continue
+
+                    grand_expected += tutar
+                    val = pays.get(ay)
+                    odendi = isinstance(val, dict) or val == "ODENDI"
+                    if odendi:
+                        grand_collected += tutar
+                    else:
+                        grand_pending   += tutar
+
+                    if year == cur_year and ay == cur_month:
+                        cur_month_expected += tutar
+                        if odendi:
+                            cur_month_collected += tutar
+
+        cur_remaining = max(0.0, cur_month_expected - cur_month_collected)
+        oran_pct      = (grand_collected / grand_expected * 100) if grand_expected > 0 else 0.0
+
+        # ── HTML başlık + KPIs ────────────────────────────────────────────
+        tab_years = sorted({tab.get("year", cur_year) for tab in tabs})
+        year_str  = ", ".join(str(y) for y in tab_years) if tab_years else str(cur_year)
+        html  = self._rh("🏠", "Kira Takip Raporu", f"Tüm Sekmeler — Yıl(lar): {year_str}", "#1565C0")
+        html += self._kpi_row([
+            ("👥", "Toplam Kiracı",    str(total_tenants),                                 "#3f51b5"),
+            ("✅", "Toplam Tahsilat",  f"{grand_collected:,.0f} ₺".replace(",", "."),       "#4caf50"),
+            ("⏳", "Toplam Bekliyor",  f"{grand_pending:,.0f} ₺".replace(",", "."),         "#f44336"),
+            ("💰", "Yıllık Beklenen",  f"{grand_expected:,.0f} ₺".replace(",", "."),        "#ff9800"),
+        ])
+        html += self._kpi_row([
+            ("📅", "Bu Ay Beklenen",   f"{cur_month_expected:,.0f} ₺".replace(",", "."),   "#1976D2"),
+            ("📅", "Bu Ay Tahsilat",   f"{cur_month_collected:,.0f} ₺".replace(",", "."),  "#2e7d32"),
+            ("📅", "Bu Ay Kalan",      f"{cur_remaining:,.0f} ₺".replace(",", "."),        "#c62828"),
+            ("📊", "Tahsilat Oranı",   f"%{oran_pct:.1f}",                                 "#6a1b9a"),
+        ])
+
+        # ── Sekme bazlı kiracı detay tabloları ────────────────────────────
+        for tab in tabs:
+            tab_name  = tab.get("tab_name", "Sekme")
+            title     = tab.get("title", tab_name)
+            hdr_color = tab.get("hdr_color", "#1565C0")
+            contracts = tab.get("contracts", [])
+            payments  = tab.get("payments", {})
+            year      = tab.get("year", cur_year)
+
+            if not contracts:
+                continue
+
+            html += self._section(f"🏠 {tab_name}  —  {title}  ({year})", hdr_color)
+            html += self._table_header(
+                ["Kiracı", "Sözleşme Dönemi", "Aylık Kira (₺)", "Ödeme Günü",
+                 "Ödenmiş Ay", "Tahsilat (₺)", "Kalan (₺)"],
+                color="#BBDEFB"
+            )
+
+            tab_collected = 0.0
+            tab_expected  = 0.0
+
+            for i, c in enumerate(contracts):
+                cid   = c["id"]
+                tutar = float(c.get("tutar", 0))
+                pays  = {int(m): v for m, v in payments.get(str(cid), {}).items()}
+
+                try:
+                    bas = datetime.strptime(c["bas"], "%d.%m.%Y").date()
+                    bit = datetime.strptime(c["bit"], "%d.%m.%Y").date()
+                    contract_str = f"{c['bas']} – {c['bit']}"
+                except Exception:
+                    contract_str = f"{c.get('bas','')} – {c.get('bit','')}"
+                    bas = bit = None
+
+                paid_count     = 0
+                possible_count = 0
+                c_collected    = 0.0
+
+                for ay in range(1, 13):
+                    if bas and bit:
+                        try:
+                            ay_date = date(year, ay, 1)
+                        except ValueError:
+                            continue
+                        if not (bas.replace(day=1) <= ay_date <= bit.replace(day=1)):
+                            continue
+                    possible_count += 1
+                    val = pays.get(ay)
+                    if isinstance(val, dict) or val == "ODENDI":
+                        paid_count  += 1
+                        c_collected += tutar
+
+                c_expected   = possible_count * tutar
+                c_kalan      = max(0.0, c_expected - c_collected)
+                tab_collected += c_collected
+                tab_expected  += c_expected
+
+                bg = "#FAFAFA" if i % 2 == 0 else "white"
+                html += self._tr(
+                    [
+                        f"<b>{c['kiraci']}</b>",
+                        contract_str,
+                        f"{tutar:,.0f}".replace(",", "."),
+                        c.get("odeme_gunu", "—"),
+                        f"{paid_count}/{possible_count}",
+                        f"{c_collected:,.0f}".replace(",", "."),
+                        f"{c_kalan:,.0f}".replace(",", "."),
+                    ],
+                    colors=[None, "#546E7A", "#1565C0", "#6A1B9A",
+                            "#2E7D32" if paid_count == possible_count else "#B71C1C",
+                            "#2E7D32", "#C62828" if c_kalan > 0 else "#2E7D32"],
+                    bg=bg
+                )
+
+            # Sekme toplamı satırı
+            tab_kalan = max(0.0, tab_expected - tab_collected)
+            html += self._tr(
+                ["<b>SEKME TOPLAMI</b>", "", "", "",
+                 "",
+                 f"<b>{tab_collected:,.0f}</b>".replace(",", "."),
+                 f"<b>{tab_kalan:,.0f}</b>".replace(",", ".")],
+                colors=[None, None, None, None, None, "#2E7D32", "#C62828"],
+                bold=True, bg="#E3F2FD"
+            )
+            html += "</table><br>"
+
+        # ── Aylık tahsilat özet tablosu (tüm sekmeler, cur_year) ──────────
+        html += self._section(f"📅 Aylık Tahsilat Özeti — {cur_year} Yılı", "#1565C0")
+        html += self._table_header(
+            ["Ay", "Beklenen (₺)", "Tahsil Edilen (₺)", "Bekleyen (₺)", "Tahsilat Oranı"],
+            color="#BBDEFB"
+        )
+
+        monthly_expected  = [0.0] * 12
+        monthly_collected = [0.0] * 12
+
+        for tab in tabs:
+            if tab.get("year", cur_year) != cur_year:
+                continue
+            contracts = tab.get("contracts", [])
+            payments  = tab.get("payments", {})
+
+            for c in contracts:
+                cid   = c["id"]
+                tutar = float(c.get("tutar", 0))
+                pays  = {int(m): v for m, v in payments.get(str(cid), {}).items()}
+
+                try:
+                    bas = datetime.strptime(c["bas"], "%d.%m.%Y").date()
+                    bit = datetime.strptime(c["bit"], "%d.%m.%Y").date()
+                except Exception:
+                    bas = bit = None
+
+                for ay in range(1, 13):
+                    if bas and bit:
+                        try:
+                            ay_date = date(cur_year, ay, 1)
+                        except ValueError:
+                            continue
+                        if not (bas.replace(day=1) <= ay_date <= bit.replace(day=1)):
+                            continue
+                    monthly_expected[ay - 1]  += tutar
+                    val = pays.get(ay)
+                    if isinstance(val, dict) or val == "ODENDI":
+                        monthly_collected[ay - 1] += tutar
+
+        for i, ay_ad in enumerate(AYLAR):
+            exp = monthly_expected[i]
+            col = monthly_collected[i]
+            pen = max(0.0, exp - col)
+            oran_str = f"%{(col / exp * 100):.0f}" if exp > 0 else "—"
+            bg = "#FAFAFA" if i % 2 == 0 else "white"
+
+            # Gelecek aylar için farklı renk
+            is_future = (i + 1) > cur_month
+            renk_exp  = "#546E7A" if is_future else "#1565C0"
+            renk_col  = "#9E9E9E" if is_future else "#2E7D32"
+            renk_pen  = "#9E9E9E" if is_future else ("#C62828" if pen > 0 else "#2E7D32")
+
+            html += self._tr(
+                [
+                    f"<b>{ay_ad}</b>" + (" <i>(gelecek)</i>" if is_future else ""),
+                    f"{exp:,.0f}".replace(",", "."),
+                    f"{col:,.0f}".replace(",", "."),
+                    f"{pen:,.0f}".replace(",", "."),
+                    oran_str,
+                ],
+                colors=[None, renk_exp, renk_col, renk_pen, "#6A1B9A"],
+                bg=bg
+            )
+
+        # Yıl toplamı
+        yr_exp = sum(monthly_expected)
+        yr_col = sum(monthly_collected)
+        yr_pen = max(0.0, yr_exp - yr_col)
+        yr_oran = f"%{(yr_col / yr_exp * 100):.0f}" if yr_exp > 0 else "—"
+        html += self._tr(
+            [f"<b>YILLIK TOPLAM ({cur_year})</b>",
+             f"<b>{yr_exp:,.0f}</b>".replace(",", "."),
+             f"<b>{yr_col:,.0f}</b>".replace(",", "."),
+             f"<b>{yr_pen:,.0f}</b>".replace(",", "."),
+             f"<b>{yr_oran}</b>"],
+            colors=[None, "#1565C0", "#2E7D32", "#C62828", "#6A1B9A"],
+            bold=True, bg="#E3F2FD"
+        )
+        html += "</table><br>"
 
         return html
 
