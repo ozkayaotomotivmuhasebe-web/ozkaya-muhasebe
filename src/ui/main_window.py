@@ -1716,7 +1716,15 @@ class MainWindow(QMainWindow):
                 ))
 
                 row_color = None
-                if is_fully_paid:
+                if paid_amount > total_amount and total_amount > 0:
+                    # Fazla ödeme durumu (nadiren olur, overflow başka faturaya aktarılamadıysa)
+                    fazla = paid_amount - total_amount
+                    paid_str = f" ({paid_date})" if paid_date else ""
+                    vade_item = QTableWidgetItem(f"✅ Ödendi{paid_str}  💰 Fazla: {format_tr(fazla)} TL")
+                    vade_item.setForeground(QBrush(QColor("#1565C0")))
+                    self.table_invoices.setItem(i, 6, vade_item)
+                    row_color = "#E3F2FD"
+                elif is_fully_paid:
                     paid_str = f" ({paid_date})" if paid_date else ""
                     vade_item = QTableWidgetItem(f"\u2705 \u00d6dendi{paid_str}")
                     vade_item.setForeground(QBrush(QColor("#1B5E20")))
@@ -1796,13 +1804,13 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         if not is_paid:
-            menu.addAction("\u2705  Tam \u00d6dendi \u0130\u015faretle")
+            menu.addAction("✅  Tam Ödendi İşaretle")
         if not is_paid:
-            menu.addAction("\U0001f7e0  K\u0131smi \u00d6deme Gir")
+            menu.addAction("🟠  Ödeme Gir (tarih sırasıyla)")
         if is_partial:
-            menu.addAction("\U0001f7e0  K\u0131smi \u00d6demeyi G\u00fcncelle")
+            menu.addAction("🟠  Ödemeyi Güncelle (tarih sırasıyla)")
         if is_paid or is_partial:
-            menu.addAction("\u21a9\ufe0f  \u00d6demeyi S\u0131f\u0131rla")
+            menu.addAction("↩️  Ödemeyi Sıfırla")
 
         if menu.isEmpty():
             return
@@ -1817,38 +1825,42 @@ class MainWindow(QMainWindow):
 
         label = action.text()
 
-        if "\u2705" in label:  # Tam ödendi
+        if "✅" in label:  # Tam ödendi
             ok, msg = TransactionService.mark_invoice_as_paid(transaction_id, paid=True)
             if ok:
                 _refresh()
             else:
                 QMessageBox.warning(self, "Hata", msg)
 
-        elif "\u21a9" in label:  # Sıfırla
+        elif "↩️" in label:  # Sıfırla
             ok, msg = TransactionService.set_partial_payment(transaction_id, 0.0)
             if ok:
                 _refresh()
             else:
                 QMessageBox.warning(self, "Hata", msg)
 
-        else:  # Kısmi gir / güncelle
+        else:  # Ödeme gir / güncelle — tarih sırasıyla tüm faturalara dağıt
             from PyQt5.QtWidgets import QInputDialog
-            default_val = paid_amount if is_partial else 0.0
+            cari_item = self.table_invoices.item(row, 1)
+            cari_name = cari_item.text() if cari_item else ""
             amount_str, ok = QInputDialog.getText(
-                self, "K\u0131smi \u00d6deme",
-                f"Toplam tutar: {format_tr(total_amount)} TL\nBug\u00fcne kadar \u00f6denen tutar\u0131 girin (TL):",
-                text=str(default_val).replace('.', ',')
+                self, "Ödeme Girişi",
+                f"Cari: {cari_name}\n"
+                f"Bu cari için toplam tahsilat tutarını girin (TL).\n"
+                f"Ödeme, fatura tarih sırasına göre EN ESKİ faturadan başlayarak uygulanır.",
+                text=""
             )
             if not ok or not amount_str.strip():
                 return
             try:
                 entered = float(amount_str.strip().replace(',', '.'))
             except ValueError:
-                QMessageBox.warning(self, "Hata", "Ge\u00e7erli bir say\u0131 girin.")
+                QMessageBox.warning(self, "Hata", "Geçerli bir sayı girin.")
                 return
-            ok2, msg2 = TransactionService.set_partial_payment(transaction_id, entered)
+            ok2, msg2, applied_list = TransactionService.apply_cari_payment(transaction_id, entered)
             if ok2:
                 _refresh()
+                QMessageBox.information(self, "Ödeme Uygulandı", msg2)
             else:
                 QMessageBox.warning(self, "Hata", msg2)
 
