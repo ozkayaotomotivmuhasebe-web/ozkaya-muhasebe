@@ -322,14 +322,8 @@ class MainWindow(QMainWindow):
         if not keys:
             UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", default_keys)
             return default_keys
-        # Yeni eklenen kart tanımları otomatik olarak mevcut kullanıcılara da eklensin
-        valid_keys = [k for k in default_keys]
-        merged = [k for k in keys if k in valid_keys]
-        new_keys = [k for k in default_keys if k not in keys]
-        if new_keys:
-            merged = merged + new_keys
-            UserSettingsService.set_json_setting(self.user.id, "dashboard_cards", merged)
-        return merged
+        # Sadece gecerli (tanimli) kartlari dondur, kullanicinin kaldirdigini geri ekleme
+        return [k for k in keys if k in default_keys]
 
     def _set_dashboard_card_value(self, key, value):
         if not hasattr(self, "dashboard_cards"):
