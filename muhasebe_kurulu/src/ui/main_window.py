@@ -1717,10 +1717,10 @@ class MainWindow(QMainWindow):
 
                 row_color = None
                 if paid_amount > total_amount and total_amount > 0:
-                    # Fazla ödeme durumu (overflow başka faturaya aktarılamadıysa)
+                    # Fazla ödeme durumu (nadiren olur, overflow başka faturaya aktarılamadıysa)
                     fazla = paid_amount - total_amount
                     paid_str = f" ({paid_date})" if paid_date else ""
-                    vade_item = QTableWidgetItem(f"\u2705 Ödendi{paid_str}  💰 Fazla: {format_tr(fazla)} TL")
+                    vade_item = QTableWidgetItem(f"✅ Ödendi{paid_str}  💰 Fazla: {format_tr(fazla)} TL")
                     vade_item.setForeground(QBrush(QColor("#1565C0")))
                     self.table_invoices.setItem(i, 6, vade_item)
                     row_color = "#E3F2FD"

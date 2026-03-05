@@ -588,6 +588,14 @@ class TransactionService:
         KESILEN_FATURA'sından başlayarak ödemeyi dağıtır.
 
         Returns: (success: bool, message: str, applied_list: list[dict])
+          applied_list her eleman:
+            {
+              'invoice_id'  : int,
+              'invoice_no'  : str,
+              'applied'     : float,   # bu faturaya uygulanan tutar
+              'new_paid'    : float,   # faturedaki toplam ödenen tutar
+              'fully_paid'  : bool,
+            }
         """
         from datetime import date as date_type
         from src.utils.helpers import format_tr as _fmt
@@ -600,6 +608,8 @@ class TransactionService:
             payment_amount = max(0.0, float(payment_amount))
             today = paid_date or date_type.today()
 
+            # Aynı carinin tüm ödenmemiş (veya kısmi ödenmiş) KESILEN_FATURA'larını
+            # fatura tarihine göre eskiden yeniye sırala
             query = session.query(Transaction).filter(
                 Transaction.user_id == ref.user_id,
                 Transaction.transaction_type == TransactionType.KESILEN_FATURA,
@@ -668,10 +678,12 @@ class TransactionService:
     def auto_detect_paid_invoices(user_id):
         """GELIR işlemlerine göre fatura ödeme durumunu senkronize et.
 
-        Eşleşme kriterleri (HEPSİ gerekmez, biri yeterliyse):
-          - Aynı cari_id  VEYA  aynı customer_name  VEYA  cari ismi ile customer_name eşleşmesi
-          - Tutar ±1 TL
-          - Açıklama, konu veya description içinde "fatura" geçiyor  (VEYA transaction_type KESILEN/GELEN_FATURA)
+        Eşleşme mantığı (iki aşamalı):
+          1. TAM EŞLEŞME: aynı cari + tutar ±1 TL + 'fatura' keyword → fatura tamamen ödendi.
+          2. DAĞITIM: Tam eşleşmeye girmeyen GELIR'ler, aynı carinin faturalarına
+             FATURA TARİHİNE GÖRE (en eski önce) dağıtılır.
+             Örnek: 21.000 TL GELIR + [F-181:15.000, F-182:250.000] →
+               F-181 tamamen kapanır (15.000), F-182'ye 6.000 kısmi uygulanır.
         """
         session = SessionLocal()
         changed = 0
@@ -718,8 +730,8 @@ class TransactionService:
                 return n if n else None
 
             # ── 1. TAM EŞLEŞME ────────────────────────────────────────────────────
-            used_pay_ids = set()
-            exact_inv_ids = set()
+            used_pay_ids = set()   # Tam eşleşmede kullanılan GELIR id'leri
+            exact_inv_ids = set()  # Tam eşleşmesi olan fatura id'leri
 
             for inv in all_invoices:
                 for pay in gelir_txs:
@@ -731,6 +743,7 @@ class TransactionService:
                         continue
                     if not _same_cari(inv, pay):
                         continue
+                    # Eşleşti
                     used_pay_ids.add(pay.id)
                     exact_inv_ids.add(inv.id)
                     cur = getattr(inv, "paid_amount", 0.0) or 0.0
@@ -744,9 +757,10 @@ class TransactionService:
                         if not inv.paid_date:
                             inv.paid_date = pay.transaction_date
                         changed += 1
-                    break
+                    break  # Bu fatura için ilk eşleşen GELIR yeterli
 
             # ── 2. DAĞITIM: kalan GELIR'leri cari bazlı, tarih sırasıyla dağıt ──
+            # Kullanılmamış GELIR'leri cari bucket'ına göre grupla
             cari_gelirs = defaultdict(list)
             for pay in gelir_txs:
                 if pay.id in used_pay_ids:
@@ -757,6 +771,7 @@ class TransactionService:
                 if b is not None:
                     cari_gelirs[b].append(pay)
 
+            # Tam eşleşmesi olmayan faturalar, bucket'a göre grupla (zaten tarih sıralı)
             cari_invs = defaultdict(list)
             for inv in all_invoices:
                 if inv.id in exact_inv_ids:
@@ -778,9 +793,11 @@ class TransactionService:
                 )
 
                 if total_gelir <= 0:
+                    # Bu cari için dağıtılacak GELIR yok → önceki auto-kısmi ödemeleri temizle
                     for inv in invs:
                         cur = getattr(inv, "paid_amount", 0.0) or 0.0
                         if cur > 0 and not inv.is_paid and inv.paid_date is None:
+                            # paid_date yoksa auto-set → sıfırla
                             inv.paid_amount = 0.0
                             changed += 1
                         elif inv.is_paid and abs(cur - inv.amount) < 1.0:
@@ -796,6 +813,7 @@ class TransactionService:
                     cur = getattr(inv, "paid_amount", 0.0) or 0.0
 
                     if remaining <= 0:
+                        # Para bitti; bu faturada önceden auto-set 0-date varsa sıfırla
                         if cur > 0 and not inv.is_paid and inv.paid_date is None:
                             inv.paid_amount = 0.0
                             changed += 1
@@ -804,6 +822,7 @@ class TransactionService:
                     apply = min(remaining, inv.amount)
                     new_paid = round(apply, 2)
 
+                    # Önemli fark yoksa dokunma (floating point sessizliği)
                     if abs(new_paid - cur) < 0.5 and inv.is_paid == (new_paid >= inv.amount):
                         remaining = round(remaining - apply, 2)
                         continue
