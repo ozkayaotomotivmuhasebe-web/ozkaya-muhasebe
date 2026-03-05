@@ -313,6 +313,7 @@ class MainWindow(QMainWindow):
             ("loan_total_debt", "Kredi Toplam Borç", "#E91E63"),
             ("borrow_total_debt", "Ödünç Borçlar Toplamı", "#795548"),
             ("kira_monthly", "Kira (Bu Ay Tahsilat)", "#1565C0"),
+            ("overdue_invoices", "\u26d4 Gecikmi\u015f Fatura", "#B71C1C"),
         ]
 
     def _get_dashboard_card_keys(self):
@@ -540,6 +541,19 @@ class MainWindow(QMainWindow):
             self._set_dashboard_card_value("credit_card_total_debt", format_currency_tr(credit_card_total_debt))
             self._set_dashboard_card_value("loan_total_debt", format_currency_tr(loan_total_debt))
             self._set_dashboard_card_value("borrow_total_debt", format_currency_tr(borrow_total_debt))
+
+            # ── Gecikmiş Kesilen Fatura toplam tutarı ──────────────────────────
+            from datetime import date as _date_type
+            _today = _date_type.today()
+            overdue_amount = sum(
+                (t.amount - (getattr(t, 'paid_amount', 0.0) or 0.0))
+                for t in all_transactions
+                if t.transaction_type == TransactionType.KESILEN_FATURA
+                and getattr(t, 'due_date', None) is not None
+                and (t.due_date - _today).days < 0
+                and not (getattr(t, 'paid_amount', 0.0) or 0.0) >= t.amount
+            )
+            self._set_dashboard_card_value("overdue_invoices", format_currency_tr(overdue_amount))
 
             # ── Kira Takip: Bu ay beklenen tahsilat ──────────────────────
             try:
@@ -1245,17 +1259,17 @@ class MainWindow(QMainWindow):
                 
                 # Düzenle butonu
                 btn_edit = QPushButton("Düzenle")
-                btn_edit.setMinimumWidth(130)
-                btn_edit.setMinimumHeight(36)
-                btn_edit.setMaximumWidth(140)
+                btn_edit.setMinimumWidth(72)
+                btn_edit.setMinimumHeight(24)
+                btn_edit.setMaximumWidth(90)
                 btn_edit.setStyleSheet("""
                     QPushButton {
                         background-color: #2196F3;
                         color: white;
                         border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 9pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #1976D2; }
@@ -1266,17 +1280,17 @@ class MainWindow(QMainWindow):
                 
                 # Sil butonu
                 btn_delete = QPushButton("Sil")
-                btn_delete.setMinimumWidth(100)
-                btn_delete.setMinimumHeight(36)
-                btn_delete.setMaximumWidth(110)
+                btn_delete.setMinimumWidth(48)
+                btn_delete.setMinimumHeight(24)
+                btn_delete.setMaximumWidth(60)
                 btn_delete.setStyleSheet("""
                     QPushButton {
                         background-color: #f44336;
                         color: white;
                         border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 9pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #da190b; }
@@ -1288,7 +1302,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
             self._resize_table(self.table_transactions, stretch_col=3)
-            self.table_transactions.setColumnWidth(8, 200)
+            self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
                 
         except Exception as e:
@@ -1338,17 +1352,17 @@ class MainWindow(QMainWindow):
                 action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 
                 btn_edit = QPushButton("Düzenle")
-                btn_edit.setMinimumWidth(130)
-                btn_edit.setMinimumHeight(36)
-                btn_edit.setMaximumWidth(140)
+                btn_edit.setMinimumWidth(72)
+                btn_edit.setMinimumHeight(24)
+                btn_edit.setMaximumWidth(90)
                 btn_edit.setStyleSheet("""
                     QPushButton {
                         background-color: #2196F3;
                         color: white;
                         border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 9pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #1976D2; }
@@ -1357,17 +1371,17 @@ class MainWindow(QMainWindow):
                 action_layout.addWidget(btn_edit)
                 
                 btn_delete = QPushButton("Sil")
-                btn_delete.setMinimumWidth(100)
-                btn_delete.setMinimumHeight(36)
-                btn_delete.setMaximumWidth(110)
+                btn_delete.setMinimumWidth(48)
+                btn_delete.setMinimumHeight(24)
+                btn_delete.setMaximumWidth(60)
                 btn_delete.setStyleSheet("""
                     QPushButton {
                         background-color: #f44336;
                         color: white;
                         border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 9pt;
                         font-weight: bold;
                     }
                     QPushButton:hover { background-color: #da190b; }
@@ -1378,7 +1392,7 @@ class MainWindow(QMainWindow):
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
             self._resize_table(self.table_transactions, stretch_col=3)
-            self.table_transactions.setColumnWidth(8, 200)
+            self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
@@ -1597,14 +1611,20 @@ class MainWindow(QMainWindow):
         
         self.table_invoices = QTableWidget()
         self.table_invoices.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table_invoices.setColumnCount(5)
-        self.table_invoices.setHorizontalHeaderLabels(["Fatura No", "Cari", "Tutar", "Durum", "Tarih"])
+        self.table_invoices.setColumnCount(7)
+        self.table_invoices.setHorizontalHeaderLabels(
+            ["Fatura No", "Cari", "Tutar", "Durum", "Tarih", "Vade Tarihi", "Vade Durumu"]
+        )
         self.table_invoices.horizontalHeader().setStretchLastSection(False)
         self.table_invoices.setColumnWidth(0, 120)
-        self.table_invoices.setColumnWidth(1, 250)
+        self.table_invoices.setColumnWidth(1, 220)
         self.table_invoices.setColumnWidth(2, 120)
-        self.table_invoices.setColumnWidth(3, 100)
+        self.table_invoices.setColumnWidth(3, 80)
         self.table_invoices.setColumnWidth(4, 100)
+        self.table_invoices.setColumnWidth(5, 100)
+        self.table_invoices.setColumnWidth(6, 250)
+        self.table_invoices.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_invoices.customContextMenuRequested.connect(self._invoice_context_menu)
         self.load_column_widths(self.table_invoices, "invoices")
         layout.addWidget(self.table_invoices)
         
@@ -1614,48 +1634,223 @@ class MainWindow(QMainWindow):
         return widget
     
     def refresh_invoice_table(self):
-        """Fatura tablosunu yenile - Transaction modelinden fatura işlemlerini göster"""
+        """Fatura tablosunu yenile — vade takibi + kısmi ödeme desteği."""
         try:
             from src.database.db import SessionLocal
-            from src.database.models import Transaction, TransactionType, Cari
-            
+            from src.database.models import Transaction, TransactionType
+            from src.services.transaction_service import TransactionService
+            from datetime import date as date_type
+            from PyQt5.QtCore import Qt
+            from PyQt5.QtGui import QColor, QBrush
+
+            # Önce otomatik ödeme tespitini çalıştır
+            try:
+                TransactionService.auto_detect_paid_invoices(self.user.id)
+            except Exception:
+                pass
+
             session = SessionLocal()
-            
-            # KESILEN_FATURA ve GELEN_FATURA işlemlerini getir
             invoices = session.query(Transaction).filter(
                 Transaction.user_id == self.user.id,
-                Transaction.transaction_type.in_([TransactionType.KESILEN_FATURA, TransactionType.GELEN_FATURA])
+                Transaction.transaction_type.in_([
+                    TransactionType.KESILEN_FATURA,
+                    TransactionType.GELEN_FATURA
+                ])
             ).order_by(Transaction.transaction_date.desc()).all()
-            
-            self.table_invoices.setRowCount(len(invoices))
-            
-            for i, inv in enumerate(invoices):
-                # Fatura numarası (ya da ID)
-                invoice_no = inv.invoice_number if hasattr(inv, 'invoice_number') and inv.invoice_number else f"F-{inv.id}"
-                self.table_invoices.setItem(i, 0, QTableWidgetItem(invoice_no))
-                
+
+            # Session açıkken tüm gerekli alanları çek
+            inv_data = []
+            for inv in invoices:
+                inv_data.append({
+                    'id': inv.id,
+                    'invoice_number': getattr(inv, 'invoice_number', None),
+                    'cari_name': inv.cari.name if inv.cari else '-',
+                    'amount': inv.amount,
+                    'transaction_type': inv.transaction_type,
+                    'transaction_date': inv.transaction_date,
+                    'due_date': getattr(inv, 'due_date', None),
+                    'is_paid': getattr(inv, 'is_paid', False) or False,
+                    'paid_date': getattr(inv, 'paid_date', None),
+                    'paid_amount': getattr(inv, 'paid_amount', 0.0) or 0.0,
+                })
+            session.close()
+
+            self.table_invoices.setRowCount(len(inv_data))
+            today = date_type.today()
+
+            for i, inv in enumerate(inv_data):
+                inv_id = inv['id']
+                total_amount = inv['amount']
+                paid_amount = inv['paid_amount']
+                invoice_no = inv['invoice_number'] or f"F-{inv_id}"
+
+                # Fatura No (UserRole'de meta sakla)
+                item0 = QTableWidgetItem(invoice_no)
+                item0.setData(Qt.UserRole,      inv_id)
+                item0.setData(Qt.UserRole + 1,  paid_amount)
+                item0.setData(Qt.UserRole + 2,  total_amount)
+                self.table_invoices.setItem(i, 0, item0)
+
                 # Cari adı
-                cari_name = inv.cari.name if inv.cari else "-"
-                self.table_invoices.setItem(i, 1, QTableWidgetItem(cari_name))
-                
+                self.table_invoices.setItem(i, 1, QTableWidgetItem(inv['cari_name']))
+
                 # Tutar
-                self.table_invoices.setItem(i, 2, QTableWidgetItem(f"{format_tr(inv.amount)} TL"))
-                
+                self.table_invoices.setItem(i, 2, QTableWidgetItem(f"{format_tr(total_amount)} TL"))
+
                 # Durum (Fatura türü)
-                status = "Kesilen" if inv.transaction_type == TransactionType.KESILEN_FATURA else "Gelen"
+                is_kesilen = inv['transaction_type'] == TransactionType.KESILEN_FATURA
+                status = "Kesilen" if is_kesilen else "Gelen"
                 self.table_invoices.setItem(i, 3, QTableWidgetItem(status))
-                
+
                 # Tarih
-                self.table_invoices.setItem(i, 4, QTableWidgetItem(str(inv.transaction_date)))
-            
+                self.table_invoices.setItem(i, 4, QTableWidgetItem(str(inv['transaction_date'])))
+
+                # Vade Tarihi ve Vade Durumu
+                due_date   = inv['due_date']
+                is_fully_paid = total_amount > 0 and paid_amount >= total_amount
+                is_partial    = 0 < paid_amount < total_amount
+                paid_date  = inv['paid_date']
+
+                self.table_invoices.setItem(i, 5, QTableWidgetItem(
+                    str(due_date) if (is_kesilen and due_date) else "-"
+                ))
+
+                row_color = None
+                if is_fully_paid:
+                    paid_str = f" ({paid_date})" if paid_date else ""
+                    vade_item = QTableWidgetItem(f"\u2705 \u00d6dendi{paid_str}")
+                    vade_item.setForeground(QBrush(QColor("#1B5E20")))
+                    self.table_invoices.setItem(i, 6, vade_item)
+                    row_color = "#E8F5E9"
+                elif is_partial and is_kesilen:
+                    kalan = total_amount - paid_amount
+                    vade_item = QTableWidgetItem(
+                        f"\U0001f7e0 K\u0131smi: {format_tr(paid_amount)} / {format_tr(total_amount)} TL"
+                        f"  (Kalan: {format_tr(kalan)} TL)"
+                    )
+                    vade_item.setForeground(QBrush(QColor("#E65100")))
+                    self.table_invoices.setItem(i, 6, vade_item)
+                    row_color = "#FFF8E1"
+                elif is_kesilen and due_date:
+                    days_left = (due_date - today).days
+                    if days_left < 0:
+                        vade_text  = f"\u26d4 {abs(days_left)} g\u00fcn gecikmi\u015f"
+                        row_color  = "#FFEBEE"
+                        text_color = "#B71C1C"
+                    elif days_left == 0:
+                        vade_text  = "\U0001f534 Bug\u00fcn \u00f6deme g\u00fcn\u00fc!"
+                        row_color  = "#FFF3E0"
+                        text_color = "#E65100"
+                    elif days_left <= 5:
+                        vade_text  = f"\U0001f7e1 {days_left} g\u00fcn sonra \u00f6deme"
+                        row_color  = "#FFFDE7"
+                        text_color = "#F57F17"
+                    else:
+                        vade_text  = f"\U0001f7e2 {days_left} g\u00fcn kald\u0131"
+                        row_color  = None
+                        text_color = "#2E7D32"
+                    vade_item = QTableWidgetItem(vade_text)
+                    vade_item.setForeground(QBrush(QColor(text_color)))
+                    self.table_invoices.setItem(i, 6, vade_item)
+                elif is_kesilen:
+                    self.table_invoices.setItem(i, 6, QTableWidgetItem("Vade yok"))
+                else:
+                    self.table_invoices.setItem(i, 6, QTableWidgetItem("-"))
+
+                # Satır arka plan rengi
+                if row_color:
+                    for col in range(self.table_invoices.columnCount()):
+                        existing = self.table_invoices.item(i, col)
+                        if existing:
+                            existing.setBackground(QBrush(QColor(row_color)))
+
             self._resize_table(self.table_invoices, stretch_col=1)
             self.load_column_widths(self.table_invoices, "invoices")
-            session.close()
             self.filter_invoice_table()
         except Exception as e:
             print(f"Fatura yükleme hatası: {e}")
             import traceback
             traceback.print_exc()
+
+    def _invoice_context_menu(self, pos):
+        """Fatura tablosunda sağ tık menüsü — ödeme durumu değiştirme (tam/kısmi)."""
+        from PyQt5.QtWidgets import QMenu, QAction, QMessageBox
+        from PyQt5.QtCore import Qt
+        from src.services.transaction_service import TransactionService
+
+        row = self.table_invoices.rowAt(pos.y())
+        if row < 0:
+            return
+
+        item0 = self.table_invoices.item(row, 0)
+        if not item0:
+            return
+        transaction_id = item0.data(Qt.UserRole)
+        if not transaction_id:
+            return
+
+        paid_amount  = item0.data(Qt.UserRole + 1) or 0.0
+        total_amount = item0.data(Qt.UserRole + 2) or 0.0
+        is_paid      = total_amount > 0 and paid_amount >= total_amount
+        is_partial   = 0 < paid_amount < total_amount
+
+        menu = QMenu(self)
+        if not is_paid:
+            menu.addAction("\u2705  Tam \u00d6dendi \u0130\u015faretle")
+        if not is_paid:
+            menu.addAction("\U0001f7e0  K\u0131smi \u00d6deme Gir")
+        if is_partial:
+            menu.addAction("\U0001f7e0  K\u0131smi \u00d6demeyi G\u00fcncelle")
+        if is_paid or is_partial:
+            menu.addAction("\u21a9\ufe0f  \u00d6demeyi S\u0131f\u0131rla")
+
+        if menu.isEmpty():
+            return
+
+        action = menu.exec_(self.table_invoices.viewport().mapToGlobal(pos))
+        if action is None:
+            return
+
+        def _refresh():
+            self.refresh_invoice_table()
+            self.refresh_dashboard()
+
+        label = action.text()
+
+        if "\u2705" in label:  # Tam ödendi
+            ok, msg = TransactionService.mark_invoice_as_paid(transaction_id, paid=True)
+            if ok:
+                _refresh()
+            else:
+                QMessageBox.warning(self, "Hata", msg)
+
+        elif "\u21a9" in label:  # Sıfırla
+            ok, msg = TransactionService.set_partial_payment(transaction_id, 0.0)
+            if ok:
+                _refresh()
+            else:
+                QMessageBox.warning(self, "Hata", msg)
+
+        else:  # Kısmi gir / güncelle
+            from PyQt5.QtWidgets import QInputDialog
+            default_val = paid_amount if is_partial else 0.0
+            amount_str, ok = QInputDialog.getText(
+                self, "K\u0131smi \u00d6deme",
+                f"Toplam tutar: {format_tr(total_amount)} TL\nBug\u00fcne kadar \u00f6denen tutar\u0131 girin (TL):",
+                text=str(default_val).replace('.', ',')
+            )
+            if not ok or not amount_str.strip():
+                return
+            try:
+                entered = float(amount_str.strip().replace(',', '.'))
+            except ValueError:
+                QMessageBox.warning(self, "Hata", "Ge\u00e7erli bir say\u0131 girin.")
+                return
+            ok2, msg2 = TransactionService.set_partial_payment(transaction_id, entered)
+            if ok2:
+                _refresh()
+            else:
+                QMessageBox.warning(self, "Hata", msg2)
 
     def filter_invoice_table(self):
         if not hasattr(self, 'table_invoices'):
@@ -3406,6 +3601,13 @@ Pasif Kullanıcı: {total_users - active_users}
             # Kredi tablosu varsa yenile
             if hasattr(self, 'table_loans'):
                 self.refresh_loans_table()
+
+            # Aktif rapor ekranı varsa yenile
+            if hasattr(self, '_current_report_key') and self._current_report_key:
+                try:
+                    self._generate_sidebar_report(self._current_report_key)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"Veri yenileme hatası: {e}")
             import traceback
@@ -4840,7 +5042,8 @@ Pasif Kullanıcı: {total_users - active_users}
             ("haftalik",    "📈",  "Haftalık Trend"),
             ("maas",        "👷",  "Maaş Ödemeleri"),
             ("konu_gider",  "🏷️",  "Konuya Göre Giderler"),
-            ("kira_takip", "🏠",  "Kira Takip Raporu"),
+            ("kira_takip",    "🏠",  "Kira Takip Raporu"),
+            ("fatura_vade",   "📆",  "Fatura Vade Takibi"),
         ]
 
         for key, icon, label in report_menu:
@@ -5081,6 +5284,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_konu_gider_report(start_date, end_date)
             elif key == "kira_takip":
                 html = self._generate_kira_takip_report()
+            elif key == "fatura_vade":
+                html = self._generate_fatura_vade_report()
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
@@ -6783,6 +6988,199 @@ Pasif Kullanıcı: {total_users - active_users}
             bold=True, bg="#E3F2FD"
         )
         html += "</table><br>"
+
+        return html
+
+    def _generate_fatura_vade_report(self):
+        """Fatura Vade Takibi raporu — gecikmiş, bugün, yaklaşan, kısmi, ödenmiş."""
+        from src.database.db import SessionLocal
+        from src.database.models import Transaction, TransactionType
+        from datetime import date as _date
+
+        today = _date.today()
+        session = SessionLocal()
+        try:
+            rows = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_type == TransactionType.KESILEN_FATURA
+            ).order_by(Transaction.transaction_date.desc()).all()
+
+            # Session açıkken tüm ilişkili alanları dict'e çek
+            invoices = []
+            for inv in rows:
+                invoices.append({
+                    'id': inv.id,
+                    'invoice_number': getattr(inv, 'invoice_number', None),
+                    'cari_name': inv.cari.name if inv.cari else (getattr(inv, 'customer_name', None) or "-"),
+                    'amount': inv.amount,
+                    'transaction_date': inv.transaction_date,
+                    'due_date': getattr(inv, 'due_date', None),
+                    'is_paid': getattr(inv, 'is_paid', False) or False,
+                    'paid_date': getattr(inv, 'paid_date', None),
+                    'paid_amount': getattr(inv, 'paid_amount', 0.0) or 0.0,
+                })
+        finally:
+            session.close()
+
+        # Kategorize et
+        paid_list, partial_list = [], []
+        overdue, due_today, upcoming_5, upcoming_more = [], [], [], []
+        for inv in invoices:
+            paid_amt  = inv['paid_amount']
+            total_amt = inv['amount']
+            fully_paid = paid_amt >= total_amt and total_amt > 0
+            is_partial = 0 < paid_amt < total_amt
+            if fully_paid:
+                paid_list.append(inv)
+                continue
+            if is_partial:
+                partial_list.append(inv)
+            due = inv['due_date']
+            if not due:
+                continue
+            days_left = (due - today).days
+            entry = (inv, days_left, due)
+            if days_left < 0:
+                overdue.append(entry)
+            elif days_left == 0:
+                due_today.append(entry)
+            elif days_left <= 5:
+                upcoming_5.append(entry)
+            else:
+                upcoming_more.append(entry)
+
+        def fmt_amount(v):
+            return f"{v:,.2f} \u20ba".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        def fatura_row(inv, days_left, due, bg, idx):
+            invoice_no = inv['invoice_number'] or f"F-{inv['id']}"
+            paid_amt = inv['paid_amount']
+            if paid_amt > 0 and paid_amt < inv['amount']:
+                tutar_str = (
+                    f"{fmt_amount(inv['amount'])}"
+                    f"<br><small style='color:#E65100;'>\U0001f7e0 \u00d6d: {fmt_amount(paid_amt)}"
+                    f" / Kalan: {fmt_amount(inv['amount']-paid_amt)}</small>"
+                )
+            else:
+                tutar_str = fmt_amount(inv['amount'])
+            if days_left < 0:
+                status_cell = f"<span style='color:#B71C1C;'>\u26d4 {abs(days_left)} g\u00fcn ge\u00e7</span>"
+            elif days_left == 0:
+                status_cell = "<span style='color:#E65100;'>\U0001f534 Bug\u00fcn!</span>"
+            else:
+                status_cell = f"<span style='color:#F57F17;'>\U0001f7e1 {days_left} g\u00fcn</span>"
+            return (
+                f"<tr style='background:{bg};'>"
+                f"<td style='padding:6px 8px;'>{invoice_no}</td>"
+                f"<td style='padding:6px 8px;'>{inv['cari_name']}</td>"
+                f"<td style='padding:6px 8px; text-align:right;'>{tutar_str}</td>"
+                f"<td style='padding:6px 8px;'>{inv['transaction_date']}</td>"
+                f"<td style='padding:6px 8px;'>{due}</td>"
+                f"<td style='padding:6px 8px; font-weight:bold;'>{status_cell}</td></tr>"
+            )
+
+        def section_table(title, color, entries):
+            if not entries:
+                return ""
+            s = self._section(title, color)
+            s += self._table_header(
+                ["Fatura No", "Cari", "Tutar", "Fatura Tarihi", "Vade Tarihi", "Durum"],
+                color=color
+            )
+            for idx, (inv, dl, due) in enumerate(entries):
+                s += fatura_row(inv, dl, due, "#FAFAFA" if idx % 2 == 0 else "white", idx)
+            s += "</table><br>"
+            return s
+
+        # KPI özet
+        total_overdue_amount = sum(inv['amount'] - inv['paid_amount'] for inv, _, _ in overdue)
+        total_due_today  = sum(inv['amount'] for inv, _, _ in due_today)
+        total_upcoming_5 = sum(inv['amount'] for inv, _, _ in upcoming_5)
+        total_all = total_overdue_amount + total_due_today + total_upcoming_5
+        total_paid_amount    = sum(inv['amount']     for inv in paid_list)
+        total_partial_paid   = sum(inv['paid_amount'] for inv in partial_list)
+        total_partial_amount = sum(inv['amount']      for inv in partial_list)
+        total_partial_kalan  = total_partial_amount - total_partial_paid
+
+        html = self._rh("\U0001f4c6", "Fatura Vade Takibi",
+                        f"Kesilen Faturalar\u0131n Vade Durumu \u2014 {today.strftime('%d.%m.%Y')} itibar\u0131yla",
+                        "#1565C0")
+        html += self._kpi_row([
+            ("\u26d4",   "Gecikmi\u015f Fatura",       f"{len(overdue)} adet",         "#B71C1C"),
+            ("\U0001f4b8", "Gecikmi\u015f Toplam \u20ba", fmt_amount(total_overdue_amount), "#B71C1C"),
+            ("\U0001f534", "Bug\u00fcn Vadeli",           f"{len(due_today)} adet",       "#E65100"),
+            ("\U0001f7e1", "5 G\u00fcn \u0130\u00e7inde", f"{len(upcoming_5)} adet",      "#F57F17"),
+        ])
+        html += self._kpi_row([
+            ("\u26a0\ufe0f", "Yakla\u015fan Toplam \u20ba", fmt_amount(total_all),           "#6A1B9A"),
+            ("\U0001f4ca",   "Toplam A\u00e7\u0131k",       f"{len(overdue)+len(due_today)+len(upcoming_5)+len(upcoming_more)} adet", "#37474F"),
+            ("\U0001f7e0",   "K\u0131smi \u00d6deme",       f"{len(partial_list)} adet",    "#E65100"),
+            ("\U0001f4b0",   "K\u0131smi \u00d6denen \u20ba", fmt_amount(total_partial_paid), "#2E7D32"),
+        ])
+        html += self._kpi_row([
+            ("\U0001f4b8",   "K\u0131smi Kalan \u20ba",     fmt_amount(total_partial_kalan), "#B71C1C"),
+            ("\u2705",       "\u00d6denmi\u015f Fatura",    f"{len(paid_list)} adet",       "#1B5E20"),
+            ("\U0001f4b0",   "\u00d6denmi\u015f Toplam \u20ba", fmt_amount(total_paid_amount), "#1B5E20"),
+        ])
+
+        if not invoices:
+            html += "<p style='padding:20px; color:#555;'>Hen\u00fcz kesilen fatura bulunmuyor.</p>"
+            return html
+
+        if not (overdue or due_today or upcoming_5 or upcoming_more or paid_list or partial_list):
+            html += "<p style='padding:20px; color:#555;'>Vade tarihi girilmi\u015f fatura bulunamad\u0131.</p>"
+            return html
+
+        html += section_table("\u26d4 Gecikmi\u015f \u00d6demeler",      "#B71C1C", overdue)
+        html += section_table("\U0001f534 Bug\u00fcn \u00d6deme G\u00fcn\u00fc", "#E65100", due_today)
+        html += section_table("\U0001f7e1 5 G\u00fcn \u0130\u00e7inde \u00d6denecek", "#F57F17", upcoming_5)
+        html += section_table("\U0001f7e2 \u0130lerideki Vadeler",        "#2E7D32", upcoming_more)
+
+        # Kısmi ödeme tablosu
+        if partial_list:
+            html += self._section("\U0001f7e0 K\u0131smi \u00d6demeli Faturalar", "#E65100")
+            html += self._table_header(
+                ["Fatura No", "Cari", "Toplam Tutar", "\u00d6denen", "Kalan", "Fatura Tarihi", "Vade Tarihi"],
+                color="#FFE0B2"
+            )
+            for idx, inv in enumerate(partial_list):
+                invoice_no = inv['invoice_number'] or f"F-{inv['id']}"
+                bg = "#FFF8E1" if idx % 2 == 0 else "white"
+                kalan = inv['amount'] - inv['paid_amount']
+                html += self._tr(
+                    [invoice_no, inv['cari_name'],
+                     fmt_amount(inv['amount']),
+                     f"<span style='color:#2E7D32;font-weight:bold;'>{fmt_amount(inv['paid_amount'])}</span>",
+                     f"<span style='color:#B71C1C;font-weight:bold;'>{fmt_amount(kalan)}</span>",
+                     str(inv['transaction_date']),
+                     str(inv['due_date']) if inv['due_date'] else "-"],
+                    bg=bg
+                )
+            html += "</table><br>"
+
+        # Ödenmiş faturalar tablosu
+        if paid_list:
+            html += self._section("\u2705 \u00d6denmi\u015f Faturalar", "#1B5E20")
+            html += self._table_header(
+                ["Fatura No", "Cari", "Tutar", "Fatura Tarihi", "Vade Tarihi", "\u00d6deme Tarihi"],
+                color="#C8E6C9"
+            )
+            for idx, inv in enumerate(paid_list):
+                invoice_no = inv['invoice_number'] or f"F-{inv['id']}"
+                bg = "#F1F8E9" if idx % 2 == 0 else "white"
+                paid_date_str = (
+                    f"<span style='color:#1B5E20;font-weight:bold;'>\u2705 {inv['paid_date']}</span>"
+                    if inv['paid_date'] else
+                    "<span style='color:#1B5E20;'>\u2705 \u00d6dendi</span>"
+                )
+                html += self._tr(
+                    [invoice_no, inv['cari_name'], fmt_amount(inv['amount']),
+                     str(inv['transaction_date']),
+                     str(inv['due_date']) if inv['due_date'] else "-",
+                     paid_date_str],
+                    bg=bg
+                )
+            html += "</table><br>"
 
         return html
 

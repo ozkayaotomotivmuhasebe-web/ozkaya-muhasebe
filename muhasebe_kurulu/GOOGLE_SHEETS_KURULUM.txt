@@ -1,0 +1,120 @@
+==================================================
+ ÖZKAYA Muhasebe - Google Sheets Kurulum Rehberi
+==================================================
+
+Google Sheets özelliğini kullanabilmek için aşağıdaki 
+adımları takip edin.
+
+--------------------------------------------------
+DURUM: credentials.json DOSYASI VAR MI?
+--------------------------------------------------
+
+Eğer bu pakette data\google_credentials\credentials.json
+dosyası mevcutsa → Adım 3'ten başlayın.
+
+Eğer credentials.json yoksa → Adım 1'den başlayın.
+
+--------------------------------------------------
+ADIM 1 - Google Cloud Console'dan API Anahtarı Alma
+--------------------------------------------------
+
+1. Tarayıcıda şu adrese gidin:
+   https://console.cloud.google.com/
+
+2. Sol üstten projenizi seçin veya yeni proje oluşturun
+
+3. Sol menüden "APIs & Services" → "Credentials" seçin
+
+4. "Create Credentials" → "OAuth 2.0 Client IDs" tıklayın
+
+5. Application type: "Desktop app" seçin, isim verin
+
+6. Oluşturulan kimlik bilgisini indirin (JSON butonu)
+
+7. İndirilen dosyayı şu isimle kaydedin:
+   data\google_credentials\credentials.json
+
+--------------------------------------------------
+ADIM 2 - Google Sheets API'yi Etkinleştirme
+--------------------------------------------------
+
+1. Google Cloud Console'da sol menü:
+   "APIs & Services" → "Library"
+
+2. Arama kutusuna "Google Sheets API" yazın
+
+3. "Google Sheets API" üzerine tıklayın → "Enable" butonu
+
+4. Aynı şekilde "Google Drive API" de etkinleştirin
+
+--------------------------------------------------
+ADIM 3 - İlk Kullanımda Google Hesabı Girişi
+--------------------------------------------------
+
+1. Uygulamayı çalıştırın (Muhasebe.exe)
+
+2. Herhangi bir Google Sheets işlemi yapmaya çalışın
+   (İçe Aktar / otomatik senkron vb.)
+
+3. Tarayıcıda Google giriş sayfası otomatik açılır
+
+4. Google hesabınıza giriş yapın
+
+5. "Bu uygulama Google hesabınıza erişmek istiyor"
+   uyarısında "İzin Ver" / "Allow" butonuna tıklayın
+
+6. Tarayıcıda "Authentication successful" yazısı görünür
+
+7. Uygulamaya dönün - artık Google Sheets hazır!
+
+   NOT: Bu giriş bilgisi data\google_credentials\token.json
+   dosyasına kaydedilir. Sonraki kullanımlarda tekrar
+   giriş yapmanız gerekmez.
+
+--------------------------------------------------
+SORUN GİDERME
+--------------------------------------------------
+
+❌ "credentials.json bulunamadı" hatası:
+   → Adım 1'i tekrarlayın ve dosyayı doğru konuma koyun
+
+❌ "Token geçersiz" / yeniden giriş isteniyor:
+   → data\google_credentials\token.json dosyasını silin
+   → Uygulamayı yeniden başlatın, tekrar giriş yapın
+
+❌ "API etkin değil" hatası:
+   → Adım 2'deki API etkinleştirme adımlarını tekrarlayın
+
+❌ Tarayıcı açılmıyor:
+   → Muhasebe.exe'ye sağ tıklayın → "Yönetici olarak çalıştır"
+
+❌ "Bu uygulama doğrulanmadı" Google uyarısı:
+   → "Gelişmiş" veya "Advanced" seçeneğine tıklayın
+   → "ÖZKAYA uygulamasına git (güvenli değil)" linkine tıklayın
+   → Bu uyarı kendi oluşturduğunuz API anahtarı için normaldir
+
+--------------------------------------------------
+KLASÖR YAPISI
+--------------------------------------------------
+
+ÖZKAYA_Muhasebe\
+├── Muhasebe.exe          ← Ana uygulama
+├── ICON.ico              ← Uygulama ikonu
+├── KURULUM.bat           ← Masaüstü kısayolu oluşturur
+├── GOOGLE_SHEETS_KURULUM.txt ← Bu dosya
+└── data\
+    ├── muhasebe.db       ← Veritabanı (otomatik oluşur)
+    └── google_credentials\
+        ├── credentials.json  ← Google API anahtarı (gerekli)
+        └── token.json        ← Giriş tokeni (otomatik oluşur)
+
+--------------------------------------------------
+DESTEK
+--------------------------------------------------
+
+Sorun yaşarsanız:
+- Bu klasörü taşımayın, sabit bir konumda tutun
+- Uygulamayı daima Muhasebe.exe'den başlatın
+- KURULUM.bat ile masaüstü kısayolu oluşturun
+
+==================================================

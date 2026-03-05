@@ -86,7 +86,8 @@ class TransactionService:
                 subject=kwargs.get('subject'),
                 payment_type=kwargs.get('payment_type'),
                 person=kwargs.get('person'),
-                notes=kwargs.get('notes')
+                notes=kwargs.get('notes'),
+                due_date=kwargs.get('due_date')
             )
             session.add(transaction)
             session.flush()  # ID'yi al
@@ -416,3 +417,201 @@ class TransactionService:
             }
         finally:
             session.close()
+
+    @staticmethod
+    def mark_invoice_as_paid(transaction_id, paid=True, paid_date=None):
+        """Faturayı tam ödendi / ödenmedi olarak işaretle."""
+        from datetime import date as date_type
+        session = SessionLocal()
+        try:
+            t = session.query(Transaction).filter(Transaction.id == transaction_id).first()
+            if not t:
+                return False, "İşlem bulunamadı."
+            t.is_paid = paid
+            t.paid_date = (paid_date or date_type.today()) if paid else None
+            t.paid_amount = t.amount if paid else 0.0
+            session.commit()
+            return True, "Fatura ödeme durumu güncellendi."
+        except Exception as e:
+            session.rollback()
+            return False, str(e)
+        finally:
+            session.close()
+
+    @staticmethod
+    def set_partial_payment(transaction_id, paid_amount, paid_date=None):
+        """Kısmi ödeme tutarını güncelle.
+
+        paid_amount >= fatura tutarı ise tam ödenmiş sayılır.
+        paid_amount == 0 ise ödeme sıfırlanır.
+        Returns: (success, message)
+        """
+        from datetime import date as date_type
+        session = SessionLocal()
+        try:
+            t = session.query(Transaction).filter(Transaction.id == transaction_id).first()
+            if not t:
+                return False, "İşlem bulunamadı."
+            paid_amount = max(0.0, float(paid_amount))
+            t.paid_amount = paid_amount
+            if paid_amount >= t.amount:
+                t.is_paid = True
+                t.paid_date = paid_date or date_type.today()
+            elif paid_amount == 0.0:
+                t.is_paid = False
+                t.paid_date = None
+            else:
+                t.is_paid = False
+                t.paid_date = paid_date or date_type.today()
+            session.commit()
+            return True, "Kısmi ödeme güncellendi."
+        except Exception as e:
+            session.rollback()
+            return False, str(e)
+        finally:
+            session.close()
+
+    @staticmethod
+    def auto_detect_paid_invoices(user_id):
+        """GELIR işlemlerine göre fatura ödeme durumunu senkronize et.
+
+        Eşleşme kriterleri (HEPSİ gerekmez, biri yeterliyse):
+          - Aynı cari_id  VEYA  aynı customer_name  VEYA  cari ismi ile customer_name eşleşmesi
+          - Tutar ±1 TL
+          - Açıklama, konu veya description içinde "fatura" geçiyor  (VEYA transaction_type KESILEN/GELEN_FATURA)
+        """
+        session = SessionLocal()
+        changed = 0
+        try:
+            from src.database.models import Cari
+
+            all_invoices = session.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.transaction_type == TransactionType.KESILEN_FATURA,
+            ).all()
+
+            gelir_txs = session.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.transaction_type == TransactionType.GELIR,
+            ).all()
+
+            # Cari id → name eşlemesi (hızlı lookup)
+            cari_map = {}
+            for c in session.query(Cari).filter_by(user_id=user_id).all():
+                cari_map[c.id] = c.name.strip().lower() if c.name else ""
+
+            def _name(tx):
+                """Bir transaction'ın cari ismini döndür (her iki kaynaktan)."""
+                if tx.cari_id and tx.cari_id in cari_map:
+                    return cari_map[tx.cari_id]
+                if tx.customer_name:
+                    return tx.customer_name.strip().lower()
+                return ""
+
+            def _has_fatura_keyword(pay):
+                combined = " ".join([
+                    (pay.description or ""),
+                    (getattr(pay, 'subject', '') or ""),
+                ]).lower()
+                return "fatura" in combined
+
+            def _cari_match(inv, pay):
+                """İki işlem arasında cari eşleşmesi kontrol et."""
+                inv_name = _name(inv)
+                pay_name = _name(pay)
+                return (
+                    (inv.cari_id and pay.cari_id and inv.cari_id == pay.cari_id)
+                    or (inv_name and pay_name and inv_name == pay_name)
+                )
+
+            def find_match(inv):
+                """Tam eşleşme: tutar ±1 TL + fatura keyword + aynı cari."""
+                for pay in gelir_txs:
+                    if abs(pay.amount - inv.amount) > 1.0:
+                        continue
+                    if not _has_fatura_keyword(pay):
+                        continue
+                    if _cari_match(inv, pay):
+                        return pay
+                return None
+
+            def find_partial_matches(inv):
+                """Kısmi eşleşme: aynı cariden fatura keyword'lü GELIR'lerin toplamı.
+
+                Tam eşleşmesi (±1 TL) olmayan faturalar için kullanılır.
+                Returns: (toplam_odenen, en_son_tarih) veya (0.0, None)
+                """
+                matched_pays = []
+                for pay in gelir_txs:
+                    if not _has_fatura_keyword(pay):
+                        continue
+                    if not _cari_match(inv, pay):
+                        continue
+                    if pay.amount <= 0 or pay.amount > inv.amount + 1.0:
+                        continue
+                    matched_pays.append(pay)
+                if not matched_pays:
+                    return 0.0, None
+                total = sum(p.amount for p in matched_pays)
+                latest_date = max(p.transaction_date for p in matched_pays if p.transaction_date)
+                return total, latest_date
+
+            for inv in all_invoices:
+                current_paid = getattr(inv, 'paid_amount', 0.0) or 0.0
+                match = find_match(inv)
+
+                if match:
+                    # Tam eşleşme var
+                    if not inv.is_paid and current_paid == 0.0:
+                        # Henüz işaretlenmemiş → tam ödendi yap
+                        inv.is_paid = True
+                        inv.paid_amount = inv.amount
+                        inv.paid_date = match.transaction_date
+                        changed += 1
+                    elif inv.is_paid and current_paid < inv.amount:
+                        # is_paid=True ama paid_amount eksik (eski veri) → tutarı düzelt
+                        inv.paid_amount = inv.amount
+                        if not inv.paid_date:
+                            inv.paid_date = match.transaction_date
+                        changed += 1
+                    # is_paid=True ve paid_amount tam → dokunma (zaten doğru)
+                else:
+                    # Tam eşleşme yok — kısmi eşleşme kontrol et
+                    partial_total, partial_date = find_partial_matches(inv)
+
+                    if partial_total > 0 and partial_total < inv.amount:
+                        # Kısmi ödeme var
+                        if abs(current_paid - partial_total) > 1.0 or inv.is_paid:
+                            # DB'de farklı değer var veya yanlışlıkla is_paid=True → güncelle
+                            inv.paid_amount = partial_total
+                            inv.is_paid = False
+                            inv.paid_date = partial_date
+                            changed += 1
+                    elif partial_total >= inv.amount:
+                        # Kısmi ödemelerin toplamı fatura tutarını karşılıyor → tam ödendi
+                        if not inv.is_paid or abs(current_paid - inv.amount) > 1.0:
+                            inv.is_paid = True
+                            inv.paid_amount = inv.amount
+                            inv.paid_date = partial_date
+                            changed += 1
+                    elif inv.is_paid and (abs(current_paid - inv.amount) < 1.0 or current_paid == 0.0):
+                        # Auto-tam-ödeme vardı ama GELIR silindi → geri al
+                        inv.is_paid = False
+                        inv.paid_amount = 0.0
+                        inv.paid_date = None
+                        changed += 1
+                    elif current_paid > 0 and not inv.is_paid and partial_total == 0.0:
+                        # Eşleşen GELIR yok (silindi) → kısmi ödemeyi sıfırla
+                        inv.paid_amount = 0.0
+                        inv.paid_date = None
+                        changed += 1
+                # Manuel kısmi (0 < paid_amount < amount, is_paid=False, eşleşme yok) → dokunma
+
+            if changed > 0:
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"auto_detect_paid_invoices hatası: {e}")
+        finally:
+            session.close()
+        return changed

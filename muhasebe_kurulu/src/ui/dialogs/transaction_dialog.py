@@ -98,6 +98,20 @@ class TransactionDialog(QDialog):
         ])
         self.type_combo.currentTextChanged.connect(self.on_type_changed)
         form_layout.addRow("📋 İşlem Türü: <span style=\"color:#d32f2f\">*</span>", self.type_combo)
+
+        # Vade Tarihi (sadece Kesilen Fatura için görünür)
+        self.due_date_label = QLabel("📅 Vade Tarihi (30 gün):")
+        self.due_date_input = QDateEdit()
+        self.due_date_input.setCalendarPopup(True)
+        self.due_date_input.setDate(QDate.currentDate().addDays(30))
+        self.due_date_input.setMinimumHeight(35)
+        self.due_date_input.setStyleSheet("background-color: #FFF9C4;")
+        self.due_date_label.setVisible(False)
+        self.due_date_input.setVisible(False)
+        form_layout.addRow(self.due_date_label, self.due_date_input)
+
+        # Tarih değişince vade tarihini otomatik güncelle
+        self.date_input.dateChanged.connect(self._update_due_date_from_invoice_date)
         
         # Ödeme Yöntemi
         self.payment_method_combo = QComboBox()
@@ -499,8 +513,20 @@ class TransactionDialog(QDialog):
         finally:
             session.close()
     
+    def _update_due_date_from_invoice_date(self):
+        """Fatura tarihi değişince vade tarihini otomatik güncelle (sadece KESILEN_FATURA için)"""
+        if self.type_combo.currentText() == "KESILEN_FATURA":
+            self.due_date_input.setDate(self.date_input.date().addDays(30))
+
     def on_type_changed(self, transaction_type):
         """İşlem türü değiştiğinde"""
+        # Vade tarihi alanını göster/gizle
+        is_kesilen = transaction_type == "KESILEN_FATURA"
+        self.due_date_label.setVisible(is_kesilen)
+        self.due_date_input.setVisible(is_kesilen)
+        if is_kesilen:
+            # Otomatik 30 gün vade ata
+            self.due_date_input.setDate(self.date_input.date().addDays(30))
         # Varsayılan müşteri alanı durumu
         self.customer_input.setReadOnly(False)
 
@@ -606,6 +632,17 @@ class TransactionDialog(QDialog):
                 
                 # İşlem türü
                 self.type_combo.setCurrentText(transaction.transaction_type.name)
+
+                # Vade tarihi (Kesilen Fatura için)
+                if transaction.transaction_type.name == "KESILEN_FATURA":
+                    if hasattr(transaction, 'due_date') and transaction.due_date:
+                        self.due_date_input.setDate(QDate(transaction.due_date.year,
+                                                          transaction.due_date.month,
+                                                          transaction.due_date.day))
+                    else:
+                        self.due_date_input.setDate(QDate(transaction.transaction_date.year,
+                                                          transaction.transaction_date.month,
+                                                          transaction.transaction_date.day).addDays(30))
                 
                 # Ödeme yöntemi
                 payment_method_index = self.payment_method_combo.findData(transaction.payment_method.name)
@@ -722,7 +759,11 @@ class TransactionDialog(QDialog):
                 else:
                     QMessageBox.warning(self, "Uyarı", "Fatura işlemleri için cari hesap seçmelisiniz!")
                     return
-                
+
+                # Kesilen fatura için vade tarihi ekle (otomatik 30 gün)
+                if transaction_type == TransactionType.KESILEN_FATURA:
+                    kwargs['due_date'] = self.due_date_input.date().toPyDate()
+
                 # Eğer ödeme yöntemi BANKA ise banka da ekle (Nakit değilse)
                 if payment_method == PaymentMethod.BANKA and self.bank_combo.currentData() and self.bank_combo.currentData() != "NAKIT":
                     kwargs['bank_account_id'] = self.bank_combo.currentData()
