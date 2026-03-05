@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from src.database.db import init_db, close_db
 from src.ui.dialogs.login_dialog import LoginDialog
 from src.ui.main_window import MainWindow
@@ -79,8 +79,8 @@ def main():
             main_window = MainWindow(user)
             main_window.show()
 
-            # Güncelleme kontrolü (arka planda, 2 sn sonra)
-            check_and_update(main_window)
+            # Güncelleme kontrolü (event loop başladıktan 3 sn sonra)
+            QTimer.singleShot(3000, lambda: check_and_update(main_window))
 
             sys.exit(app.exec_())
         else:
