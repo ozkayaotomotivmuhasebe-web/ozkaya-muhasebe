@@ -51,6 +51,46 @@ def _run_migrations():
             except Exception:
                 pass
 
+        # transactions.due_date
+        try:
+            conn.execute(text("SELECT due_date FROM transactions LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE transactions ADD COLUMN due_date DATE"))
+                conn.commit()
+            except Exception:
+                pass
+
+        # transactions.is_paid
+        try:
+            conn.execute(text("SELECT is_paid FROM transactions LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE transactions ADD COLUMN is_paid BOOLEAN NOT NULL DEFAULT 0"))
+                conn.commit()
+            except Exception:
+                pass
+
+        # transactions.paid_date
+        try:
+            conn.execute(text("SELECT paid_date FROM transactions LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE transactions ADD COLUMN paid_date DATE"))
+                conn.commit()
+            except Exception:
+                pass
+
+        # transactions.paid_amount
+        try:
+            conn.execute(text("SELECT paid_amount FROM transactions LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE transactions ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0.0"))
+                conn.commit()
+            except Exception:
+                pass
+
 def init_db():
     """Tüm tabloları oluştur"""
     Base.metadata.create_all(bind=engine)
