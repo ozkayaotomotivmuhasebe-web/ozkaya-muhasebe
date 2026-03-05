@@ -151,10 +151,10 @@ class TransactionService:
             if cari_id:
                 cari = session.query(Cari).filter(Cari.id == cari_id).first()
                 if cari:
-                    if transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
-                        cari.balance += amount  # Alacak arttı (müşteriden alacağımız para)
-                    elif transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
-                        cari.balance -= amount  # Borç arttı (tedarikçiye borcumuz)
+                    if transaction_type in [TransactionType.GELIR, TransactionType.GELEN_FATURA]:
+                        cari.balance += amount  # Alacak arttı (ödeme/gelen fatura)
+                    elif transaction_type in [TransactionType.GIDER, TransactionType.KESILEN_FATURA]:
+                        cari.balance -= amount  # Borç arttı (gider/kesilen fatura)
                     elif payment_method == PaymentMethod.NAKIT:
                         # NAKIT ödeme seçilmiş cari ile işlem
                         cari.balance -= amount if transaction_type == TransactionType.GIDER else amount
@@ -299,9 +299,9 @@ class TransactionService:
         if transaction.cari_id:
             cari = session.query(Cari).filter(Cari.id == transaction.cari_id).first()
             if cari:
-                if transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
+                if transaction_type in [TransactionType.GELIR, TransactionType.GELEN_FATURA]:
                     cari.balance -= amount  # Alacağı geri al
-                elif transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
+                elif transaction_type in [TransactionType.GIDER, TransactionType.KESILEN_FATURA]:
                     cari.balance += amount  # Borcu geri al
         
         # Nakit çekim geri al (banka bakiyesi artar)

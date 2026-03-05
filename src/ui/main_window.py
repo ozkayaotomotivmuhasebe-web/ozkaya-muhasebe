@@ -4815,14 +4815,23 @@ Pasif Kullanıcı: {total_users - active_users}
                 self.table_cari_extract.setItem(i, 2, QTableWidgetItem(trans.description))
                 
                 # Borç/Alacak hesaplama
-                if trans.transaction_type.value in ['GIDER', 'GELEN_FATURA']:
+                if trans.transaction_type.value in [
+                    'GIDER', 'KESILEN_FATURA',
+                    'KREDI_ODEME', 'KREDI_KARTI_ODEME',
+                    'EK_HESAP_FAIZLERI', 'KREDI_DOSYA_MASRAFI', 'EKSPERTIZ_UCRETI'
+                ]:
                     debt = trans.amount
                     credit = 0
                     running_balance -= trans.amount
-                else:
+                elif trans.transaction_type.value in [
+                    'GELIR', 'GELEN_FATURA', 'KREDI_CEKIMI'
+                ]:
                     debt = 0
                     credit = trans.amount
                     running_balance += trans.amount
+                else:
+                    debt = 0
+                    credit = 0
                 
                 self.table_cari_extract.setItem(i, 3, QTableWidgetItem(f"{format_tr(debt)} ₺" if debt > 0 else "-"))
                 self.table_cari_extract.setItem(i, 4, QTableWidgetItem(f"{format_tr(credit)} ₺" if credit > 0 else "-"))
