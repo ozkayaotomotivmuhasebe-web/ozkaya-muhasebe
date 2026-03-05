@@ -4822,13 +4822,13 @@ Pasif Kullanıcı: {total_users - active_users}
                 ]:
                     debt = trans.amount
                     credit = 0
-                    running_balance -= trans.amount
+                    running_balance += trans.amount
                 elif trans.transaction_type.value in [
                     'GELIR', 'GELEN_FATURA', 'KREDI_CEKIMI'
                 ]:
                     debt = 0
                     credit = trans.amount
-                    running_balance += trans.amount
+                    running_balance -= trans.amount
                 else:
                     debt = 0
                     credit = 0
