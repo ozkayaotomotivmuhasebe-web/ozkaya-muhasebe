@@ -31,6 +31,7 @@ class User(Base):
     can_view_payroll_records = Column(Boolean, default=True)
     can_view_settings = Column(Boolean, default=True)
     can_view_admin_panel = Column(Boolean, default=False)
+    can_view_kira_takip = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
     last_login = Column(DateTime, nullable=True)

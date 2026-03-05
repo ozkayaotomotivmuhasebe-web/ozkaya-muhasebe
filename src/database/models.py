@@ -300,6 +300,10 @@ class Transaction(Base):
     
     # Ek bilgiler
     notes = Column(Text, nullable=True)
+    due_date = Column(Date, nullable=True)    # Vade tarihi (Kesilen Fatura için otomatik 30 gün)
+    is_paid = Column(Boolean, default=False)  # Tam ödendi mi?
+    paid_date = Column(Date, nullable=True)   # Son ödeme tarihi
+    paid_amount = Column(Float, default=0.0)  # Kısmi/tam ödeme tutarı
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     

@@ -1,5 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtCore import Qt
 from src.database.db import init_db, close_db
 from src.ui.dialogs.login_dialog import LoginDialog
 from src.ui.main_window import MainWindow
@@ -8,6 +9,10 @@ from src.services.admin_service import AdminService
 from src.utils.app_icon import get_app_icon
 from src.utils.updater import check_and_update
 import config
+
+# High-DPI desteği — QApplication oluşturulmadan önce ayarlanmalı
+QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
 
 def create_admin_account():
@@ -60,7 +65,7 @@ def main():
             padding: 6px 10px;
             font-size: 10pt;
         }
-        QHeaderView::section { padding: 6px; font-size: 9pt; }
+        QHeaderView::section { padding: 6px; font-size: 10pt; font-weight: bold; }
         QTableWidget { font-size: 10pt; }
     """)
     

@@ -49,7 +49,8 @@ class AdminService:
                 can_view_bulk_payroll=True,
                 can_view_payroll_records=True,
                 can_view_settings=True,
-                can_view_admin_panel=(role == 'admin')
+                can_view_admin_panel=(role == 'admin'),
+                can_view_kira_takip=True
             )
             session.add(new_user)
             session.commit()
