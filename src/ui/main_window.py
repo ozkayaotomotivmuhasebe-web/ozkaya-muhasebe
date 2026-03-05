@@ -4836,7 +4836,26 @@ Pasif Kullanıcı: {total_users - active_users}
                 self.table_cari_extract.setItem(i, 3, QTableWidgetItem(f"{format_tr(debt)} ₺" if debt > 0 else "-"))
                 self.table_cari_extract.setItem(i, 4, QTableWidgetItem(f"{format_tr(credit)} ₺" if credit > 0 else "-"))
                 self.table_cari_extract.setItem(i, 5, QTableWidgetItem(f"{format_tr(running_balance)} ₺"))
-            
+
+            # En alta TOPLAM / KALAN BAKİYE satırı ekle
+            total_row = len(transactions)
+            self.table_cari_extract.setRowCount(total_row + 1)
+            from PyQt5.QtGui import QFont, QColor
+            from PyQt5.QtCore import Qt as _Qt
+            bold_font = QFont()
+            bold_font.setBold(True)
+            bold_font.setPointSize(10)
+            summary_bg = QColor("#1565C0")  # koyu mavi
+            summary_fg = QColor("#FFFFFF")
+            labels = ["", "", "KALAN BAKİYE", "", "", f"{format_tr(running_balance)} ₺"]
+            for col, text in enumerate(labels):
+                item = QTableWidgetItem(text)
+                item.setFont(bold_font)
+                item.setBackground(summary_bg)
+                item.setForeground(summary_fg)
+                item.setTextAlignment(_Qt.AlignCenter)
+                self.table_cari_extract.setItem(total_row, col, item)
+
             self._resize_table(self.table_cari_extract, stretch_col=2)
             self.load_column_widths(self.table_cari_extract, "cari_extract")
         except Exception as e:
