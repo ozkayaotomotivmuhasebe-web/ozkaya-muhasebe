@@ -9,7 +9,7 @@ from src.services.transaction_service import TransactionService
 from src.services.cari_service import CariService
 from src.services.bank_service import BankService
 from src.database.db import SessionLocal
-from src.database.models import CreditCard, Loan
+from src.database.models import CreditCard, Loan, BankAccount
 from datetime import date
 
 
@@ -214,12 +214,25 @@ class TransactionDialog(QDialog):
         self.loan_payment_combo = QComboBox()
         self.loan_payment_combo.setMinimumHeight(35)
         self.loan_payment_combo.addItem("-- Ödeme Yapılacak Kredi Seçiniz --", None)
-        self.load_loans_for_payment()
+        self.load_loans_for_payment()  # İlk yüklemede tüm kredileri göster
         self.loan_payment_combo.currentIndexChanged.connect(self.on_loan_payment_changed)
         self.account_layout.addWidget(QLabel("🏦 Ödeme Yapılacak Kredi:"))
         self.account_layout.addWidget(self.loan_payment_combo)
         self.loan_payment_combo.setVisible(False)
         self.account_layout.itemAt(self.account_layout.count() - 2).widget().setVisible(False)
+
+        # Kredi ödemede paranın çıkacağı banka hesabı
+        self.loan_source_bank_combo = QComboBox()
+        self.loan_source_bank_combo.setMinimumHeight(35)
+        self.loan_source_bank_combo.addItem("-- Ödemenin Çıkacağı Banka Hesabını Seçiniz --", None)
+        self.load_payment_source_bank_accounts()
+        self.account_layout.addWidget(QLabel("🏦 Ödemenin Çıkacağı Banka Hesabı:"))
+        self.account_layout.addWidget(self.loan_source_bank_combo)
+        self.loan_source_bank_combo.setVisible(False)
+        self.account_layout.itemAt(self.account_layout.count() - 2).widget().setVisible(False)
+        
+        # Banka combosu için bağlantı ekle (KREDI_ODEME işleminde banka değişince kredileri güncelle)
+        self.bank_combo.currentIndexChanged.connect(self.on_loan_bank_changed)
         
         self.account_group.setLayout(self.account_layout)
         form_layout.addRow(self.account_group)
@@ -303,9 +316,79 @@ class TransactionDialog(QDialog):
                 if index >= 0:
                     self.bank_combo.setCurrentIndex(index)
 
+            try:
+                self.bank_combo.currentIndexChanged.disconnect(self.on_loan_bank_name_changed)
+            except Exception:
+                pass
+            try:
+                self.bank_combo.currentIndexChanged.disconnect(self.on_source_bank_changed)
+            except Exception:
+                pass
+            self.bank_combo.currentIndexChanged.connect(self.on_source_bank_changed)
+
+            if hasattr(self, 'loan_source_bank_combo'):
+                self.load_payment_source_bank_accounts()
+
             self.refresh_destination_bank_accounts()
         except Exception as e:
             print(f"Banka yükleme hatası: {e}")
+
+    def load_payment_source_bank_accounts(self):
+        """Kredi ödemesinde kullanılacak kaynak banka hesaplarını yükle"""
+        if not hasattr(self, 'loan_source_bank_combo'):
+            return
+        try:
+            previous_source = self.loan_source_bank_combo.currentData()
+            self.loan_source_bank_combo.clear()
+            self.loan_source_bank_combo.addItem("-- Ödemenin Çıkacağı Banka Hesabını Seçiniz --", None)
+
+            banks = getattr(self, '_bank_accounts', [])
+            if not banks:
+                banks = BankService.get_accounts(self.user_id) or []
+                self._bank_accounts = banks
+
+            for bank in banks:
+                self.loan_source_bank_combo.addItem(
+                    f"{bank.bank_name} - {bank.account_number} ({bank.balance:.2f} {bank.currency})",
+                    bank.id
+                )
+
+            if previous_source:
+                index = self.loan_source_bank_combo.findData(previous_source)
+                if index >= 0:
+                    self.loan_source_bank_combo.setCurrentIndex(index)
+        except Exception as e:
+            print(f"Ödeme kaynağı banka yükleme hatası: {e}")
+    
+    def load_loan_bank_names(self):
+        """Krediler tablosundaki banka adlarını yükle (KREDI_ODEME için)"""
+        session = SessionLocal()
+        try:
+            bank_names = session.query(Loan.bank_name).filter(
+                Loan.user_id == self.user_id,
+                Loan.is_active == True
+            ).distinct().order_by(Loan.bank_name).all()
+            
+            self.bank_combo.clear()
+            self.bank_combo.addItem("-- Banka Seçiniz --", None)
+            
+            for (bank_name,) in bank_names:
+                self.bank_combo.addItem(bank_name, bank_name)
+            
+            try:
+                self.bank_combo.currentIndexChanged.disconnect(self.on_source_bank_changed)
+            except Exception:
+                pass
+            try:
+                self.bank_combo.currentIndexChanged.disconnect(self.on_loan_bank_name_changed)
+            except Exception:
+                pass
+            self.bank_combo.currentIndexChanged.connect(self.on_loan_bank_name_changed)
+            
+        except Exception as e:
+            print(f"Banka adları yükleme hatası: {e}")
+        finally:
+            session.close()
 
     def refresh_destination_bank_accounts(self):
         """Transfer hedef hesap listesini kaynak hesaba göre güncelle"""
@@ -390,14 +473,24 @@ class TransactionDialog(QDialog):
         finally:
             session.close()
 
-    def load_loans_for_payment(self):
-        """Kredileri ödeme için yükle (kalan bakiyesi olanları göster)"""
+    def load_loans_for_payment(self, bank_id=None):
+        """Kredileri ödeme için yükle (kalan bakiyesi olanları göster)
+        
+        Args:
+            bank_id: Belirli banka için kredileri filtrelemek istiyorsak banka ID'si
+        """
         session = SessionLocal()
         try:
-            loans = session.query(Loan).filter(
+            query = session.query(Loan).filter(
                 Loan.user_id == self.user_id,
                 Loan.is_active == True
-            ).all()
+            )
+            
+            # Banka ID verilmişse filtrele
+            if bank_id:
+                query = query.filter(Loan.bank_id == bank_id)
+            
+            loans = query.all()
             for loan in loans:
                 total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
                 remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
@@ -411,7 +504,73 @@ class TransactionDialog(QDialog):
             print(f"Kredi ödeme yükleme hatası: {e}")
         finally:
             session.close()
+    
+    def load_loans_by_bank(self, bank_id):
+        """Seçilen bankaya ait kredileri güncelle (KREDI_ODEME için)"""
+        if not bank_id or bank_id == "NAKIT":
+            # Banka seçilmemişse kredileri temizle
+            self.loan_payment_combo.clear()
+            self.loan_payment_combo.addItem("-- Ödeme Yapılacak Kredi Seçiniz --", None)
+            return
+        
+        # Seçili kredi ID'sini sakla (varsa)
+        previous_loan = self.loan_payment_combo.currentData()
+        
+        # Kredi listesini temizle ve yeniden yükle
+        self.loan_payment_combo.clear()
+        self.loan_payment_combo.addItem("-- Ödeme Yapılacak Kredi Seçiniz --", None)
+        
+        session = SessionLocal()
+        try:
+            # bank_id doğrudan banka adı olarak gelir (KREDI_ODEME işleminde)
+            bank_name = bank_id
+            
+            # Bu banka adına ait aktif kredileri getir
+            loans = session.query(Loan).filter(
+                Loan.user_id == self.user_id,
+                Loan.bank_name == bank_name,
+                Loan.is_active == True
+            ).order_by(Loan.loan_name).all()
+            
+            for loan in loans:
+                total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
+                remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
+                if remaining_amount <= 0:
+                    continue
+                self.loan_payment_combo.addItem(
+                    f"{loan.loan_name} (Kalan: {remaining_amount:.2f})",
+                    loan.id
+                )
+            
+            # Eğer önceki kredi bu bankada varsa seçili tut
+            if previous_loan:
+                index = self.loan_payment_combo.findData(previous_loan)
+                if index >= 0:
+                    self.loan_payment_combo.setCurrentIndex(index)
+        except Exception as e:
+            print(f"Bankaya ait kredi yükleme hatası: {e}")
+        finally:
+            session.close()
 
+    def on_loan_bank_name_changed(self):
+        """KREDI_ODEME işleminde banka adı seçildiğinde kredileri güncelle"""
+        if self.type_combo.currentText() != "KREDI_ODEME":
+            return
+        bank_name = self.bank_combo.currentData()
+        
+        # Müşteri ünvanı olarak banka adını ayarla
+        if bank_name:
+            self.customer_input.setText(bank_name)
+        
+        self.load_loans_by_bank(bank_name)
+    
+    def on_loan_bank_changed(self):
+        """KREDI_ODEME işleminde banka seçildiğinde kredileri güncelle (eski sistem için)"""
+        if self.type_combo.currentText() != "KREDI_ODEME":
+            return
+        bank_id = self.bank_combo.currentData()
+        self.load_loans_by_bank(bank_id)
+    
     def on_loan_payment_changed(self, index=None):
         """KREDI_ODEME için müşteri alanını seçilen krediye göre otomatik eşleştir"""
         if self.type_combo.currentText() != "KREDI_ODEME":
@@ -423,7 +582,22 @@ class TransactionDialog(QDialog):
         try:
             loan = session.query(Loan).filter(Loan.id == loan_id, Loan.user_id == self.user_id).first()
             if loan:
-                self.customer_input.setText(loan.loan_name)
+                # Müşteri ünvanı = banka adı
+                self.customer_input.setText(loan.bank_name)
+                
+                # Banka adına göre banka combosu'nda seç
+                if loan.bank_name:
+                    for i in range(self.bank_combo.count()):
+                        if self.bank_combo.itemData(i) == loan.bank_name:
+                            # Bağlantıyı geçici olarak kes
+                            try:
+                                self.bank_combo.currentIndexChanged.disconnect(self.on_loan_bank_name_changed)
+                            except:
+                                pass
+                            self.bank_combo.setCurrentIndex(i)
+                            # Bağlantıyı geri kur
+                            self.bank_combo.currentIndexChanged.connect(self.on_loan_bank_name_changed)
+                            break
         finally:
             session.close()
 
@@ -520,17 +694,23 @@ class TransactionDialog(QDialog):
 
     def on_type_changed(self, transaction_type):
         """İşlem türü değiştiğinde"""
-        # Vade tarihi alanını göster/gizle
         is_kesilen = transaction_type == "KESILEN_FATURA"
         self.due_date_label.setVisible(is_kesilen)
         self.due_date_input.setVisible(is_kesilen)
         if is_kesilen:
-            # Otomatik 30 gün vade ata
             self.due_date_input.setDate(self.date_input.date().addDays(30))
-        # Varsayılan müşteri alanı durumu
+
         self.customer_input.setReadOnly(False)
 
-        # TRANSFER işlemlerinde ödeme yöntemi zorunlu TRANSFER
+        bank_label = self.account_layout.itemAt(2).widget()
+        if transaction_type == "KREDI_ODEME":
+            bank_label.setText("🏦 Kredinin Bankası:")
+            self.load_loan_bank_names()
+            self.load_payment_source_bank_accounts()
+        else:
+            bank_label.setText("🏦 Banka Hesabı:")
+            self.load_bank_accounts()
+
         if transaction_type == "TRANSFER":
             idx = self.payment_method_combo.findData("TRANSFER")
             if idx >= 0:
@@ -538,24 +718,19 @@ class TransactionDialog(QDialog):
             self._update_transfer_customer_name()
             self.customer_input.setReadOnly(True)
         elif transaction_type in ["KESILEN_FATURA", "GELEN_FATURA"]:
-            # Fatura işlemlerinde varsayılan CARI
             idx = self.payment_method_combo.findData("CARI")
             if idx >= 0:
                 self.payment_method_combo.setCurrentIndex(idx)
         elif transaction_type == "GELIR":
-            # Gelir için varsayılan BANKA
             idx = self.payment_method_combo.findData("BANKA")
             if idx >= 0:
                 self.payment_method_combo.setCurrentIndex(idx)
         elif transaction_type == "KREDI_KARTI_ODEME":
-            # Kredi kartı ödemede kaynak BANKA
             idx = self.payment_method_combo.findData("BANKA")
             if idx >= 0:
                 self.payment_method_combo.setCurrentIndex(idx)
         elif transaction_type == "KREDI_ODEME":
-            # Kredi ödemede seçilen ödeme yöntemi korunur, kredi seçimi zorunludur
             self.customer_input.setReadOnly(True)
-            self.on_loan_payment_changed()
 
         self.on_payment_method_changed()
     
@@ -589,16 +764,22 @@ class TransactionDialog(QDialog):
                 self.account_layout.itemAt(7).widget().setVisible(True)  # Kart Combo
             self.account_layout.itemAt(8).widget().setVisible(True)  # Ödeme Yapılacak Kart Label
             self.account_layout.itemAt(9).widget().setVisible(True)  # Ödeme Yapılacak Kart Combo
-        # KREDI_ODEME: sadece ödeme yöntemi hesabı + ödeme yapılacak kredi
+        # KREDI_ODEME: Banka adı seçimi + ödeme yöntemi hesabı
         elif transaction_type == "KREDI_ODEME":
+            self.account_layout.itemAt(2).widget().setVisible(True)   # Kredinin bankası label
+            self.account_layout.itemAt(3).widget().setVisible(True)   # Kredinin bankası combo
+            self.account_layout.itemAt(10).widget().setVisible(True)  # Kredi label
+            self.account_layout.itemAt(11).widget().setVisible(True)  # Kredi combo
+
             if payment_method == "BANKA":
-                self.account_layout.itemAt(2).widget().setVisible(True)  # Banka Label
-                self.account_layout.itemAt(3).widget().setVisible(True)  # Banka Combo
+                self.account_layout.itemAt(12).widget().setVisible(True)  # Kaynak banka label
+                self.account_layout.itemAt(13).widget().setVisible(True)  # Kaynak banka combo
+            elif payment_method == "CARI":
+                self.account_layout.itemAt(0).widget().setVisible(True)   # Cari label
+                self.account_layout.itemAt(1).widget().setVisible(True)   # Cari combo
             elif payment_method == "KREDI_KARTI":
-                self.account_layout.itemAt(6).widget().setVisible(True)  # Kart Label
-                self.account_layout.itemAt(7).widget().setVisible(True)  # Kart Combo
-            self.account_layout.itemAt(10).widget().setVisible(True)  # Kredi Label
-            self.account_layout.itemAt(11).widget().setVisible(True)  # Kredi Combo
+                self.account_layout.itemAt(6).widget().setVisible(True)   # Kart label
+                self.account_layout.itemAt(7).widget().setVisible(True)   # Kart combo
         else:
             # Diğer işlemlerde TRANSFER hariç her zaman cari görünür
             self.account_layout.itemAt(0).widget().setVisible(True)  # Cari Label
@@ -707,6 +888,11 @@ class TransactionDialog(QDialog):
                             if item_text.startswith(transaction.customer_name):
                                 self.loan_payment_combo.setCurrentIndex(i)
                                 break
+
+                    if transaction.bank_account_id:
+                        index = self.loan_source_bank_combo.findData(transaction.bank_account_id)
+                        if index >= 0:
+                            self.loan_source_bank_combo.setCurrentIndex(index)
             
             session.close()
         except Exception as e:
@@ -822,11 +1008,11 @@ class TransactionDialog(QDialog):
                     return
 
                 if payment_method == PaymentMethod.BANKA:
-                    bank_id = self.bank_combo.currentData()
-                    if not bank_id or bank_id == "NAKIT":
-                        QMessageBox.warning(self, "Uyardı", "Hangi banka hesabından ödeyeceğinizi seçmelisiniz!")
+                    source_bank_id = self.loan_source_bank_combo.currentData()
+                    if not source_bank_id:
+                        QMessageBox.warning(self, "Uyarı", "Ödemenin çıkacağı banka hesabını seçmelisiniz!")
                         return
-                    kwargs['bank_account_id'] = bank_id
+                    kwargs['bank_account_id'] = source_bank_id
                 elif payment_method == PaymentMethod.CARI:
                     if not self.cari_combo.currentData():
                         QMessageBox.warning(self, "Uyarı", "Cari hesaptan ödeme için cari seçmelisiniz!")
@@ -837,6 +1023,9 @@ class TransactionDialog(QDialog):
                         QMessageBox.warning(self, "Uyarı", "Kredi kartı ile ödeme için kart seçmelisiniz!")
                         return
                     kwargs['credit_card_id'] = self.card_combo.currentData()
+                elif payment_method == PaymentMethod.NAKIT:
+                    pass
+                
                 kwargs['notes'] = f"loan_id:{self.loan_payment_combo.currentData()}"
             else:
                 # Diğer işlemler için NAKIT/KREDI_KARTI seçildiğinde cari göster

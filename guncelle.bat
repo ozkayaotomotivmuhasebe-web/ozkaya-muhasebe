@@ -10,7 +10,7 @@ echo Yeni sürüm kontrol ediliyor...
 echo.
 
 REM GitHub API ile güncel sürümün download URL'sini al
-for /f "delims=" %%U in ('powershell -NoProfile -Command "try { $r=(Invoke-WebRequest -Uri 'https://api.github.com/repos/buraktekin060-glitch/ozkaya-muhasebe/releases/latest' -UseBasicParsing).Content | ConvertFrom-Json; ($r.assets | Where-Object { $_.name -eq 'Muhasebe.exe' }).browser_download_url } catch { '' }"') do set "EXE_URL=%%U"
+for /f "delims=" %%U in ('powershell -NoProfile -Command "try { $r=(Invoke-WebRequest -Uri 'https://api.github.com/repos/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/latest' -UseBasicParsing).Content | ConvertFrom-Json; ($r.assets | Where-Object { $_.name -eq 'Muhasebe.exe' }).browser_download_url } catch { '' }"') do set "EXE_URL=%%U"
 
 if "%EXE_URL%"=="" (
     echo HATA: Guncel surum URL'si alinamadi. Internet baglantinizi kontrol edin.
