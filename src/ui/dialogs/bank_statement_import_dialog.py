@@ -9,6 +9,7 @@ from src.database.models import TransactionType, PaymentMethod
 from datetime import datetime
 import openpyxl
 from difflib import SequenceMatcher
+import re
 
 
 class BankStatementImportDialog(QDialog):
@@ -152,22 +153,79 @@ class BankStatementImportDialog(QDialog):
             self.file_label.setText(file_path.split("\\")[-1])
             self.file_label.setStyleSheet("color: #333;")
     
+    def _normalize_turkish_text(self, text):
+        if not text:
+            return ""
+        mapping = {
+            'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ı': 'i', 'I': 'i',
+            'İ': 'i', 'ö': 'o', 'Ö': 'o', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u'
+        }
+        result = str(text).strip().lower()
+        for old_char, new_char in mapping.items():
+            result = result.replace(old_char, new_char)
+        result = re.sub(r'[^a-z0-9\s]', ' ', result)
+        result = re.sub(r'\s+', ' ', result).strip()
+        return result
+
+    def _extract_meaningful_tokens(self, text):
+        stop_words = {
+            'bank', 'banka', 'hesap', 'hesabi', 'sube', 'subesi', 'odeme', 'odemesi',
+            'kredi', 'kart', 'karti', 'havale', 'eft', 'swift', 'islem', 'masraf',
+            'komisyon', 'faiz', 'taksit', 'nakit', 'virman', 'para', 'gonderim',
+            'ltd', 'limited', 'sti', 'sirketi', 'anonim', 'as', 'tic', 'ticaret', 'san', 'sanayi'
+        }
+        normalized = self._normalize_turkish_text(text)
+        return [token for token in normalized.split() if len(token) >= 2 and token not in stop_words]
+
     def find_best_cari_match(self, transaction_name):
-        """En iyi müşteri eşleştirmesini bul (fuzzy matching)"""
+        """Sadece yüksek güvenli müşteri eşleşmelerini otomatik seç."""
+        normalized_transaction = self._normalize_turkish_text(transaction_name)
+        transaction_tokens = set(self._extract_meaningful_tokens(transaction_name))
+
+        if not normalized_transaction or not transaction_tokens:
+            return None
+
         best_match = None
-        best_score = 0.6  # Minimum 60% benzerlik
-        
+        best_score = 0.0
+        second_best_score = 0.0
+
         for cari in self.caris:
-            # Basit string benzerlik kontrolü
-            similarity = SequenceMatcher(None, 
-                                        transaction_name.lower(), 
-                                        cari.name.lower()).ratio()
-            
-            if similarity > best_score:
-                best_score = similarity
+            cari_name = (getattr(cari, 'name', '') or '').strip()
+            if not cari_name:
+                continue
+
+            normalized_cari = self._normalize_turkish_text(cari_name)
+            cari_tokens = set(self._extract_meaningful_tokens(cari_name))
+            if not cari_tokens:
+                continue
+
+            if normalized_transaction == normalized_cari:
+                return cari
+
+            if len(cari_tokens) == 1:
+                continue
+
+            common_tokens = transaction_tokens & cari_tokens
+            if common_tokens == cari_tokens:
+                return cari
+            if len(common_tokens) < 2:
+                continue
+
+            token_score = len(common_tokens) / len(cari_tokens)
+            similarity = SequenceMatcher(None, normalized_transaction, normalized_cari).ratio()
+            combined_score = (token_score * 0.75) + (similarity * 0.25)
+
+            if combined_score > best_score:
+                second_best_score = best_score
+                best_score = combined_score
                 best_match = cari
-        
-        return best_match
+            elif combined_score > second_best_score:
+                second_best_score = combined_score
+
+        if best_score >= 0.75 and (best_score - second_best_score) >= 0.10:
+            return best_match
+
+        return None
     
     def import_excel(self):
         """Excel dosyasını oku ve işlem önizlemesi oluştur"""

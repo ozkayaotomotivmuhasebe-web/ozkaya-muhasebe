@@ -462,7 +462,6 @@ class AdvancedBankImportDialog(QDialog):
         """Türkçe karakterleri normalize et (İ→i, ç→c, etc)."""
         if not text:
             return ""
-        # Turkish character mapping
         turkish_map = {
             'ç': 'c', 'Ç': 'c',
             'ğ': 'g', 'Ğ': 'g',
@@ -472,11 +471,24 @@ class AdvancedBankImportDialog(QDialog):
             'ş': 's', 'Ş': 's',
             'ü': 'u', 'Ü': 'u'
         }
-        result = str(text).lower()
+        result = str(text).strip().lower()
         for turkish_char, replacement in turkish_map.items():
             result = result.replace(turkish_char.lower(), replacement)
             result = result.replace(turkish_char.upper(), replacement)
+        result = re.sub(r'[^a-z0-9\s]', ' ', result)
+        result = re.sub(r'\s+', ' ', result).strip()
         return result
+
+    def _extract_meaningful_tokens(self, text):
+        """Metinden eşleştirme için anlamlı kelimeleri çıkar."""
+        stop_words = {
+            'bank', 'banka', 'hesap', 'hesabi', 'sube', 'subesi', 'odeme', 'odemesi',
+            'kredi', 'kart', 'karti', 'kredi_karti', 'havale', 'eft', 'swift', 'islem',
+            'masraf', 'komisyon', 'faiz', 'taksit', 'nakit', 'virman', 'para', 'gonderim',
+            'ltd', 'limited', 'sti', 'sirketi', 'anonim', 'as', 'tic', 'ticaret', 'san', 'sanayi'
+        }
+        normalized = self._normalize_turkish_text(text)
+        return [token for token in normalized.split() if len(token) >= 2 and token not in stop_words]
 
     def _determine_payment_method(self, payment_text, *fallback_texts):
         """Ödeme metninden ödeme yöntemi belirle (KK/Nakit/Banka)."""
@@ -837,20 +849,63 @@ class AdvancedBankImportDialog(QDialog):
             QMessageBox.critical(self, "Hata", f"Veri yükleme hatası: {str(e)}")
     
     def find_best_cari_match(self, transaction_name):
-        """Fuzzy matching ile en iyi müşteri eşleştirmesini bul"""
+        """Sadece yüksek güvenli müşteri eşleşmelerini otomatik seç."""
+        if not getattr(self, 'caris', None):
+            return None
+
+        normalized_transaction = self._normalize_turkish_text(transaction_name)
+        transaction_tokens = set(self._extract_meaningful_tokens(transaction_name))
+
+        if not normalized_transaction or not transaction_tokens:
+            return None
+
         best_match = None
-        best_score = 0.6
-        
+        best_score = 0.0
+        second_best_score = 0.0
+
         for cari in self.caris:
-            similarity = SequenceMatcher(None,
-                transaction_name.lower(),
-                cari.name.lower()).ratio()
-            
-            if similarity > best_score:
-                best_score = similarity
+            cari_name = (getattr(cari, 'name', '') or '').strip()
+            if not cari_name:
+                continue
+
+            normalized_cari = self._normalize_turkish_text(cari_name)
+            cari_tokens = set(self._extract_meaningful_tokens(cari_name))
+            if not cari_tokens:
+                continue
+
+            if normalized_transaction == normalized_cari:
+                return cari
+
+            # Tek kelimelik belirsiz isimleri otomatik seçme.
+            if len(cari_tokens) == 1:
+                continue
+
+            common_tokens = transaction_tokens & cari_tokens
+
+            # Tüm cari adı işlem metninde açıkça geçiyorsa direkt eşleştir.
+            if common_tokens == cari_tokens:
+                return cari
+
+            # En az iki anlamlı ortak kelime yoksa otomatik seçme.
+            if len(common_tokens) < 2:
+                continue
+
+            token_score = len(common_tokens) / len(cari_tokens)
+            similarity = SequenceMatcher(None, normalized_transaction, normalized_cari).ratio()
+            combined_score = (token_score * 0.75) + (similarity * 0.25)
+
+            if combined_score > best_score:
+                second_best_score = best_score
+                best_score = combined_score
                 best_match = cari
-        
-        return best_match
+            elif combined_score > second_best_score:
+                second_best_score = combined_score
+
+        # Belirsiz veya birbirine çok yakın adaylarda seçim yapma.
+        if best_score >= 0.75 and (best_score - second_best_score) >= 0.10:
+            return best_match
+
+        return None
     
     def find_cari_by_name(self, name):
         """Adı ile müşteri bul"""
