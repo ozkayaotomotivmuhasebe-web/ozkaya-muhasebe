@@ -1,8 +1,7 @@
-﻿from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit, 
-                           QPushButton, QMessageBox)
-from PyQt5.QtCore import Qt
+﻿from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit,
+                           QPushButton, QMessageBox, QCheckBox, QApplication)
+from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication
 from src.services.auth_service import AuthService
 from src.utils.app_icon import get_app_icon
 import config
@@ -13,10 +12,12 @@ class LoginDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.user = None
+        self.settings = QSettings("OZKAYA", "MuhasebeSistemi")
         app_icon = get_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
         self.init_ui()
+        self._load_remembered_username()
     
     def init_ui(self):
         """Arayüz öğelerini başlat"""
@@ -106,8 +107,35 @@ class LoginDialog(QDialog):
             }
         """)
         main_layout.addWidget(self.password_input)
-        main_layout.addSpacing(30)
-        
+        main_layout.addSpacing(12)
+
+        # Beni Hatırla
+        self.remember_checkbox = QCheckBox("Beni Hatırla")
+        self.remember_checkbox.setFont(QFont("Segoe UI", 11))
+        self.remember_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #555555;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #c0c0c0;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #667eea;
+                border: 2px solid #667eea;
+                image: url(none);
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #667eea;
+            }
+        """)
+        main_layout.addWidget(self.remember_checkbox)
+        main_layout.addSpacing(18)
+
         # Giriş Butonu
         btn_giris = QPushButton("Giriş Yap")
         btn_giris.setMinimumHeight(50)
@@ -154,15 +182,31 @@ class LoginDialog(QDialog):
         y = (screen_rect.height() - 650) // 2
         self.move(x, y)
     
+    def _load_remembered_username(self):
+        """Kaydedilmiş kullanıcı adını yükle"""
+        remembered = self.settings.value("remember_username", False, type=bool)
+        if remembered:
+            saved_username = self.settings.value("saved_username", "", type=str)
+            self.remember_checkbox.setChecked(True)
+            self.username_input.setText(saved_username)
+            self.password_input.setFocus()
+
     def login(self):
         """Giriş işlemi"""
         username = self.username_input.text().strip()
         password = self.password_input.text()
-        
+
         if not username or not password:
             QMessageBox.warning(self, "Uyarı", "Kullanıcı adı ve şifre gerekli!")
             return
-        
+
+        if self.remember_checkbox.isChecked():
+            self.settings.setValue("remember_username", True)
+            self.settings.setValue("saved_username", username)
+        else:
+            self.settings.setValue("remember_username", False)
+            self.settings.remove("saved_username")
+
         user = AuthService.authenticate(username, password)
         if user:
             self.user = user

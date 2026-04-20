@@ -121,6 +121,18 @@ class ColumnMapperDialog(QDialog):
         self.subject_combo.addItem("-- Seçiniz --", -1)
         mapping_layout.addRow("📌 Konu:", self.subject_combo)
 
+        self.company_combo = QComboBox()
+        self.company_combo.addItem("-- Seçiniz --", -1)
+        mapping_layout.addRow("🏢 Firma Adı:", self.company_combo)
+
+        self.loan_bank_combo = QComboBox()
+        self.loan_bank_combo.addItem("-- Seçiniz --", -1)
+        mapping_layout.addRow("🏦 Kredi Bankası:", self.loan_bank_combo)
+
+        self.loan_combo = QComboBox()
+        self.loan_combo.addItem("-- Seçiniz --", -1)
+        mapping_layout.addRow("🏦 Ödenecek Kredi:", self.loan_combo)
+
         self.person_combo = QComboBox()
         self.person_combo.addItem("-- Seçiniz --", -1)
         mapping_layout.addRow("🙍 Ödeyen Kişi:", self.person_combo)
@@ -300,8 +312,8 @@ class ColumnMapperDialog(QDialog):
             for combo in [
                 self.date_combo, self.name_combo, self.amount_combo,
                 self.type_combo, self.customer_title_combo, self.description_combo,
-                self.payment_type_combo, self.subject_combo, self.person_combo,
-                self.reference_combo
+                self.payment_type_combo, self.subject_combo, self.company_combo,
+                self.loan_bank_combo, self.loan_combo, self.person_combo, self.reference_combo
             ]:
                 current_data = combo.currentData()
                 combo.blockSignals(True)  # Sinyal blokla
@@ -355,6 +367,18 @@ class ColumnMapperDialog(QDialog):
                 idx = find_header_index(["konu", "subject"])
                 if idx >= 0:
                     self.subject_combo.setCurrentIndex(idx + 1)
+            if self.company_combo.currentData() in (-1, None):
+                idx = find_header_index(["firma", "firma adı", "firma adi", "şirket", "sirket", "company"])
+                if idx >= 0:
+                    self.company_combo.setCurrentIndex(idx + 1)
+            if self.loan_bank_combo.currentData() in (-1, None):
+                idx = find_header_index(["kredi bankası", "kredi bankasi", "banka adı", "banka adi", "kredi banka"])
+                if idx >= 0:
+                    self.loan_bank_combo.setCurrentIndex(idx + 1)
+            if self.loan_combo.currentData() in (-1, None):
+                idx = find_header_index(["ödenecek kredi", "odenecek kredi", "kredi no", "kredi numarası", "kredi numarasi", "kredi adi", "kredi adı", "loan"])
+                if idx >= 0:
+                    self.loan_combo.setCurrentIndex(idx + 1)
             if self.person_combo.currentData() in (-1, None):
                 idx = find_header_index(["ödeyen kişi", "odeyen kisi", "kişi", "kisi", "person"])
                 if idx >= 0:
@@ -382,6 +406,9 @@ class ColumnMapperDialog(QDialog):
             'description_column': self.description_combo.currentData(),
             'payment_type_column': self.payment_type_combo.currentData(),
             'subject_column': self.subject_combo.currentData(),
+            'company_column': self.company_combo.currentData(),
+            'loan_bank_column': self.loan_bank_combo.currentData(),
+            'loan_column': self.loan_combo.currentData(),
             'person_column': self.person_combo.currentData(),
             'reference_column': self.reference_combo.currentData(),
         }

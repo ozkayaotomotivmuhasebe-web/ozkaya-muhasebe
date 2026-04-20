@@ -22,7 +22,12 @@ REM Gerekli dosyaları kopyala
 echo ✓ Ana dosyalar kopyalanıyor...
 copy main.py "%OUTPUT_DIR%" >nul
 copy config.py "%OUTPUT_DIR%" >nul
+copy version.json "%OUTPUT_DIR%" >nul
+copy guncelle.bat "%OUTPUT_DIR%" >nul
+if exist KURULUM.bat copy KURULUM.bat "%OUTPUT_DIR%" >nul
+if exist GOOGLE_SHEETS_KURULUM.txt copy GOOGLE_SHEETS_KURULUM.txt "%OUTPUT_DIR%" >nul
 if exist ICON.ico copy ICON.ico "%OUTPUT_DIR%" >nul
+if exist "yeni icon.ico" copy "yeni icon.ico" "%OUTPUT_DIR%" >nul
 if exist logo.png copy logo.png "%OUTPUT_DIR%" >nul
 copy requirements.txt "%OUTPUT_DIR%" >nul
 copy PORTABLE_SETUP.md "%OUTPUT_DIR%" >nul

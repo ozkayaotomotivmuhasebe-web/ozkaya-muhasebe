@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setElideMode(Qt.ElideNone)
         self.dashboard_tab = None
+        self._loaded_tabs = set()
         
         # Dashboard (izinli ise)
         if self.user.can_view_dashboard:
@@ -231,11 +232,13 @@ class MainWindow(QMainWindow):
         
         if self.user.can_view_settings:
             self.tabs.addTab(self.create_settings_tab(), "⚙️ Ayarlar")
-        
+
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
         central_widget.setLayout(layout)
         
         self.showMaximized()
+        QTimer.singleShot(0, lambda: self._refresh_current_tab_data(force=True))
 
     def _resize_table(self, table, stretch_col: int = None):
         """Tablo kolon/satırlarını içeriğe göre ayarla.
@@ -243,10 +246,17 @@ class MainWindow(QMainWindow):
         """
         if table is None:
             return
+
         table.setWordWrap(True)
-        table.resizeColumnsToContents()
-        table.resizeRowsToContents()
-        table.verticalHeader().setDefaultSectionSize(45)
+        row_count = table.rowCount()
+
+        # Büyük tablolarda otomatik içerik hesaplaması eski bilgisayarlarda ciddi yavaşlığa neden olur.
+        if row_count <= 200:
+            table.resizeColumnsToContents()
+            table.resizeRowsToContents()
+            table.verticalHeader().setDefaultSectionSize(45)
+        else:
+            table.verticalHeader().setDefaultSectionSize(32)
 
         header = table.horizontalHeader()
         if stretch_col is not None:
@@ -266,6 +276,42 @@ class MainWindow(QMainWindow):
             self.last_refresh_label.setText(
                 f"Son yenileme: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
             )
+
+    def on_tab_changed(self, index):
+        """Sekme değişince yalnızca aktif ekranı yenile."""
+        self._refresh_current_tab_data(force=True)
+
+    def _refresh_current_tab_data(self, force=False):
+        """Görünmeyen sekmeleri zorlamadan yalnızca aktif sekmenin verisini yükle."""
+        if not hasattr(self, "tabs") or self.tabs.count() == 0:
+            return
+
+        try:
+            tab_text = self.tabs.tabText(self.tabs.currentIndex())
+            if not force and tab_text in self._loaded_tabs:
+                return
+
+            if "Dashboard" in tab_text:
+                self.refresh_dashboard()
+            elif "İşlemler" in tab_text and hasattr(self, 'table_transactions'):
+                self.refresh_transactions_table()
+            elif "Faturalar" in tab_text and hasattr(self, 'table_invoices'):
+                self.refresh_invoice_table()
+            elif "Cari Hesaplar" in tab_text and hasattr(self, 'table_caris'):
+                self.refresh_cari_table()
+            elif "Cari Ekstre" in tab_text and hasattr(self, '_reload_cari_extract_combo'):
+                self._reload_cari_extract_combo()
+            elif "Banka Hesapları" in tab_text and hasattr(self, 'table_banks'):
+                self.refresh_bank_table()
+            elif "Kredi Kartları" in tab_text and hasattr(self, 'table_credit_cards'):
+                self.refresh_credit_cards_table()
+            elif "Krediler" in tab_text and hasattr(self, 'table_loans'):
+                self.refresh_loan_stats()
+                self.refresh_loans_table()
+
+            self._loaded_tabs.add(tab_text)
+        except Exception as e:
+            print(f"Sekme yenileme hatası: {e}")
 
     def _auto_refresh_dashboard(self):
         """Dashboard'u arka planda yenile"""
@@ -958,12 +1004,12 @@ class MainWindow(QMainWindow):
         btn_filter.clicked.connect(self.apply_transaction_filter)
         filter_layout.addWidget(btn_filter)
         
-        # Arama alanı - Müşteri adı ile ara
-        filter_layout.addWidget(QLabel("Müşteri Ara:"))
+        # Arama alanı - Tüm sütunlarda ara
+        filter_layout.addWidget(QLabel("🔍 Ara:"))
         self.search_customer_input = QLineEdit()
-        self.search_customer_input.setPlaceholderText("Müşteri adı yazın...")
+        self.search_customer_input.setPlaceholderText("Tarih, müşteri, açıklama, tutar, konu vb. yazın...")
         self.search_customer_input.setMinimumHeight(30)
-        self.search_customer_input.setMaximumWidth(200)
+        self.search_customer_input.setMaximumWidth(350)
         self.search_customer_input.textChanged.connect(self.search_customer_transactions)
         filter_layout.addWidget(self.search_customer_input)
         
@@ -1133,7 +1179,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table_transactions)
         
         widget.setLayout(layout)
-        self.refresh_transactions_table()
         return widget
 
     # ── Genel sütun genişliği kaydet / yükle ──────────────────────────────
@@ -1201,57 +1246,45 @@ class MainWindow(QMainWindow):
     def refresh_transactions_table(self):
         """İşlemler tablosunu yenile"""
         try:
+            self.table_transactions.setUpdatesEnabled(False)
             transactions = TransactionService.get_all_transactions(self.user.id)
-            # Yeni işlemler üstte olsun (descending sort)
             transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
             self.table_transactions.setRowCount(len(transactions))
-            
+
             for i, trans in enumerate(transactions):
-                # Tarih
+                self.table_transactions.setRowHidden(i, False)
+
                 date_item = QTableWidgetItem(str(trans.transaction_date))
                 date_item.setData(Qt.UserRole, trans.id)
                 self.table_transactions.setItem(i, 0, date_item)
-                
-                # Tür
+
                 type_text = trans.transaction_type.value if trans.transaction_type else ""
                 type_item = QTableWidgetItem(type_text)
-                # Renklendirme
                 if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
                     type_item.setBackground(Qt.green)
                 elif trans.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
                     type_item.setBackground(Qt.red)
                 self.table_transactions.setItem(i, 1, type_item)
-                
-                # Müşteri
+
                 self.table_transactions.setItem(i, 2, QTableWidgetItem(trans.customer_name))
-                
-                # Açıklama
                 self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
-                
-                # Ödeme Şekli
+
                 payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type) if trans.payment_method else ""
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
-                
-                # Konu
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
-                
-                # Ödeyen Kişi
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                
-                # Tutar
+
                 amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
-                
-                # İşlemler butonları - Düzenle ve Sil
+
                 action_widget = QWidget()
                 action_layout = QHBoxLayout(action_widget)
                 action_layout.setContentsMargins(4, 3, 4, 3)
                 action_layout.setSpacing(6)
                 action_layout.setAlignment(Qt.AlignCenter)
                 action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                
-                # Düzenle butonu
+
                 btn_edit = QPushButton("Düzenle")
                 btn_edit.setMinimumWidth(72)
                 btn_edit.setMinimumHeight(24)
@@ -1271,8 +1304,7 @@ class MainWindow(QMainWindow):
                 btn_edit.setProperty('transaction_id', trans.id)
                 btn_edit.clicked.connect(lambda checked, tid=trans.id: self.edit_transaction(tid))
                 action_layout.addWidget(btn_edit)
-                
-                # Sil butonu
+
                 btn_delete = QPushButton("Sil")
                 btn_delete.setMinimumWidth(48)
                 btn_delete.setMinimumHeight(24)
@@ -1292,16 +1324,17 @@ class MainWindow(QMainWindow):
                 btn_delete.setProperty('transaction_id', trans.id)
                 btn_delete.clicked.connect(lambda checked, tid=trans.id: self.delete_transaction(tid))
                 action_layout.addWidget(btn_delete)
-                
+
                 self.table_transactions.setCellWidget(i, 8, action_widget)
-            
+
             self._resize_table(self.table_transactions, stretch_col=3)
             self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
-                
         except Exception as e:
             print(f"İşlemler yükleme hatası: {e}")
             QMessageBox.critical(self, "Hata", f"İşlemler yüklenirken hata: {str(e)}")
+        finally:
+            self.table_transactions.setUpdatesEnabled(True)
     
     def apply_transaction_filter(self):
         """Tarih filtresini uygula"""
@@ -1392,7 +1425,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
     
     def search_customer_transactions(self):
-        """Müşteri adına göre ara"""
+        """Tüm sütunlarda ara"""
         search_text = self.search_customer_input.text().strip().lower()
         
         if not search_text:
@@ -1405,8 +1438,23 @@ class MainWindow(QMainWindow):
             # Yeni işlemler üstte olsun (descending sort)
             transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
             
-            # Müşteri adına göre filtrele
-            filtered = [t for t in transactions if search_text in (t.customer_name or "").lower()]
+            # Tüm sütunlarda ara: tarih, tip, müşteri, açıklama, ödeme yöntemi, konu, kişi, tutar
+            filtered = []
+            for t in transactions:
+                search_in = [
+                    str(t.transaction_date),  # Tarih
+                    t.transaction_type.value if t.transaction_type else "",  # İşlem türü
+                    t.customer_name or "",  # Müşteri adı
+                    t.description or "",  # Açıklama
+                    t.payment_method.value if t.payment_method else "",  # Ödeme yöntemi
+                    t.subject or "",  # Konu
+                    t.person or "",  # Kişi
+                    str(format_tr(t.amount)),  # Tutar (formatlı)
+                    str(t.amount)  # Tutar (normal)
+                ]
+                # Eğer arama metni herhangi bir sütunda varsa ekle
+                if any(search_text in field.lower() for field in search_in):
+                    filtered.append(t)
             
             # Tabloyu güncelle
             self.table_transactions.setRowCount(len(filtered))
@@ -1623,8 +1671,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table_invoices)
         
         widget.setLayout(layout)
-        
-        self.refresh_invoice_table()
         return widget
     
     def refresh_invoice_table(self):
@@ -1995,8 +2041,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table_caris_borrow)
         
         widget.setLayout(layout)
-        
-        self.refresh_cari_table()
         return widget
 
     def show_new_borrow_cari_dialog(self):
@@ -2009,13 +2053,12 @@ class MainWindow(QMainWindow):
     def refresh_cari_table(self):
         """Cari tablosunu yenile"""
         try:
+            self.table_caris.setUpdatesEnabled(False)
             caris = CariService.get_caris(self.user.id)
-            print(f"Cari sayısı: {len(caris) if caris else 0}")
             self.table_caris.setRowCount(len(caris) if caris else 0)
             
             if caris:
                 for i, cari in enumerate(caris):
-                    print(f"Cari {i}: {cari.name} - {cari.cari_type}")
                     self.table_caris.setItem(i, 0, QTableWidgetItem(cari.name))
                     self.table_caris.setItem(i, 1, QTableWidgetItem(cari.cari_type))
                     self.table_caris.setItem(i, 2, QTableWidgetItem(format_tr(cari.balance)))
@@ -2063,21 +2106,16 @@ class MainWindow(QMainWindow):
                     action_layout.addWidget(btn_delete)
 
                     self.table_caris.setCellWidget(i, 4, action_widget)
-                print("Cari tablosu başarıyla güncellendi")
-            else:
-                print("Hiç cari hesap bulunamadı!")
-            
+
             self._resize_table(self.table_caris, stretch_col=0)
             self.load_column_widths(self.table_caris, "caris")
             
-            # Cari Ekstre dropdown'ını da güncelle
             if hasattr(self, 'cari_extract_combo'):
                 self.cari_extract_combo.clear()
                 self.cari_extract_combo.addItem("-- Cari Seçiniz --", None)
                 if caris:
                     for cari in caris:
                         self.cari_extract_combo.addItem(f"{cari.name} ({cari.cari_type})", cari.id)
-                print("Cari Ekstre dropdown güncellendi")
 
             if hasattr(self, 'cari_list_search_input'):
                 self.filter_cari_table(self.cari_list_search_input.text())
@@ -2090,6 +2128,8 @@ class MainWindow(QMainWindow):
             print(f"Cari yükleme hatası: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            self.table_caris.setUpdatesEnabled(True)
 
     def refresh_borrow_cari_table(self, caris=None):
         """Ödünç cari tablosunu yenile"""
@@ -2276,6 +2316,15 @@ class MainWindow(QMainWindow):
         btn_save_banks.clicked.connect(lambda: self.save_column_widths(self.table_banks, "banks"))
         btn_layout.addWidget(btn_save_banks)
 
+        # Arama kutucuğu
+        btn_layout.addWidget(QLabel("🔍 Ara:"))
+        self.bank_search_input = QLineEdit()
+        self.bank_search_input.setPlaceholderText("Banka adı, hesap no, para birimi vb. yazın...")
+        self.bank_search_input.setMinimumHeight(35)
+        self.bank_search_input.setMaximumWidth(350)
+        self.bank_search_input.textChanged.connect(self.search_banks_table)
+        btn_layout.addWidget(self.bank_search_input)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -2294,8 +2343,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table_banks)
         
         widget.setLayout(layout)
-        
-        self.refresh_bank_table()
         return widget
     
     def refresh_bank_table(self):
@@ -2306,6 +2353,9 @@ class MainWindow(QMainWindow):
             
             if accounts:
                 for i, acc in enumerate(accounts):
+                    # Tüm satırları göster (arama gizlemişse açmak için)
+                    self.table_banks.setRowHidden(i, False)
+                    
                     self.table_banks.setItem(i, 0, QTableWidgetItem(acc.bank_name))
                     self.table_banks.setItem(i, 1, QTableWidgetItem(acc.account_number))
                     self.table_banks.setItem(i, 2, QTableWidgetItem(f"{format_tr(acc.balance)} ₺"))
@@ -2380,6 +2430,113 @@ class MainWindow(QMainWindow):
             self.load_column_widths(self.table_banks, "banks")
         except Exception as e:
             print(f"Banka yükleme hatası: {e}")
+
+    def search_banks_table(self):
+        """Banka tablosunda ara"""
+        search_text = self.bank_search_input.text().strip().lower() if hasattr(self, 'bank_search_input') else ""
+        
+        if not search_text:
+            self.refresh_bank_table()
+            return
+        
+        try:
+            accounts = BankService.get_accounts(self.user.id)
+            self.table_banks.setRowCount(len(accounts) if accounts else 0)
+            
+            matched_count = 0
+            if accounts:
+                for i, acc in enumerate(accounts):
+                    # Tüm sütunlarda ara: banka, hesap no, bakiye, ek hesap limiti, para birimi
+                    search_in = [
+                        acc.bank_name or "",
+                        acc.account_number or "",
+                        str(format_tr(acc.balance)),
+                        str(acc.balance),
+                        str(format_tr(getattr(acc, 'overdraft_limit', 0.0))),
+                        str(getattr(acc, 'overdraft_limit', 0.0)),
+                        acc.currency or ""
+                    ]
+                    
+                    if not any(search_text in field.lower() for field in search_in):
+                        self.table_banks.setRowHidden(i, True)
+                        continue
+                    
+                    matched_count += 1
+                    self.table_banks.setRowHidden(i, False)
+                    
+                    self.table_banks.setItem(i, 0, QTableWidgetItem(acc.bank_name))
+                    self.table_banks.setItem(i, 1, QTableWidgetItem(acc.account_number))
+                    self.table_banks.setItem(i, 2, QTableWidgetItem(f"{format_tr(acc.balance)} ₺"))
+                    
+                    overdraft = getattr(acc, 'overdraft_limit', 0.0)
+                    self.table_banks.setItem(i, 3, QTableWidgetItem(f"{format_tr(overdraft)} ₺"))
+                    
+                    self.table_banks.setItem(i, 4, QTableWidgetItem(acc.currency))
+
+                    action_widget = QWidget()
+                    action_layout = QHBoxLayout(action_widget)
+                    action_layout.setContentsMargins(5, 2, 5, 2)
+                    action_layout.setSpacing(5)
+                    action_layout.setAlignment(Qt.AlignCenter)
+                    action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                    btn_edit = QPushButton("✏️ Düzenle")
+                    btn_edit.setMinimumHeight(24)
+                    btn_edit.setStyleSheet("""
+                        QPushButton {
+                            background-color: #2196F3;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #0b7dda; }
+                    """)
+                    btn_edit.clicked.connect(lambda checked, bid=acc.id: self.show_edit_bank_dialog(bid))
+                    action_layout.addWidget(btn_edit)
+
+                    btn_delete = QPushButton("🗑️ Sil")
+                    btn_delete.setMinimumHeight(24)
+                    btn_delete.setStyleSheet("""
+                        QPushButton {
+                            background-color: #f44336;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #da190b; }
+                    """)
+                    btn_delete.clicked.connect(lambda checked, bid=acc.id: self.delete_bank(bid))
+                    action_layout.addWidget(btn_delete)
+
+                    btn_statement = QPushButton("📑 Dökümü Aç")
+                    btn_statement.setMinimumHeight(24)
+                    btn_statement.setStyleSheet("""
+                        QPushButton {
+                            background-color: #607D8B;
+                            color: white;
+                            border: none;
+                            border-radius: 3px;
+                            padding: 4px 8px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover { background-color: #546E7A; }
+                    """)
+                    btn_statement.clicked.connect(lambda checked, bid=acc.id: self.show_bank_statement(bid))
+                    action_layout.addWidget(btn_statement)
+                    
+                    self.table_banks.setCellWidget(i, 5, action_widget)
+            
+            self._resize_table(self.table_banks, stretch_col=1)
+            self.load_column_widths(self.table_banks, "banks")
+        except Exception as e:
+            QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
     
     def show_new_bank_dialog(self):
         """Yeni banka hesabı dialog'u"""
@@ -3580,33 +3737,11 @@ Pasif Kullanıcı: {total_users - active_users}
             QMessageBox.critical(self, "Hata", f"Excel aktarim hatasi:\n{str(e)}")
     
     def refresh_all_data(self):
-        """Tüm tabloları ve dashboard'u yenile"""
+        """Aktif ekranı ve dashboard'u gereksiz yük bindirmeden yenile."""
         try:
-            self.refresh_transactions_table()
+            self._loaded_tabs.clear()
             self.refresh_dashboard()
-            
-            # Cari tablosu varsa yenile
-            if hasattr(self, 'table_caris'):
-                print("Cari tablosu yenileniyor...")
-                self.refresh_cari_table()
-            else:
-                print("UYARI: table_caris henüz oluşturulmamış!")
-            
-            # Fatura tablosu varsa yenile
-            if hasattr(self, 'table_invoices'):
-                self.refresh_invoice_table()
-            
-            # Banka tablosu varsa yenile
-            if hasattr(self, 'table_banks'):
-                self.refresh_bank_table()
-            
-            # Kredi kartı tablosu varsa yenile
-            if hasattr(self, 'table_credit_cards'):
-                self.refresh_credit_cards_table()
-
-            # Kredi tablosu varsa yenile
-            if hasattr(self, 'table_loans'):
-                self.refresh_loans_table()
+            self._refresh_current_tab_data(force=True)
 
             # Aktif rapor ekranı varsa yenile
             if hasattr(self, '_current_report_key') and self._current_report_key:
@@ -3692,6 +3827,16 @@ Pasif Kullanıcı: {total_users - active_users}
         """)
         btn_save_cards.clicked.connect(lambda: self.save_column_widths(self.table_credit_cards, "credit_cards"))
         btn_layout.addWidget(btn_save_cards)
+
+        # Arama kutucuğu
+        btn_layout.addWidget(QLabel("🔍 Ara:"))
+        self.credit_card_search_input = QLineEdit()
+        self.credit_card_search_input.setPlaceholderText("Kart adı, banka, son 4 hane vb. yazın...")
+        self.credit_card_search_input.setMinimumHeight(35)
+        self.credit_card_search_input.setMaximumWidth(350)
+        self.credit_card_search_input.textChanged.connect(self.search_credit_cards_table)
+        btn_layout.addWidget(self.credit_card_search_input)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -3715,7 +3860,6 @@ Pasif Kullanıcı: {total_users - active_users}
         layout.addWidget(self.table_credit_cards)
         
         widget.setLayout(layout)
-        self.refresh_credit_cards_table()
         return widget
     
     def refresh_credit_cards_table(self):
@@ -3728,6 +3872,9 @@ Pasif Kullanıcı: {total_users - active_users}
             self.table_credit_cards.setRowCount(len(cards))
             
             for i, card in enumerate(cards):
+                # Tüm satırları göster (arama gizlemişse açmak için)
+                self.table_credit_cards.setRowHidden(i, False)
+                
                 is_child = card.parent_card_id is not None
 
                 # Kart adı — ek kart ise 🔗 işareti ekle
@@ -3826,6 +3973,139 @@ Pasif Kullanıcı: {total_users - active_users}
         except Exception as e:
             print(f"Kredi kartı yükleme hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Kredi kartları yüklenirken hata: {str(e)}")
+
+    def search_credit_cards_table(self):
+        """Kredi kartları tablosunda ara"""
+        search_text = self.credit_card_search_input.text().strip().lower() if hasattr(self, 'credit_card_search_input') else ""
+        
+        if not search_text:
+            self.refresh_credit_cards_table()
+            return
+        
+        try:
+            cards = CreditCardService.get_all_cards(self.user.id)
+            card_map = {c.id: c for c in cards}
+
+            self.table_credit_cards.setRowCount(len(cards))
+            
+            matched_count = 0
+            for i, card in enumerate(cards):
+                # Tüm sütunlarda ara: kart adı, banka, son 4 hane, limit, borç, durum
+                search_in = [
+                    card.card_name or "",
+                    card.bank_name or "",
+                    card.card_number_last4 or "",
+                    str(format_tr(card.card_limit)),
+                    str(card.card_limit),
+                    str(format_tr(card.current_debt)),
+                    str(card.current_debt),
+                    "Aktif" if card.is_active else "Pasif"
+                ]
+                
+                if not any(search_text in field.lower() for field in search_in):
+                    self.table_credit_cards.setRowHidden(i, True)
+                    continue
+                
+                matched_count += 1
+                self.table_credit_cards.setRowHidden(i, False)
+                
+                is_child = card.parent_card_id is not None
+
+                # Kart adı — ek kart ise 🔗 işareti ekle
+                name_display = f"🔗 {card.card_name}" if is_child else card.card_name
+                self.table_credit_cards.setItem(i, 0, QTableWidgetItem(name_display))
+                self.table_credit_cards.setItem(i, 1, QTableWidgetItem(card.bank_name))
+                self.table_credit_cards.setItem(i, 2, QTableWidgetItem(f"****{card.card_number_last4}"))
+
+                # Limit — ek kart ise "Paylaşımlı" göster
+                if is_child:
+                    parent = card_map.get(card.parent_card_id)
+                    parent_name = parent.card_name if parent else "?"
+                    limit_item = QTableWidgetItem(f"Paylaşımlı ({parent_name})")
+                    limit_item.setForeground(Qt.darkMagenta)
+                else:
+                    limit_item = QTableWidgetItem(f"{format_tr(card.card_limit)} ₺")
+                self.table_credit_cards.setItem(i, 3, limit_item)
+
+                self.table_credit_cards.setItem(i, 4, QTableWidgetItem(f"{format_tr(card.current_debt)} ₺"))
+                self.table_credit_cards.setItem(i, 5, QTableWidgetItem(f"{format_tr(card.available_limit)} ₺"))
+                
+                status = "Aktif" if card.is_active else "Pasif"
+                self.table_credit_cards.setItem(i, 6, QTableWidgetItem(status))
+
+                # Ek kart satırlarına hafif mor arka plan ver
+                if is_child:
+                    _shared_bg = QColor(243, 229, 245)
+                    for col in range(7):
+                        item = self.table_credit_cards.item(i, col)
+                        if item:
+                            item.setBackground(_shared_bg)
+                
+                # Butonlar
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                btn_extract = QPushButton("📑 Dökümü Aç")
+                btn_extract.setMinimumHeight(25)
+                btn_extract.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #45a049; }
+                """)
+                btn_extract.clicked.connect(lambda checked, cid=card.id: self.show_credit_card_statement(cid))
+                action_layout.addWidget(btn_extract)
+
+                btn_edit = QPushButton("✏️ Düzenle")
+                btn_edit.setMinimumHeight(25)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #0b7dda; }
+                """)
+                btn_edit.clicked.connect(lambda checked, cid=card.id: self.show_edit_credit_card_dialog(cid))
+                action_layout.addWidget(btn_edit)
+                
+                btn_delete = QPushButton("🗑️ Sil")
+                btn_delete.setMinimumHeight(25)
+                btn_delete.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #da190b; }
+                """)
+                btn_delete.clicked.connect(lambda checked, cid=card.id: self.delete_credit_card(cid))
+                action_layout.addWidget(btn_delete)
+                
+                self.table_credit_cards.setCellWidget(i, 7, action_widget)
+            
+            self._resize_table(self.table_credit_cards, stretch_col=0)
+            self.load_column_widths(self.table_credit_cards, "credit_cards")
+        except Exception as e:
+            QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
     
     def show_new_credit_card_dialog(self):
         """Yeni kredi kartı dialog"""
@@ -3973,35 +4253,45 @@ Pasif Kullanıcı: {total_users - active_users}
         btn_save_loans.clicked.connect(lambda: self.save_column_widths(self.table_loans, "loans"))
         btn_layout.addWidget(btn_save_loans)
 
+        # Arama kutucuğu
+        btn_layout.addWidget(QLabel("🔍 Ara:"))
+        self.loan_search_input = QLineEdit()
+        self.loan_search_input.setPlaceholderText("Kredi adı, banka, tutar vb. yazın...")
+        self.loan_search_input.setMinimumHeight(35)
+        self.loan_search_input.setMaximumWidth(300)
+        self.loan_search_input.textChanged.connect(self.search_loans_table)
+        btn_layout.addWidget(self.loan_search_input)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
         # Tablo
         self.table_loans = QTableWidget()
         self.table_loans.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table_loans.setColumnCount(10)
+        self.table_loans.setColumnCount(13)
         self.table_loans.setHorizontalHeaderLabels([
-            "Kredi Adı", "Banka", "Tip", "Çekilen Tutar", "Toplam", "Ödenen", "Kalan", "Aylık", "Durum", "İşlemler"
+            "Kredi Adı", "Banka", "Firma", "Tip", "Çekilen Tutar", "Toplam", "Ödenen", "Kalan", "Aylık", "Durum", "Kalan Taksit", "Ödeme Günü", "İşlemler"
         ])
         self.table_loans.horizontalHeader().setStretchLastSection(False)
         self.table_loans.setColumnWidth(0, 160)
         self.table_loans.setColumnWidth(1, 120)
-        self.table_loans.setColumnWidth(2, 100)
-        self.table_loans.setColumnWidth(3, 120)
-        self.table_loans.setColumnWidth(4, 110)
+        self.table_loans.setColumnWidth(2, 120)
+        self.table_loans.setColumnWidth(3, 100)
+        self.table_loans.setColumnWidth(4, 120)
         self.table_loans.setColumnWidth(5, 110)
         self.table_loans.setColumnWidth(6, 110)
-        self.table_loans.setColumnWidth(7, 100)
+        self.table_loans.setColumnWidth(7, 110)
         self.table_loans.setColumnWidth(8, 100)
-        self.table_loans.setColumnWidth(9, 260)
+        self.table_loans.setColumnWidth(9, 100)
+        self.table_loans.setColumnWidth(10, 100)
+        self.table_loans.setColumnWidth(11, 100)
+        self.table_loans.setColumnWidth(12, 260)
         self.table_loans.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_loans.setSelectionMode(QTableWidget.SingleSelection)
         self.load_column_widths(self.table_loans, "loans")
         layout.addWidget(self.table_loans)
         
         widget.setLayout(layout)
-        self.refresh_loan_stats()
-        self.refresh_loans_table()
         return widget
 
     def _set_loan_stat_card_value(self, key, value):
@@ -4048,21 +4338,35 @@ Pasif Kullanıcı: {total_users - active_users}
             self.refresh_loan_stats()
             
             for i, loan in enumerate(loans):
+                # Tüm satırları göster (arama gizlemişse açmak için)
+                self.table_loans.setRowHidden(i, False)
+                
                 remaining_amount = self._get_loan_remaining_amount(loan)
                 name_item = QTableWidgetItem(loan.loan_name)
                 name_item.setData(Qt.UserRole, loan.id)
                 self.table_loans.setItem(i, 0, name_item)
                 self.table_loans.setItem(i, 1, QTableWidgetItem(loan.bank_name))
-                self.table_loans.setItem(i, 2, QTableWidgetItem(loan.loan_type))
-                self.table_loans.setItem(i, 3, QTableWidgetItem(f"{format_tr(loan.loan_amount)}"))
+                self.table_loans.setItem(i, 2, QTableWidgetItem(loan.company_name or ""))
+                self.table_loans.setItem(i, 3, QTableWidgetItem(loan.loan_type))
+                self.table_loans.setItem(i, 4, QTableWidgetItem(f"{format_tr(loan.loan_amount)}"))
                 total_repayment = self._get_loan_total_repayment(loan)
-                self.table_loans.setItem(i, 4, QTableWidgetItem(f"{format_tr(total_repayment)} ₺"))
-                self.table_loans.setItem(i, 5, QTableWidgetItem(f"{format_tr(loan.total_paid)} ₺"))
-                self.table_loans.setItem(i, 6, QTableWidgetItem(f"{format_tr(remaining_amount)} ₺"))
-                self.table_loans.setItem(i, 7, QTableWidgetItem(f"{format_tr(loan.monthly_payment)} ₺"))
+                self.table_loans.setItem(i, 5, QTableWidgetItem(f"{format_tr(total_repayment)} ₺"))
+                self.table_loans.setItem(i, 6, QTableWidgetItem(f"{format_tr(loan.total_paid)} ₺"))
+                self.table_loans.setItem(i, 7, QTableWidgetItem(f"{format_tr(remaining_amount)} ₺"))
+                self.table_loans.setItem(i, 8, QTableWidgetItem(f"{format_tr(loan.monthly_payment)} ₺"))
                 
                 status = loan.status
-                self.table_loans.setItem(i, 8, QTableWidgetItem(status))
+                self.table_loans.setItem(i, 9, QTableWidgetItem(status))
+                
+                # Kalan taksit sayısı hesapla
+                remaining_installments = 0
+                if loan.total_installments and loan.paid_installments:
+                    remaining_installments = max(0, loan.total_installments - loan.paid_installments)
+                elif loan.total_installments:
+                    remaining_installments = loan.total_installments
+                
+                self.table_loans.setItem(i, 10, QTableWidgetItem(str(remaining_installments)))
+                self.table_loans.setItem(i, 11, QTableWidgetItem(f"{loan.due_day}"))
                 
                 # Butonlar
                 action_widget = QWidget()
@@ -4123,13 +4427,144 @@ Pasif Kullanıcı: {total_users - active_users}
                 btn_statement.clicked.connect(lambda checked, lid=loan.id: self.show_loan_statement(lid))
                 action_layout.addWidget(btn_statement)
                 
-                self.table_loans.setCellWidget(i, 9, action_widget)
+                self.table_loans.setCellWidget(i, 12, action_widget)
             
             self._resize_table(self.table_loans, stretch_col=0)
             self.load_column_widths(self.table_loans, "loans")
         except Exception as e:
             print(f"Kredi yükleme hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Krediler yüklenirken hata: {str(e)}")
+
+    def search_loans_table(self):
+        """Kredi tablosunda ara"""
+        search_text = self.loan_search_input.text().strip().lower() if hasattr(self, 'loan_search_input') else ""
+        
+        if not search_text:
+            self.refresh_loans_table()
+            return
+        
+        from src.services.loan_service import LoanService
+        
+        try:
+            loans = LoanService.get_loans(self.user.id, active_only=True)
+            self.table_loans.setRowCount(len(loans))
+            self.refresh_loan_stats()
+            
+            matched_count = 0
+            for i, loan in enumerate(loans):
+                # Tüm sütunlarda ara
+                search_in = [
+                    loan.loan_name or "",  # Kredi adı
+                    loan.bank_name or "",  # Banka
+                    loan.company_name or "",  # Firma
+                    loan.loan_type or "",  # Kredi türü
+                    str(format_tr(loan.loan_amount)),  # Tutar (formatlı)
+                    str(loan.loan_amount),  # Tutar (normal)
+                    str(format_tr(loan.total_paid)),  # Ödenen (formatlı)
+                    str(loan.total_paid),  # Ödenen (normal)
+                    loan.status or ""  # Durum
+                ]
+                
+                # Eğer arama metni herhangi bir sütunda varsa göster
+                if not any(search_text in field.lower() for field in search_in):
+                    self.table_loans.setRowHidden(i, True)
+                    continue
+                
+                matched_count += 1
+                self.table_loans.setRowHidden(i, False)
+                
+                remaining_amount = self._get_loan_remaining_amount(loan)
+                name_item = QTableWidgetItem(loan.loan_name)
+                name_item.setData(Qt.UserRole, loan.id)
+                self.table_loans.setItem(i, 0, name_item)
+                self.table_loans.setItem(i, 1, QTableWidgetItem(loan.bank_name))
+                self.table_loans.setItem(i, 2, QTableWidgetItem(loan.company_name or ""))
+                self.table_loans.setItem(i, 3, QTableWidgetItem(loan.loan_type))
+                self.table_loans.setItem(i, 4, QTableWidgetItem(f"{format_tr(loan.loan_amount)}"))
+                total_repayment = self._get_loan_total_repayment(loan)
+                self.table_loans.setItem(i, 5, QTableWidgetItem(f"{format_tr(total_repayment)} ₺"))
+                self.table_loans.setItem(i, 6, QTableWidgetItem(f"{format_tr(loan.total_paid)} ₺"))
+                self.table_loans.setItem(i, 7, QTableWidgetItem(f"{format_tr(remaining_amount)} ₺"))
+                self.table_loans.setItem(i, 8, QTableWidgetItem(f"{format_tr(loan.monthly_payment)} ₺"))
+                
+                status = loan.status
+                self.table_loans.setItem(i, 9, QTableWidgetItem(status))
+                
+                # Kalan taksit sayısı hesapla
+                remaining_installments = 0
+                if loan.total_installments and loan.paid_installments:
+                    remaining_installments = max(0, loan.total_installments - loan.paid_installments)
+                elif loan.total_installments:
+                    remaining_installments = loan.total_installments
+                
+                self.table_loans.setItem(i, 10, QTableWidgetItem(str(remaining_installments)))
+                self.table_loans.setItem(i, 11, QTableWidgetItem(f"{loan.due_day}"))
+                
+                # Butonlar
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(5, 2, 5, 2)
+                action_layout.setSpacing(5)
+                action_layout.setAlignment(Qt.AlignCenter)
+                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                
+                btn_edit = QPushButton("✏️ Düzenle")
+                btn_edit.setMinimumHeight(25)
+                btn_edit.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #0b7dda; }
+                """)
+                btn_edit.clicked.connect(lambda checked, lid=loan.id: self.show_edit_loan_dialog(lid))
+                action_layout.addWidget(btn_edit)
+                
+                btn_delete = QPushButton("🗑️ Sil")
+                btn_delete.setMinimumHeight(25)
+                btn_delete.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #da190b; }
+                """)
+                btn_delete.clicked.connect(lambda checked, lid=loan.id: self.delete_loan(lid))
+                action_layout.addWidget(btn_delete)
+
+                btn_statement = QPushButton("📑 Dökümü Aç")
+                btn_statement.setMinimumHeight(25)
+                btn_statement.setStyleSheet("""
+                    QPushButton {
+                        background-color: #607D8B;
+                        color: white;
+                        border: none;
+                        border-radius: 3px;
+                        padding: 4px 8px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #546E7A; }
+                """)
+                btn_statement.clicked.connect(lambda checked, lid=loan.id: self.show_loan_statement(lid))
+                action_layout.addWidget(btn_statement)
+                
+                self.table_loans.setCellWidget(i, 12, action_widget)
+            
+            self._resize_table(self.table_loans, stretch_col=0)
+            self.load_column_widths(self.table_loans, "loans")
+        except Exception as e:
+            QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
 
     def get_selected_loan_id(self):
         """Seçili kredi satırının ID bilgisini getir"""
@@ -4397,13 +4832,22 @@ Pasif Kullanıcı: {total_users - active_users}
 
             main_layout = QVBoxLayout(dialog)
 
+            # Kalan taksit sayısı hesapla
+            remaining_installments = 0
+            if loan.total_installments and loan.paid_installments:
+                remaining_installments = max(0, loan.total_installments - loan.paid_installments)
+            elif loan.total_installments:
+                remaining_installments = loan.total_installments
+
             summary_label = QLabel(
                 f"<b>Kredi:</b> {loan.loan_name} &nbsp;&nbsp; "
                 f"<b>Banka:</b> {loan.bank_name} &nbsp;&nbsp; "
                 f"<b>Tip:</b> {loan.loan_type}<br>"
                 f"<b>Toplam:</b> {format_tr(self._get_loan_total_repayment(loan))} ₺ &nbsp;&nbsp; "
                 f"<b>Toplam Ödenen:</b> {format_tr(loan.total_paid)} ₺ &nbsp;&nbsp; "
-                f"<b>Güncel Kalan:</b> {format_tr(current_remaining)} ₺"
+                f"<b>Güncel Kalan:</b> {format_tr(current_remaining)} ₺<br>"
+                f"<b>Kalan Taksit:</b> {remaining_installments} &nbsp;&nbsp; "
+                f"<b>Ödeme Günü:</b> Ayın {loan.due_day}. günü"
             )
             summary_label.setWordWrap(True)
             main_layout.addWidget(summary_label)

@@ -118,6 +118,11 @@ if exist muhasebe_kurulu (
     if exist logo.png copy logo.png muhasebe_kurulu\dist\ /y >nul
     copy main.py muhasebe_kurulu\ /y >nul
     copy config.py muhasebe_kurulu\ /y >nul
+    copy version.json muhasebe_kurulu\ /y >nul
+    copy guncelle.bat muhasebe_kurulu\ /y >nul
+    if exist KURULUM.bat copy KURULUM.bat muhasebe_kurulu\ /y >nul
+    if exist GOOGLE_SHEETS_KURULUM.txt copy GOOGLE_SHEETS_KURULUM.txt muhasebe_kurulu\ /y >nul
+    if exist "yeni icon.ico" copy "yeni icon.ico" muhasebe_kurulu\ /y >nul
     copy requirements.txt muhasebe_kurulu\ /y >nul
     robocopy src muhasebe_kurulu\src /MIR /XD __pycache__ /NFL /NDL /NJH /NJS >nul
     echo ✓ muhasebe_kurulu klasoru exe-src-ayarlar ile guncellendi
