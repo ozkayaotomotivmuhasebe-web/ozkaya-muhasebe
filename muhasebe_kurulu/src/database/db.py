@@ -91,6 +91,16 @@ def _run_migrations():
             except Exception:
                 pass
 
+        # loans.company_name
+        try:
+            conn.execute(text("SELECT company_name FROM loans LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE loans ADD COLUMN company_name VARCHAR(100)"))
+                conn.commit()
+            except Exception:
+                pass
+
 def init_db():
     """Tüm tabloları oluştur"""
     Base.metadata.create_all(bind=engine)

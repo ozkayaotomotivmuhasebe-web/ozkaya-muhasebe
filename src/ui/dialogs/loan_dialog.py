@@ -67,6 +67,12 @@ class LoanDialog(QDialog):
         self.bank_name_input.setPlaceholderText("Örn: Ziraat Bankası")
         form_layout.addRow("🏦 Banka: <span style=\"color:#d32f2f\">*</span>", self.bank_name_input)
         
+        # Firma
+        self.company_name_input = QLineEdit()
+        self.company_name_input.setMinimumHeight(35)
+        self.company_name_input.setPlaceholderText("Örn: İnşaat A.Ş., Ticaret Ltd.")
+        form_layout.addRow("🏢 Firma: <span style=\"color:#d32f2f\">*</span>", self.company_name_input)
+        
         # Kredi Türü
         self.loan_type_combo = QComboBox()
         self.loan_type_combo.setMinimumHeight(35)
@@ -197,6 +203,7 @@ class LoanDialog(QDialog):
             if loan:
                 self.loan_name_input.setText(loan.loan_name)
                 self.bank_name_input.setText(loan.bank_name)
+                self.company_name_input.setText(loan.company_name or "")
                 self.loan_type_combo.setCurrentText(loan.loan_type)
                 self.loan_amount_input.setValue(float(loan.loan_amount))
                 self._setting_remaining_balance = True
@@ -251,6 +258,10 @@ class LoanDialog(QDialog):
             QMessageBox.warning(self, "Uyarı", "Banka adı gerekli!")
             return
         
+        if not self.company_name_input.text().strip():
+            QMessageBox.warning(self, "Uyarı", "Firma adı gerekli!")
+            return
+        
         if self.loan_amount_input.value() <= 0:
             QMessageBox.warning(self, "Uyarı", "Kredi tutarı 0'dan büyük olmalı!")
             return
@@ -275,6 +286,7 @@ class LoanDialog(QDialog):
                     self.loan_id,
                     loan_name=self.loan_name_input.text().strip(),
                     bank_name=self.bank_name_input.text().strip(),
+                    company_name=self.company_name_input.text().strip(),
                     loan_type=self.loan_type_combo.currentText(),
                     loan_amount=self.loan_amount_input.value(),
                     remaining_balance=self.remaining_balance_input.value(),
@@ -298,6 +310,7 @@ class LoanDialog(QDialog):
                     user_id=self.user_id,
                     loan_name=self.loan_name_input.text().strip(),
                     bank_name=self.bank_name_input.text().strip(),
+                    company_name=self.company_name_input.text().strip(),
                     loan_type=self.loan_type_combo.currentText(),
                     loan_amount=self.loan_amount_input.value(),
                     remaining_balance=self.remaining_balance_input.value(),

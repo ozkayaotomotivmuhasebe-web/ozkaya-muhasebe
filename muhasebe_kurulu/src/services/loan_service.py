@@ -8,8 +8,8 @@ class LoanService:
     """Kredi Yönetim Servisi"""
     
     @staticmethod
-    def create_loan(user_id, loan_name, bank_name, loan_type, loan_amount, 
-                   start_date, due_day, interest_rate=0.0, monthly_payment=0.0,
+    def create_loan(user_id, loan_name, bank_name, company_name=None, loan_type=None, loan_amount=None, 
+                   start_date=None, due_day=None, interest_rate=0.0, monthly_payment=0.0,
                    remaining_balance=None,
                    end_date=None, total_installments=None, notes=None):
         """Yeni kredi ekle"""
@@ -20,6 +20,7 @@ class LoanService:
                 user_id=user_id,
                 loan_name=loan_name,
                 bank_name=bank_name,
+                company_name=company_name,
                 loan_type=loan_type,
                 loan_amount=loan_amount,
                 remaining_balance=initial_remaining_balance,

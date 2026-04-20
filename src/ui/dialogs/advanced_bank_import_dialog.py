@@ -103,9 +103,9 @@ class AdvancedBankImportDialog(QDialog):
         preview_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
         layout.addWidget(preview_label)
         self.preview_table = QTableWidget()
-        self.preview_table.setColumnCount(9)
+        self.preview_table.setColumnCount(11)
         self.preview_table.setHorizontalHeaderLabels([
-            "Seç", "Tarih", "İşlem Adı", "Tutar (₺)", "Tür", "Müşteri/Cari", "Ödeme Şekli", "Ödenecek Kredi", "Açıklama"
+            "Seç", "Tarih", "İşlem Adı", "Tutar (₺)", "Tür", "Müşteri/Cari", "Ödeme Şekli", "Firma Adı", "Kredi Bankası", "Ödenecek Kredi", "Açıklama"
         ])
         self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -265,12 +265,18 @@ class AdvancedBankImportDialog(QDialog):
                         elif payment_method == PaymentMethod.BANKA and not bank_account_id:
                             bank_account_id = self._find_or_create_bank_account_id(payment_text)
 
+                customer_name = payload['name_text']
+                if payload['trans_type'] == TransactionType.KREDI_ODEME and payload.get('loan_id'):
+                    matched_loan = next((loan for loan in getattr(self, 'loans', []) if loan.id == payload['loan_id']), None)
+                    if matched_loan:
+                        customer_name = matched_loan.loan_name or matched_loan.bank_name or customer_name
+
                 transaction, msg = TransactionService.create_transaction(
                     user_id=self.user_id,
                     transaction_date=payload['trans_date'],
                     transaction_type=payload['trans_type'],
                     payment_method=payment_method,
-                    customer_name=payload['name_text'],
+                    customer_name=customer_name,
                     description=payload['description'],
                     amount=payload['amount'],
                     cari_id=cari_id,
@@ -280,6 +286,7 @@ class AdvancedBankImportDialog(QDialog):
                     payment_type=payment_text,
                     person=payload.get('person'),
                     notes=payload.get('notes'),
+                    loan_id=payload.get('loan_id'),
                 )
                 if transaction:
                     success_count += 1
@@ -364,10 +371,13 @@ class AdvancedBankImportDialog(QDialog):
         best_score = 0.55
 
         for loan in getattr(self, 'loans', []):
+            company_name = self._normalize_turkish_text(getattr(loan, 'company_name', '') or '')
             loan_name = self._normalize_turkish_text(getattr(loan, 'loan_name', '') or '')
             bank_name = self._normalize_turkish_text(getattr(loan, 'bank_name', '') or '')
-            combined = f"{bank_name} {loan_name}".strip()
+            combined = f"{company_name} {bank_name} {loan_name}".strip()
 
+            if company_name and loan_name and company_name in normalized_text and loan_name in normalized_text:
+                return loan
             if loan_name and loan_name in normalized_text:
                 return loan
             if bank_name and bank_name in normalized_text and 'kredi' in normalized_text:
@@ -381,6 +391,72 @@ class AdvancedBankImportDialog(QDialog):
                 best_match = loan
 
         return best_match
+
+    def _get_loan_company_names(self):
+        return sorted({(loan.company_name or '').strip() for loan in getattr(self, 'loans', []) if (loan.company_name or '').strip()})
+
+    def _populate_loan_bank_combo_for_company(self, combo, company_name=None, selected_bank_name=None):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("-- Kredi Bankası Seçiniz --", None)
+
+        bank_names = []
+        for loan in getattr(self, 'loans', []):
+            if company_name and (loan.company_name or '') != company_name:
+                continue
+            bank_name = (loan.bank_name or '').strip()
+            if bank_name and bank_name not in bank_names:
+                bank_names.append(bank_name)
+
+        for bank_name in sorted(bank_names):
+            combo.addItem(bank_name, bank_name)
+
+        if selected_bank_name:
+            index = combo.findData(selected_bank_name)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+
+        combo.blockSignals(False)
+
+    def _populate_loan_combo_for_filters(self, combo, company_name=None, bank_name=None, selected_loan_id=None):
+        """Seçilen firma ve bankaya göre kredi listesini doldur"""
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("-- Kredi Seçiniz --", None)
+
+        for loan in getattr(self, 'loans', []):
+            if company_name and (loan.company_name or '') != company_name:
+                continue
+            if bank_name and (loan.bank_name or '') != bank_name:
+                continue
+            total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
+            remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
+            company_prefix = f"{loan.company_name} - " if (loan.company_name or '').strip() else ""
+            combo.addItem(
+                f"{company_prefix}{loan.loan_name} (Kalan: {remaining_amount:,.2f} ₺)",
+                loan.id
+            )
+
+        if selected_loan_id:
+            index = combo.findData(selected_loan_id)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+
+        combo.blockSignals(False)
+
+    def _on_preview_company_changed(self, company_combo, bank_combo, loan_combo):
+        selected_company = company_combo.currentData()
+        previous_bank = bank_combo.currentData()
+        previous_loan_id = loan_combo.currentData()
+        self._populate_loan_bank_combo_for_company(bank_combo, selected_company, previous_bank)
+        self._populate_loan_combo_for_filters(loan_combo, selected_company, bank_combo.currentData(), previous_loan_id)
+
+    def _on_preview_loan_bank_changed(self, company_combo, bank_combo, loan_combo):
+        """Önizlemede banka değişince kredi listesini filtrele"""
+        selected_company = company_combo.currentData() if company_combo else None
+        selected_bank = bank_combo.currentData()
+        previous_loan_id = loan_combo.currentData()
+        self._populate_loan_combo_for_filters(loan_combo, selected_company, selected_bank, previous_loan_id)
 
     def _normalize_turkish_text(self, text):
         """Türkçe karakterleri normalize et (İ→i, ç→c, etc)."""
@@ -558,6 +634,9 @@ class AdvancedBankImportDialog(QDialog):
             desc_col = self.column_mapping.get('description_column', -1)
             payment_type_col = self.column_mapping.get('payment_type_column', -1)
             subject_col = self.column_mapping.get('subject_column', -1)
+            company_col = self.column_mapping.get('company_column', -1)
+            loan_bank_col = self.column_mapping.get('loan_bank_column', -1)
+            loan_col = self.column_mapping.get('loan_column', -1)
             person_col = self.column_mapping.get('person_column', -1)
             reference_col = self.column_mapping.get('reference_column', -1)
             
@@ -566,7 +645,7 @@ class AdvancedBankImportDialog(QDialog):
             if is_xlrd:
                 selected_cols = [
                     c for c in [date_col, name_col, amount_col, type_col, customer_title_col,
-                                desc_col, payment_type_col, subject_col, person_col, reference_col]
+                                desc_col, payment_type_col, subject_col, company_col, loan_bank_col, loan_col, person_col, reference_col]
                     if c is not None and c >= 0
                 ]
                 max_col = max(selected_cols) if selected_cols else max(0, ws.ncols - 1)
@@ -676,6 +755,9 @@ class AdvancedBankImportDialog(QDialog):
                     desc_cell = get_cell_value(row, desc_col)
                     payment_type_cell = get_cell_value(row, payment_type_col)
                     subject_cell = get_cell_value(row, subject_col)
+                    company_cell = get_cell_value(row, company_col)
+                    loan_bank_cell = get_cell_value(row, loan_bank_col)
+                    loan_cell = get_cell_value(row, loan_col)
                     person_cell = get_cell_value(row, person_col)
                     reference_cell = get_cell_value(row, reference_col)
                     
@@ -712,7 +794,7 @@ class AdvancedBankImportDialog(QDialog):
 
                     if trans_type == "KREDI_ODEME":
                         matched_loan = self._find_best_loan_match(
-                            f"{name_cell} {description} {subject_cell or ''} {reference_cell or ''}"
+                            f"{company_cell or ''} {loan_bank_cell or ''} {loan_cell or ''} {name_cell} {description} {subject_cell or ''} {reference_cell or ''}"
                         )
                     
                     payment_method = self._determine_payment_method(
@@ -736,6 +818,8 @@ class AdvancedBankImportDialog(QDialog):
                         'person': str(person_cell).strip() if person_cell not in (None, "") else None,
                         'cari': matched_cari,
                         'loan': matched_loan,
+                        'company_name': str(company_cell).strip() if company_cell not in (None, "") else (matched_loan.company_name if matched_loan else None),
+                        'loan_bank_name': str(loan_bank_cell).strip() if loan_bank_cell not in (None, "") else (matched_loan.bank_name if matched_loan else None),
                         'category': rule_result['category'] or self._payment_method_to_category(payment_method),
                         'description': description,
                     }
@@ -881,25 +965,44 @@ class AdvancedBankImportDialog(QDialog):
                     payment_combo.setEditText(str(payment_value))
             self.preview_table.setCellWidget(row_idx, 6, payment_combo)
 
+            # Firma Adı
+            company_combo = QComboBox()
+            company_combo.addItem("-- Firma Seçiniz --", None)
+            for company_name in self._get_loan_company_names():
+                company_combo.addItem(company_name, company_name)
+
+            selected_company_name = trans.get('company_name')
+            if selected_company_name:
+                index = company_combo.findData(selected_company_name)
+                if index >= 0:
+                    company_combo.setCurrentIndex(index)
+                    company_combo.setStyleSheet("background-color: #c8e6c9;")
+            self.preview_table.setCellWidget(row_idx, 7, company_combo)
+
+            # Kredi Bankası
+            loan_bank_combo = QComboBox()
+            selected_bank_name = trans.get('loan_bank_name')
+            self._populate_loan_bank_combo_for_company(loan_bank_combo, selected_company_name, selected_bank_name)
+            if selected_bank_name:
+                loan_bank_combo.setStyleSheet("background-color: #c8e6c9;")
+            self.preview_table.setCellWidget(row_idx, 8, loan_bank_combo)
+
             # Ödenecek Kredi
             loan_combo = QComboBox()
-            loan_combo.addItem("-- Kredi Seçiniz --", None)
-            for loan in getattr(self, 'loans', []):
-                total_repayment = max(float(loan.remaining_balance or 0), float(loan.loan_amount or 0))
-                remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
-                loan_combo.addItem(
-                    f"{loan.bank_name} - {loan.loan_name} (Kalan: {remaining_amount:,.2f} ₺)",
-                    loan.id
-                )
-            if trans.get('loan'):
-                index = loan_combo.findData(trans['loan'].id)
-                if index >= 0:
-                    loan_combo.setCurrentIndex(index)
-                    loan_combo.setStyleSheet("background-color: #c8e6c9;")
-            self.preview_table.setCellWidget(row_idx, 7, loan_combo)
+            selected_loan_id = trans['loan'].id if trans.get('loan') else None
+            self._populate_loan_combo_for_filters(loan_combo, selected_company_name, selected_bank_name, selected_loan_id)
+            if selected_loan_id:
+                loan_combo.setStyleSheet("background-color: #c8e6c9;")
+            company_combo.currentIndexChanged.connect(
+                lambda _=None, company_box=company_combo, bank_box=loan_bank_combo, credit_combo=loan_combo: self._on_preview_company_changed(company_box, bank_box, credit_combo)
+            )
+            loan_bank_combo.currentIndexChanged.connect(
+                lambda _=None, company_box=company_combo, bank_box=loan_bank_combo, credit_combo=loan_combo: self._on_preview_loan_bank_changed(company_box, bank_box, credit_combo)
+            )
+            self.preview_table.setCellWidget(row_idx, 9, loan_combo)
 
             # Açıklama
-            self.preview_table.setItem(row_idx, 8, QTableWidgetItem(trans['description']))
+            self.preview_table.setItem(row_idx, 10, QTableWidgetItem(trans['description']))
     def _collect_preview_row_data(self, row_idx):
         error_list = []
         try:
@@ -917,10 +1020,16 @@ class AdvancedBankImportDialog(QDialog):
             payment_data = payment_combo.currentData()
             selected_payment_text = payment_combo.currentText().strip()
 
-            loan_combo = self.preview_table.cellWidget(row_idx, 7)
+            company_combo = self.preview_table.cellWidget(row_idx, 7)
+            company_name = company_combo.currentData() if company_combo else None
+
+            loan_bank_combo = self.preview_table.cellWidget(row_idx, 8)
+            loan_bank_name = loan_bank_combo.currentData() if loan_bank_combo else None
+
+            loan_combo = self.preview_table.cellWidget(row_idx, 9)
             loan_id = loan_combo.currentData() if loan_combo else None
 
-            description = self.preview_table.item(row_idx, 8).text()
+            description = self.preview_table.item(row_idx, 10).text()
 
             # Tarih parse
             try:
@@ -977,6 +1086,19 @@ class AdvancedBankImportDialog(QDialog):
             if trans_type == TransactionType.KREDI_ODEME and payment_method == PaymentMethod.BANKA and not bank_account_id and selected_payment_text in ["", "-- Seçiniz veya Yazın --"]:
                 return None, "Kredi ödemenin çıkacağı banka hesabını seçmelisiniz."
 
+            if trans_type == TransactionType.KREDI_ODEME and loan_id:
+                matched_loan = next((loan for loan in getattr(self, 'loans', []) if loan.id == loan_id), None)
+                if matched_loan:
+                    selected_company = (company_name or '').strip().lower()
+                    actual_company = (matched_loan.company_name or '').strip().lower()
+                    selected_bank = (loan_bank_name or '').strip().lower()
+                    actual_bank = (matched_loan.bank_name or '').strip().lower()
+
+                    if selected_company and actual_company and selected_company != actual_company:
+                        return None, "Seçilen firma adı kredi kaydındaki firma adıyla eşleşmiyor."
+                    if selected_bank and actual_bank and selected_bank != actual_bank:
+                        return None, "Seçilen kredi bankası kredi kaydıyla eşleşmiyor."
+
             return {
                 'row_key': row_idx,
                 'row_label': row_idx + 1,
@@ -994,6 +1116,8 @@ class AdvancedBankImportDialog(QDialog):
                 'bank_account_id': bank_account_id,
                 'credit_card_id': credit_card_id,
                 'loan_id': loan_id,
+                'company_name': company_name,
+                'loan_bank_name': loan_bank_name,
                 'notes': f"loan_id:{loan_id}" if loan_id else None,
                 'subject': subject,
                 'person': person,

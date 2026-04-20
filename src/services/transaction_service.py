@@ -231,7 +231,7 @@ class TransactionService:
     
     @staticmethod
     def update_transaction(transaction_id, **kwargs):
-        """İşlem güncelle"""
+        """İşlem güncelle ve bağlı hesapları yeniden hesapla"""
         session = SessionLocal()
         try:
             transaction = session.query(Transaction).filter(
@@ -240,21 +240,38 @@ class TransactionService:
             
             if not transaction:
                 return False, "İşlem bulunamadı"
-            
-            # Eski değerleri kaydet (hesap güncellemeleri için)
-            old_amount = transaction.amount
-            old_payment_method = transaction.payment_method
-            old_transaction_type = transaction.transaction_type
-            
-            # Güncelle
+
+            # Önce mevcut işlemin etkilerini geri al
+            TransactionService._reverse_account_updates(session, transaction)
+
+            # Yeni alanları uygula
             for key, value in kwargs.items():
                 if hasattr(transaction, key):
                     setattr(transaction, key, value)
             
             transaction.updated_at = datetime.now()
-            
-            # Hesapları güncelle (önce eski işlemi geri al, sonra yeni işlemi uygula)
-            # Bu kısım daha karmaşık olabilir, şimdilik basit tutalım
+            session.flush()
+
+            # Güncel işlem değerleri ile etkileri tekrar uygula
+            update_kwargs = {
+                'cari_id': transaction.cari_id,
+                'bank_account_id': transaction.bank_account_id,
+                'destination_bank_account_id': transaction.destination_bank_account_id,
+                'credit_card_id': transaction.credit_card_id,
+                'subject': transaction.subject,
+                'payment_type': transaction.payment_type,
+                'person': transaction.person,
+                'notes': transaction.notes,
+                'due_date': transaction.due_date,
+            }
+            TransactionService._update_related_accounts(
+                session,
+                transaction,
+                transaction.transaction_type,
+                transaction.payment_method,
+                transaction.amount,
+                update_kwargs
+            )
             
             session.commit()
             return True, "Başarılı"

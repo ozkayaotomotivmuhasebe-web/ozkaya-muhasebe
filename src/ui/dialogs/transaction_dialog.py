@@ -496,8 +496,9 @@ class TransactionDialog(QDialog):
                 remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
                 if remaining_amount <= 0:
                     continue
+                company_prefix = f"{loan.company_name} - " if (loan.company_name or '').strip() else ""
                 self.loan_payment_combo.addItem(
-                    f"{loan.loan_name} - {loan.bank_name} (Kalan: {remaining_amount:.2f})",
+                    f"{company_prefix}{loan.loan_name} - {loan.bank_name} (Kalan: {remaining_amount:.2f})",
                     loan.id
                 )
         except Exception as e:
@@ -537,8 +538,9 @@ class TransactionDialog(QDialog):
                 remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
                 if remaining_amount <= 0:
                     continue
+                company_prefix = f"{loan.company_name} - " if (loan.company_name or '').strip() else ""
                 self.loan_payment_combo.addItem(
-                    f"{loan.loan_name} (Kalan: {remaining_amount:.2f})",
+                    f"{company_prefix}{loan.loan_name} (Kalan: {remaining_amount:.2f})",
                     loan.id
                 )
             
@@ -878,6 +880,21 @@ class TransactionDialog(QDialog):
 
                 if transaction.transaction_type == TransactionType.KREDI_ODEME:
                     loan_id = self._parse_loan_id_from_notes(transaction.notes)
+                    loan = None
+
+                    if loan_id:
+                        loan = session.query(Loan).filter(
+                            Loan.id == loan_id,
+                            Loan.user_id == self.user_id
+                        ).first()
+
+                    if loan and loan.bank_name:
+                        bank_index = self.bank_combo.findData(loan.bank_name)
+                        if bank_index >= 0:
+                            self.bank_combo.setCurrentIndex(bank_index)
+                        else:
+                            self.load_loans_by_bank(loan.bank_name)
+
                     if loan_id:
                         index = self.loan_payment_combo.findData(loan_id)
                         if index >= 0:
@@ -885,7 +902,7 @@ class TransactionDialog(QDialog):
                     elif transaction.customer_name:
                         for i in range(self.loan_payment_combo.count()):
                             item_text = self.loan_payment_combo.itemText(i)
-                            if item_text.startswith(transaction.customer_name):
+                            if transaction.customer_name in item_text:
                                 self.loan_payment_combo.setCurrentIndex(i)
                                 break
 

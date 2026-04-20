@@ -219,8 +219,9 @@ class Loan(Base):
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    loan_name = Column(String(100), nullable=False)  # Örn: "Banka X - İpotekli Kredi"
+    company_name = Column(String(100), nullable=True)  # Firma adı (kim için kredi)
     bank_name = Column(String(100), nullable=False)  # Kredi veren banka
+    loan_name = Column(String(100), nullable=False)  # Örn: "Banka X - İpotekli Kredi"
     loan_type = Column(String(50), nullable=False)  # Örn: "İPOTEK", "TAŞIT", "TÜKETICI"
     loan_amount = Column(Float, nullable=False)  # Alınan toplam kredi
     remaining_balance = Column(Float, nullable=False)  # Kalan bakiye
