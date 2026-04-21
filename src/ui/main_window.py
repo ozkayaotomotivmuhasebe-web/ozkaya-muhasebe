@@ -252,14 +252,17 @@ class MainWindow(QMainWindow):
 
         # Büyük tablolarda otomatik içerik hesaplaması eski bilgisayarlarda ciddi yavaşlığa neden olur.
         if row_count <= 200:
+            # Fusion EXE'de setMinimumSectionSize ÖNCE ayarlanmalı, yoksa resizeRowsToContents sıfırlar
+            table.verticalHeader().setMinimumSectionSize(36)
+            table.verticalHeader().setDefaultSectionSize(36)
             table.resizeColumnsToContents()
             table.resizeRowsToContents()
-            # resizeRowsToContents Fusion style'da küçük ölçebilir, minimum 40px zorla
+            # Ekstra güvence: herhangi bir satır hâlâ küçükse zorla
             for i in range(row_count):
-                if table.rowHeight(i) < 40:
-                    table.setRowHeight(i, 40)
-            table.verticalHeader().setDefaultSectionSize(45)
+                if table.rowHeight(i) < 36:
+                    table.setRowHeight(i, 36)
         else:
+            table.verticalHeader().setMinimumSectionSize(28)
             table.verticalHeader().setDefaultSectionSize(32)
 
         header = table.horizontalHeader()
@@ -1304,10 +1307,11 @@ class MainWindow(QMainWindow):
                 action_layout.setSpacing(6)
                 action_layout.setAlignment(Qt.AlignCenter)
                 action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                action_widget.setMinimumHeight(36)
 
                 btn_edit = QPushButton("Düzenle")
                 btn_edit.setMinimumWidth(72)
-                btn_edit.setMinimumHeight(24)
+                btn_edit.setMinimumHeight(28)
                 btn_edit.setMaximumWidth(90)
                 btn_edit.setStyleSheet("""
                     QPushButton {
@@ -1398,10 +1402,11 @@ class MainWindow(QMainWindow):
                 action_layout.setSpacing(6)
                 action_layout.setAlignment(Qt.AlignCenter)
                 action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                action_widget.setMinimumHeight(36)
                 
                 btn_edit = QPushButton("Düzenle")
                 btn_edit.setMinimumWidth(72)
-                btn_edit.setMinimumHeight(24)
+                btn_edit.setMinimumHeight(28)
                 btn_edit.setMaximumWidth(90)
                 btn_edit.setStyleSheet("""
                     QPushButton {
@@ -1520,6 +1525,7 @@ class MainWindow(QMainWindow):
                 action_layout.setSpacing(6)
                 action_layout.setAlignment(Qt.AlignCenter)
                 action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                action_widget.setMinimumHeight(36)
                 
                 btn_edit = QPushButton("Düzenle")
                 btn_edit.setMinimumWidth(130)
