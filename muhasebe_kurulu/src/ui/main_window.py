@@ -5766,6 +5766,54 @@ Pasif Kullanıcı: {total_users - active_users}
         )
         fb_layout.addWidget(self.report_konu_filter)
 
+        # Arama kutusu
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("border:none; border-left:1px solid #CFD8DC; background:transparent;")
+        sep.setFixedWidth(12)
+        fb_layout.addWidget(sep)
+
+        lbl_search = QLabel("🔍")
+        lbl_search.setStyleSheet("border:none; background:transparent; font-size:13pt;")
+        fb_layout.addWidget(lbl_search)
+
+        self.report_search_input = QLineEdit()
+        self.report_search_input.setPlaceholderText("Raporda ara... (kredi no, banka, firma)")
+        self.report_search_input.setMinimumHeight(30)
+        self.report_search_input.setMinimumWidth(220)
+        self.report_search_input.setStyleSheet("""
+            QLineEdit { border:1px solid #90CAF9; border-radius:4px;
+                        padding:2px 8px; background:white; font-size:9pt; }
+            QLineEdit:focus { border:1px solid #1565C0; }
+        """)
+        self.report_search_input.textChanged.connect(self._on_report_search_changed)
+        self.report_search_input.returnPressed.connect(self._on_report_search_next)
+        fb_layout.addWidget(self.report_search_input)
+
+        btn_search_next = QPushButton("↓")
+        btn_search_next.setToolTip("Sonraki eşleşme")
+        btn_search_next.setMinimumHeight(30)
+        btn_search_next.setFixedWidth(30)
+        btn_search_next.setStyleSheet("""
+            QPushButton { background-color:#E3F2FD; color:#1565C0;
+                border:1px solid #90CAF9; border-radius:3px; font-weight:bold; font-size:11pt; }
+            QPushButton:hover { background-color:#BBDEFB; }
+        """)
+        btn_search_next.clicked.connect(self._on_report_search_next)
+        fb_layout.addWidget(btn_search_next)
+
+        btn_search_clear = QPushButton("✕")
+        btn_search_clear.setToolTip("Aramayı temizle")
+        btn_search_clear.setMinimumHeight(30)
+        btn_search_clear.setFixedWidth(30)
+        btn_search_clear.setStyleSheet("""
+            QPushButton { background-color:#FFEBEE; color:#C62828;
+                border:1px solid #EF9A9A; border-radius:3px; font-weight:bold; }
+            QPushButton:hover { background-color:#FFCDD2; }
+        """)
+        btn_search_clear.clicked.connect(lambda: self.report_search_input.clear())
+        fb_layout.addWidget(btn_search_clear)
+
         fb_layout.addStretch()
         r_layout.addWidget(filter_bar)
 
@@ -5805,6 +5853,142 @@ Pasif Kullanıcı: {total_users - active_users}
         # Aktif raporu yenile
         if self._current_report_key:
             self._generate_sidebar_report(self._current_report_key)
+
+    def _on_report_search_changed(self, text):
+        """Arama kutusu değiştiğinde tabloyu filtrele"""
+        import re
+
+        def _parse_tr_number(s):
+            """Türkçe para formatını float'a çevirir: '1.234,56 ₺' → 1234.56"""
+            s = s.strip().replace('₺', '').replace('€', '').replace('$', '').replace('%', '').strip()
+            if not s or s == '-':
+                return None
+            negative = s.startswith('-')
+            s = s.lstrip('-').strip()
+            # Türkçe format: nokta=binlik ayraç, virgül=ondalık
+            if ',' in s:
+                s = s.replace('.', '').replace(',', '.')
+            else:
+                s = s.replace('.', '')
+            try:
+                val = float(s)
+                return -val if negative else val
+            except (ValueError, TypeError):
+                return None
+
+        def _format_tr_number(val):
+            """Float'ı Türkçe para formatına çevirir: 1234.56 → '1.234,56 ₺'"""
+            try:
+                sign = '-' if val < 0 else ''
+                parts = f'{abs(val):,.2f}'.split('.')
+                integer_part = parts[0].replace(',', '.')
+                return f"{sign}{integer_part},{parts[1]} ₺"
+            except Exception:
+                return str(val)
+
+        full_html = getattr(self, '_report_full_html', None)
+        if not text:
+            if full_html:
+                self.report_display.setHtml(full_html)
+            self.report_search_input.setStyleSheet("""
+                QLineEdit { border:1px solid #90CAF9; border-radius:4px;
+                            padding:2px 8px; background:white; font-size:9pt; }
+                QLineEdit:focus { border:1px solid #1565C0; }
+            """)
+            return
+        if not full_html:
+            return
+
+        text_lower = text.lower()
+        parts = re.split(r'(<tr[^>]*>)', full_html)
+        result_parts = []
+        i = 0
+        match_count = 0
+        header_seen = False
+        SUMMARY_KEYWORDS = ('toplam', 'genel toplam', 'total', 'özet', 'ara toplam', 'grand total', 'subtotal')
+
+        matched_rows_content = []  # matched row <td> içerikleri
+
+        while i < len(parts):
+            if i + 1 < len(parts) and re.match(r'<tr[^>]*>', parts[i]):
+                tr_open = parts[i]
+                tr_content = parts[i+1] if i+1 < len(parts) else ""
+                raw_text = re.sub(r'<[^>]+>', '', tr_open + tr_content).lower().strip()
+                is_header = bool(re.search(r'<th[\s>]', tr_open + tr_content, re.IGNORECASE))
+                is_summary = any(kw in raw_text for kw in SUMMARY_KEYWORDS)
+
+                if is_header or not header_seen:
+                    header_seen = True
+                    result_parts.append(tr_open + tr_content)
+                elif is_summary:
+                    # Orijinal özet/toplam satırlarını gizle — filtrelenmiş toplam ekleyeceğiz
+                    pass
+                elif text_lower in raw_text:
+                    highlighted = tr_open.replace('background:#FAFAFA', 'background:#FFFDE7').replace('background:white', 'background:#FFFDE7')
+                    if highlighted == tr_open:
+                        if 'style=' in tr_open:
+                            highlighted = tr_open
+                        else:
+                            highlighted = tr_open[:-1] + ' style="background:#FFFDE7;">'
+                    result_parts.append(highlighted + tr_content)
+                    matched_rows_content.append(tr_content)
+                    match_count += 1
+                i += 2
+            else:
+                result_parts.append(parts[i])
+                i += 1
+
+        if match_count > 0:
+            # Filtrelenmiş satırların sütun toplamlarını hesapla
+            col_sums = {}
+            num_cols = 0
+            for row_html in matched_rows_content:
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row_html, re.DOTALL | re.IGNORECASE)
+                num_cols = max(num_cols, len(cells))
+                for col_i, cell_html in enumerate(cells):
+                    cell_text = re.sub(r'<[^>]+>', '', cell_html).strip()
+                    val = _parse_tr_number(cell_text)
+                    if val is not None:
+                        col_sums[col_i] = col_sums.get(col_i, 0) + val
+
+            # Filtrelenmiş toplam satırı oluştur
+            if num_cols > 0 and col_sums:
+                summary_cells = []
+                for ci in range(num_cols):
+                    style = 'font-weight:bold;background:#E8EAF6;border:1px solid #C5CAE9;padding:6px;'
+                    if ci == 0:
+                        summary_cells.append(
+                            f'<td style="{style}">🔍 Filtrelenmiş Toplam ({match_count} kayıt)</td>'
+                        )
+                    elif ci in col_sums:
+                        summary_cells.append(
+                            f'<td style="{style}text-align:right;">{_format_tr_number(col_sums[ci])}</td>'
+                        )
+                    else:
+                        summary_cells.append(f'<td style="{style}"></td>')
+                result_parts.append('<tr>' + ''.join(summary_cells) + '</tr>')
+
+            filtered_html = ''.join(result_parts)
+            self.report_display.setHtml(filtered_html)
+            self.report_search_input.setStyleSheet("""
+                QLineEdit { border:1px solid #66BB6A; border-radius:4px;
+                            padding:2px 8px; background:#F1F8E9; font-size:9pt; }
+            """)
+        else:
+            self.report_display.setHtml(
+                full_html[:full_html.find('<table')] +
+                f'<p style="padding:16px; color:#C62828; font-size:11pt;">🔍 "<b>{text}</b>" için sonuç bulunamadı.</p>'
+                if '<table' in full_html else
+                f'<p style="padding:16px; color:#C62828;">🔍 "{text}" için sonuç bulunamadı.</p>'
+            )
+            self.report_search_input.setStyleSheet("""
+                QLineEdit { border:1px solid #EF5350; border-radius:4px;
+                            padding:2px 8px; background:#FFEBEE; font-size:9pt; }
+            """)
+
+    def _on_report_search_next(self):
+        """Aramayı temizle (↓ butonu artık kullanılmıyor, sadece uyumluluk için)"""
+        pass
 
     def _generate_sidebar_report(self, key: str):
         """Kenar çubuğu butonundan rapor oluştur"""
@@ -5893,7 +6077,11 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_kredi_bu_ay_report()
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
-            self.report_display.setHtml(html)
+            self._report_full_html = html
+            if hasattr(self, 'report_search_input') and self.report_search_input.text():
+                self._on_report_search_changed(self.report_search_input.text())
+            else:
+                self.report_display.setHtml(html)
         except Exception as e:
             import traceback
             QMessageBox.critical(self, "Hata", f"Rapor oluşturulurken hata:\n{str(e)}")
@@ -6232,11 +6420,22 @@ Pasif Kullanıcı: {total_users - active_users}
             "kredi_karti": "Kredi Kartı Özet Raporu",
             "kredi": "Kredi Özet Raporu",
             "maas": "Maaş Ödemeleri Raporu",
+            "kredi_bu_ay": "Bu Ay Ödenecek Krediler",
+            "nakit_kasasi": "Nakit Kasası",
+            "aylik": "Aylık Karşılaştırma",
+            "top_cari": "En Aktif Cariler",
+            "odeme": "Ödeme Dağılımı",
+            "haftalik": "Haftalık Trend",
+            "konu_gider": "Konuya Göre Giderler",
+            "kira_takip": "Kira Takip Raporu",
+            "fatura_vade": "Fatura Vade Takibi",
+            "kredi_bitis": "Kredi Bitiş Sıralaması",
         }
-        report_type = _key_map.get(getattr(self, '_current_report_key', None), "")
-        if not report_type:
+        current_key = getattr(self, '_current_report_key', None)
+        if not current_key:
             QMessageBox.warning(self, "Uyarı", "Önce sol menüden bir rapor türü seçin!")
             return
+        report_type = _key_map.get(current_key, current_key)
 
         try:
             from openpyxl import Workbook
@@ -6268,8 +6467,12 @@ Pasif Kullanıcı: {total_users - active_users}
             elif report_type == "Maaş Ödemeleri Raporu":
                 self._export_payroll_report_excel()
                 return
+            elif report_type == "Bu Ay Ödenecek Krediler":
+                self._export_kredi_bu_ay_excel()
+                return
             else:
-                QMessageBox.warning(self, "Uyarı", "Önce bir rapor türü seçiniz!")
+                # Diğer raporlar için HTML tablosundan generic Excel export
+                self._export_generic_html_report_excel(report_type)
                 return
             
             # Excel oluştur
@@ -6442,7 +6645,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ws[f'B{row}'].border = border
             if label == 'Net Kar/Zarar':
                 ws[f'A{row}'].font = Font(bold=True, size=12)
-                ws[f'B{row}'].font = Font(bold=True, s=12)
+                ws[f'B{row}'].font = Font(bold=True, size=12)
             row += 1
         
         ws.column_dimensions['A'].width = 25
@@ -6797,6 +7000,198 @@ Pasif Kullanıcı: {total_users - active_users}
             QMessageBox.critical(self, "Hata", "openpyxl bulunamadı. 'pip install openpyxl' çalıştırın.")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
+
+    def _export_kredi_bu_ay_excel(self):
+        """Bu Ay Ödenecek Krediler raporunu Excel'e aktar"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.utils import get_column_letter
+            from PyQt5.QtWidgets import QFileDialog
+            from src.database.db import SessionLocal
+            from src.database.models import Loan, Transaction, TransactionType
+            from datetime import date as _date
+            import calendar, os
+
+            today = _date.today()
+            month_start = _date(today.year, today.month, 1)
+            last_day = calendar.monthrange(today.year, today.month)[1]
+            month_end = _date(today.year, today.month, last_day)
+
+            session = SessionLocal()
+            try:
+                loans = session.query(Loan).filter(
+                    Loan.user_id == self.user.id,
+                    Loan.is_active == True,
+                    Loan.status == 'AKTIF',
+                ).all()
+                this_month_payments = session.query(Transaction).filter(
+                    Transaction.user_id == self.user.id,
+                    Transaction.transaction_type == TransactionType.KREDI_ODEME,
+                    Transaction.transaction_date >= month_start,
+                    Transaction.transaction_date <= month_end,
+                ).all()
+            finally:
+                session.close()
+
+            paid_loan_ids = set()
+            for t in this_month_payments:
+                lid = self._extract_loan_id_from_notes(t.notes)
+                if lid:
+                    paid_loan_ids.add(lid)
+
+            rows = []
+            for l in loans:
+                due_day = l.due_day or 15
+                pay_day = min(due_day, last_day)
+                payment_date = _date(today.year, today.month, pay_day)
+                rows.append({
+                    'loan_name': l.loan_name or '-',
+                    'bank_name': l.bank_name or '-',
+                    'company_name': l.company_name or '-',
+                    'payment_date': payment_date.strftime('%d.%m.%Y'),
+                    'paid_installments': l.paid_installments or 0,
+                    'total_installments': l.total_installments or 0,
+                    'monthly_payment': float(l.monthly_payment or 0),
+                    'remaining_balance': float(l.remaining_balance or 0),
+                    'status': 'Odendi' if l.id in paid_loan_ids else 'Bekliyor',
+                })
+            rows.sort(key=lambda r: r['payment_date'])
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Bu Ay Krediler"
+
+            h_font = Font(size=11, bold=True, color='FFFFFF')
+            h_fill = PatternFill(start_color='1A237E', end_color='1A237E', fill_type='solid')
+            border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                            top=Side(style='thin'), bottom=Side(style='thin'))
+
+            ws['A1'] = f'BU AY ÖDENECEK KREDİLER - {today.strftime("%B %Y").upper()}'
+            ws['A1'].font = Font(size=14, bold=True, color='FFFFFF')
+            ws['A1'].fill = PatternFill(start_color='1A237E', end_color='1A237E', fill_type='solid')
+            ws['A1'].alignment = Alignment(horizontal='center')
+            ws.merge_cells('A1:H1')
+            ws.row_dimensions[1].height = 28
+
+            headers = ['Kredi Adı', 'Banka', 'Firma', 'Ödeme Günü', 'Taksit', 'Aylık Tutar (₺)', 'Kalan Bakiye (₺)', 'Durum']
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=3, column=col, value=h)
+                cell.font = h_font
+                cell.fill = h_fill
+                cell.alignment = Alignment(horizontal='center')
+                cell.border = border
+
+            for i, r in enumerate(rows, 4):
+                bg_color = 'E8F5E9' if r['status'] == 'Odendi' else 'FFFFFF'
+                fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type='solid')
+                vals = [
+                    r['loan_name'], r['bank_name'], r['company_name'],
+                    r['payment_date'],
+                    f"{r['paid_installments']}/{r['total_installments']}",
+                    r['monthly_payment'], r['remaining_balance'], r['status']
+                ]
+                for col, v in enumerate(vals, 1):
+                    cell = ws.cell(row=i, column=col, value=v)
+                    cell.border = border
+                    cell.fill = fill
+                    if col in (6, 7):
+                        cell.number_format = '#,##0.00'
+
+            for col, w in enumerate([28, 16, 14, 14, 10, 18, 18, 12], 1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+
+            fname = f"Bu_Ay_Odenecek_Krediler_{today.strftime('%Y%m')}.xlsx"
+            path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", fname, "Excel (*.xlsx)")
+            if path:
+                wb.save(path)
+                QMessageBox.information(self, "Başarılı", f"Excel kaydedildi:\n{path}")
+                reply = QMessageBox.question(self, "Aç", "Dosyayı şimdi açmak ister misiniz?",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    os.startfile(path)
+        except ImportError:
+            QMessageBox.critical(self, "Hata", "openpyxl bulunamadı. 'pip install openpyxl' çalıştırın.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
+            import traceback; traceback.print_exc()
+
+    def _export_generic_html_report_excel(self, report_title):
+        """HTML raporundaki tabloları Excel'e aktar (generic - tüm raporlar için)"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.utils import get_column_letter
+            from PyQt5.QtWidgets import QFileDialog
+            from datetime import datetime
+            import re as _re, os
+
+            html = getattr(self, '_report_full_html', None) or self.report_display.toHtml()
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = report_title[:31]
+
+            h_font = Font(size=11, bold=True, color='FFFFFF')
+            h_fill = PatternFill(start_color='1A237E', end_color='1A237E', fill_type='solid')
+            s_font = Font(size=11, bold=True)
+            s_fill = PatternFill(start_color='E8EAF6', end_color='E8EAF6', fill_type='solid')
+            border = Border(
+                left=Side(style='thin'), right=Side(style='thin'),
+                top=Side(style='thin'),  bottom=Side(style='thin')
+            )
+
+            ws['A1'] = report_title.upper()
+            ws['A1'].font = Font(size=14, bold=True, color='FFFFFF')
+            ws['A1'].fill = PatternFill(start_color='1A237E', end_color='1A237E', fill_type='solid')
+            ws['A1'].alignment = Alignment(horizontal='center')
+
+            SUMMARY_KW = ('toplam', 'genel toplam', 'total', 'ara toplam', 'subtotal')
+            row_idx = 3
+            col_count = 0
+            tr_blocks = _re.findall(r'<tr[^>]*>(.*?)</tr>', html, _re.DOTALL | _re.IGNORECASE)
+            for tr in tr_blocks:
+                cells = _re.findall(r'<(?:td|th)[^>]*>(.*?)</(?:td|th)>', tr, _re.DOTALL | _re.IGNORECASE)
+                if not cells:
+                    continue
+                is_header = bool(_re.search(r'<th[\s>]', tr, _re.IGNORECASE))
+                raw_row = _re.sub(r'<[^>]+>', '', tr).lower().strip()
+                is_summary = any(kw in raw_row for kw in SUMMARY_KW)
+                col_count = max(col_count, len(cells))
+                for col_i, cell_html in enumerate(cells, 1):
+                    cell_text = _re.sub(r'<[^>]+>', '', cell_html).strip()
+                    cell_text = cell_text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ')
+                    cell_obj = ws.cell(row=row_idx, column=col_i, value=cell_text)
+                    cell_obj.border = border
+                    if is_header:
+                        cell_obj.font = h_font
+                        cell_obj.fill = h_fill
+                        cell_obj.alignment = Alignment(horizontal='center')
+                    elif is_summary:
+                        cell_obj.font = s_font
+                        cell_obj.fill = s_fill
+                row_idx += 1
+
+            if col_count > 1:
+                ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
+            for col in range(1, col_count + 1):
+                ws.column_dimensions[get_column_letter(col)].width = 22
+
+            safe_title = _re.sub(r'[^\w]', '_', report_title)
+            fname = f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", fname, "Excel (*.xlsx)")
+            if path:
+                wb.save(path)
+                QMessageBox.information(self, "Başarılı", f"Excel kaydedildi:\n{path}")
+                reply = QMessageBox.question(self, "Aç", "Dosyayı şimdi açmak ister misiniz?",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    os.startfile(path)
+        except ImportError:
+            QMessageBox.critical(self, "Hata", "openpyxl bulunamadı. 'pip install openpyxl' çalıştırın.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
+            import traceback; traceback.print_exc()
 
     def _generate_monthly_comparison_report(self, start_date, end_date):
         """Aylık karşılaştırma raporu - modern stil"""

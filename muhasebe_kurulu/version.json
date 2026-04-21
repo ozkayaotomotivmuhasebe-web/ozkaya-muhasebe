@@ -1,3 +1,1 @@
-﻿{"version":"1.1.23","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.23/Muhasebe.exe","notes":"- python311.dll yukleme hatasi duzeltildi (Failed to load Python DLL)
-- Gecici dizin EXE yanina tasindi (runtime-tmpdir)
-- python311.dll cakismasi giderildi"}
+﻿{"version":"1.1.24","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.24/Muhasebe.exe","notes":"- Excel'e Aktar tum raporlarda calisiyor\n- Gelir-Gider Excel hatasi duzeltildi\n- Arama: filtrelenen satirlarin toplami hesaplaniyor\n- Rapor arama kutusu iyilestirildi"}
