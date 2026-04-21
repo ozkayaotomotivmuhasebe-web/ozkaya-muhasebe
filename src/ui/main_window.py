@@ -5641,6 +5641,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ("konu_gider",  "🏷️",  "Konuya Göre Giderler"),
             ("kira_takip",    "🏠",  "Kira Takip Raporu"),
             ("fatura_vade",   "📆",  "Fatura Vade Takibi"),
+            ("kredi_bitis",   "⏰",  "Kredi Bitiş Sıralaması"),
         ]
 
         for key, icon, label in report_menu:
@@ -5835,6 +5836,7 @@ Pasif Kullanıcı: {total_users - active_users}
             "maas":        "👷  Maaş Ödemeleri",
             "konu_gider":  "🏷️  Konuya Göre Giderler",
             "kira_takip": "🏠  Kira Takip Raporu",
+            "kredi_bitis": "⏰  Kredi Bitiş Sıralaması",
         }
         self.report_page_title.setText(titles.get(key, "📊  Raporlar"))
 
@@ -5883,6 +5885,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_kira_takip_report()
             elif key == "fatura_vade":
                 html = self._generate_fatura_vade_report()
+            elif key == "kredi_bitis":
+                html = self._generate_kredi_bitis_report()
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
@@ -7779,6 +7783,118 @@ Pasif Kullanıcı: {total_users - active_users}
                 )
             html += "</table><br>"
 
+        return html
+
+    def _generate_kredi_bitis_report(self):
+        """Tüm kredileri bitiş tarihine göre sıralayan rapor."""
+        from src.database.db import SessionLocal
+        from src.database.models import Loan
+        from datetime import date as _date
+
+        today = _date.today()
+        session = SessionLocal()
+        try:
+            loans = session.query(Loan).filter(
+                Loan.user_id == self.user.id,
+                Loan.is_active == True
+            ).all()
+
+            loan_rows = []
+            for l in loans:
+                remaining = max(0.0, max(float(l.remaining_balance or 0), float(l.loan_amount or 0)) - float(l.total_paid or 0))
+                loan_rows.append({
+                    'id': l.id,
+                    'loan_name': l.loan_name or '-',
+                    'bank_name': l.bank_name or '-',
+                    'loan_type': l.loan_type or '-',
+                    'monthly_payment': float(l.monthly_payment or 0),
+                    'remaining_balance': remaining,
+                    'status': l.status or 'AKTIF',
+                    'start_date': l.start_date,
+                    'end_date': l.end_date,
+                    'total_installments': l.total_installments,
+                    'paid_installments': l.paid_installments or 0,
+                    'interest_rate': float(l.interest_rate or 0),
+                })
+        finally:
+            session.close()
+
+        # Bitiş tarihine göre sırala: önce tarihi olanlar (yakın → uzak), sonra tarihi olmayanlar
+        with_date    = sorted([r for r in loan_rows if r['end_date']], key=lambda r: r['end_date'])
+        without_date = [r for r in loan_rows if not r['end_date']]
+        sorted_loans = with_date + without_date
+
+        def fmt(v):
+            return f"{v:,.2f} ₺".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        def date_cell(end_date):
+            if not end_date:
+                return "<span style='color:#888;'>—</span>"
+            days_left = (end_date - today).days
+            date_str = end_date.strftime('%d.%m.%Y')
+            if days_left < 0:
+                return f"<span style='color:#B71C1C; font-weight:bold;'>⛔ {date_str}<br><small>{abs(days_left)} gün geçti</small></span>"
+            elif days_left <= 30:
+                return f"<span style='color:#E65100; font-weight:bold;'>🔴 {date_str}<br><small>{days_left} gün kaldı</small></span>"
+            elif days_left <= 90:
+                return f"<span style='color:#F57F17; font-weight:bold;'>🟡 {date_str}<br><small>{days_left} gün kaldı</small></span>"
+            else:
+                return f"<span style='color:#2E7D32;'>🟢 {date_str}<br><small>{days_left} gün kaldı</small></span>"
+
+        def status_badge(status):
+            colors = {'AKTIF': '#1565C0', 'KAPATILDI': '#388E3C', 'IPTAL': '#B71C1C'}
+            c = colors.get(status, '#555')
+            return f"<span style='color:{c}; font-weight:bold;'>{status}</span>"
+
+        # KPI hesapla
+        active_count   = sum(1 for r in sorted_loans if r['status'] == 'AKTIF')
+        expired_count  = sum(1 for r in sorted_loans if r['end_date'] and (r['end_date'] - today).days < 0 and r['status'] == 'AKTIF')
+        soon_30_count  = sum(1 for r in sorted_loans if r['end_date'] and 0 <= (r['end_date'] - today).days <= 30 and r['status'] == 'AKTIF')
+        total_remaining = sum(r['remaining_balance'] for r in sorted_loans)
+        total_monthly   = sum(r['monthly_payment'] for r in sorted_loans if r['status'] == 'AKTIF')
+
+        html = self._rh("⏰", "Kredi Bitiş Sıralaması",
+                        f"Tüm krediler bitiş tarihine göre — {today.strftime('%d.%m.%Y')} itibarıyla",
+                        "#4A148C")
+        html += self._kpi_row([
+            ("📋", "Toplam Kredi",          str(len(sorted_loans)),       "#37474F"),
+            ("✅", "Aktif",                  str(active_count),            "#1565C0"),
+            ("⛔", "Vadesi Geçmiş",          str(expired_count),           "#B71C1C"),
+            ("🔴", "30 Gün İçinde Bitiyor",  str(soon_30_count),           "#E65100"),
+        ])
+        html += self._kpi_row([
+            ("⏳", "Toplam Kalan Borç",      fmt(total_remaining),         "#6A1B9A"),
+            ("💸", "Aylık Toplam Taksit",    fmt(total_monthly),           "#0D47A1"),
+        ])
+
+        if not sorted_loans:
+            html += "<p style='padding:20px; color:#555;'>Kayıtlı kredi bulunamadı.</p>"
+            return html
+
+        html += self._section("⏰ Kredi Bitiş Sıralaması (Yakından Uzağa)", "#4A148C")
+        html += self._table_header(
+            ["Kredi Adı", "Banka", "Tip", "Faiz %", "Aylık Taksit", "Kalan Borç", "Bitiş Tarihi", "Durum"],
+            color="#EDE7F6"
+        )
+        for i, r in enumerate(sorted_loans):
+            bg = "white" if i % 2 == 0 else "#FAFAFA"
+            taksit_str = (
+                f"{r['paid_installments']}/{r['total_installments']}"
+                if r['total_installments'] else f"{r['paid_installments']} ödendi"
+            )
+            html += (
+                f"<tr style='background:{bg};'>"
+                f"<td style='padding:7px 8px; font-weight:bold;'>{r['loan_name']}</td>"
+                f"<td style='padding:7px 8px;'>{r['bank_name']}</td>"
+                f"<td style='padding:7px 8px;'>{r['loan_type']}</td>"
+                f"<td style='padding:7px 8px; text-align:center;'>{r['interest_rate']:.2f}%</td>"
+                f"<td style='padding:7px 8px; text-align:right;'>{fmt(r['monthly_payment'])}</td>"
+                f"<td style='padding:7px 8px; text-align:right; color:#B71C1C; font-weight:bold;'>{fmt(r['remaining_balance'])}</td>"
+                f"<td style='padding:7px 8px;'>{date_cell(r['end_date'])}</td>"
+                f"<td style='padding:7px 8px;'>{status_badge(r['status'])}</td>"
+                f"</tr>"
+            )
+        html += "</table><br>"
         return html
 
     def _generate_nakit_kasasi_report(self, start_date, end_date):
