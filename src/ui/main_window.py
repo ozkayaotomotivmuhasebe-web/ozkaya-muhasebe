@@ -5642,6 +5642,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ("kira_takip",    "🏠",  "Kira Takip Raporu"),
             ("fatura_vade",   "📆",  "Fatura Vade Takibi"),
             ("kredi_bitis",   "⏰",  "Kredi Bitiş Sıralaması"),
+            ("kredi_bu_ay",   "💳",  "Bu Ay Ödenecek Krediler"),
         ]
 
         for key, icon, label in report_menu:
@@ -5837,6 +5838,7 @@ Pasif Kullanıcı: {total_users - active_users}
             "konu_gider":  "🏷️  Konuya Göre Giderler",
             "kira_takip": "🏠  Kira Takip Raporu",
             "kredi_bitis": "⏰  Kredi Bitiş Sıralaması",
+            "kredi_bu_ay": "💳  Bu Ay Ödenecek Krediler",
         }
         self.report_page_title.setText(titles.get(key, "📊  Raporlar"))
 
@@ -5887,6 +5889,8 @@ Pasif Kullanıcı: {total_users - active_users}
                 html = self._generate_fatura_vade_report()
             elif key == "kredi_bitis":
                 html = self._generate_kredi_bitis_report()
+            elif key == "kredi_bu_ay":
+                html = self._generate_kredi_bu_ay_report()
             else:
                 html = "<p>Bilinmeyen rapor türü.</p>"
             self.report_display.setHtml(html)
@@ -7192,12 +7196,20 @@ Pasif Kullanıcı: {total_users - active_users}
         from src.database.db import SessionLocal
         from src.database.models import Transaction, TransactionType
 
+        GIDER_TYPES = [
+            TransactionType.GIDER,
+            TransactionType.KREDI_DOSYA_MASRAFI,
+            TransactionType.KREDI_ODEME,
+            TransactionType.KREDI_KARTI_ODEME,
+            TransactionType.EKSPERTIZ_UCRETI,
+        ]
+
         session = SessionLocal()
         try:
-            # Seçilen tarih aralığındaki tüm GIDER işlemlerini çek
+            # Seçilen tarih aralığındaki tüm gider tipi işlemlerini çek
             transactions = session.query(Transaction).filter(
                 Transaction.user_id == self.user.id,
-                Transaction.transaction_type == TransactionType.GIDER,
+                Transaction.transaction_type.in_(GIDER_TYPES),
                 Transaction.transaction_date >= start_date,
                 Transaction.transaction_date <= end_date,
             ).order_by(Transaction.transaction_date.desc()).all()
@@ -7205,7 +7217,7 @@ Pasif Kullanıcı: {total_users - active_users}
             # Tüm zamanlardaki benzersiz konuları çek (yeni eklenen konular da görünsün)
             all_time_subjects = session.query(Transaction.subject).filter(
                 Transaction.user_id == self.user.id,
-                Transaction.transaction_type == TransactionType.GIDER,
+                Transaction.transaction_type.in_(GIDER_TYPES),
                 Transaction.subject != None,
                 Transaction.subject != "",
             ).distinct().all()
@@ -7792,6 +7804,147 @@ Pasif Kullanıcı: {total_users - active_users}
                 )
             html += "</table><br>"
 
+        return html
+
+    def _generate_kredi_bu_ay_report(self):
+        """Bu ay ödeme günü gelen aktif kredileri listeleyen rapor."""
+        from src.database.db import SessionLocal
+        from src.database.models import Loan, Transaction, TransactionType
+        from datetime import date as _date
+        import calendar
+
+        today = _date.today()
+        month_start = _date(today.year, today.month, 1)
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        month_end = _date(today.year, today.month, last_day)
+
+        session = SessionLocal()
+        try:
+            loans = session.query(Loan).filter(
+                Loan.user_id == self.user.id,
+                Loan.is_active == True,
+                Loan.status == 'AKTIF',
+            ).all()
+
+            # Bu ay yapılan kredi ödemeleri
+            this_month_payments = session.query(Transaction).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_type == TransactionType.KREDI_ODEME,
+                Transaction.transaction_date >= month_start,
+                Transaction.transaction_date <= month_end,
+            ).all()
+        finally:
+            session.close()
+
+        # Hangi loan_id'ler bu ay ödenmiş?
+        paid_loan_ids = set()
+        for t in this_month_payments:
+            lid = self._extract_loan_id_from_notes(t.notes)
+            if lid:
+                paid_loan_ids.add(lid)
+
+        def fmt(v):
+            return f"{v:,.2f} ₺".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        rows = []
+        for l in loans:
+            due_day = l.due_day or 15
+            pay_day = min(due_day, last_day)
+            payment_date = _date(today.year, today.month, pay_day)
+            monthly = float(l.monthly_payment or 0)
+            remaining = float(l.remaining_balance or 0)
+            paid_inst = l.paid_installments or 0
+            total_inst = l.total_installments
+            rows.append({
+                'loan_id': l.id,
+                'loan_name': l.loan_name or '-',
+                'bank_name': l.bank_name or '-',
+                'company_name': l.company_name or '-',
+                'monthly_payment': monthly,
+                'remaining_balance': remaining,
+                'payment_date': payment_date,
+                'paid_installments': paid_inst,
+                'total_installments': total_inst,
+                'is_paid_this_month': l.id in paid_loan_ids,
+            })
+
+        rows.sort(key=lambda r: r['payment_date'])
+        toplam = sum(r['monthly_payment'] for r in rows)
+        odendi = sum(r['monthly_payment'] for r in rows if r['is_paid_this_month'])
+        bekleyen = toplam - odendi
+
+        html = self._rh("💳", "Bu Ay Ödenecek Krediler",
+                        f"{today.strftime('%B %Y')} — {today.strftime('%d.%m.%Y')} itibarıyla",
+                        "#1A237E")
+        html += self._kpi_row([
+            ("📋", "Aktif Kredi Sayısı", str(len(rows)), "#37474F"),
+            ("💰", "Bu Ay Toplam Ödeme", fmt(toplam), "#1565C0"),
+            ("✅", "Ödenmiş", fmt(odendi), "#2E7D32"),
+            ("⏳", "Bekleyen Ödeme", fmt(bekleyen), "#E65100"),
+        ])
+
+        if not rows:
+            html += "<p style='padding:20px; color:#888;'>Bu ay için aktif kredi bulunamadı.</p>"
+            return html
+
+        html += """<table style='width:100%; border-collapse:collapse; margin-top:16px; table-layout:fixed; font-size:12px;'>
+            <colgroup>
+                <col style='width:20%;'>
+                <col style='width:13%;'>
+                <col style='width:10%;'>
+                <col style='width:10%;'>
+                <col style='width:7%;'>
+                <col style='width:14%;'>
+                <col style='width:14%;'>
+                <col style='width:12%;'>
+            </colgroup>
+            <tr style='background:#1A237E; color:#fff; font-size:12px;'>
+                <th style='padding:8px 6px; text-align:left; overflow:hidden; white-space:nowrap;'>Kredi Adı</th>
+                <th style='padding:8px 6px; text-align:left; overflow:hidden; white-space:nowrap;'>Banka</th>
+                <th style='padding:8px 6px; text-align:left; overflow:hidden; white-space:nowrap;'>Firma</th>
+                <th style='padding:8px 6px; text-align:center; overflow:hidden; white-space:nowrap;'>Ödeme Günü</th>
+                <th style='padding:8px 6px; text-align:center; overflow:hidden; white-space:nowrap;'>Taksit</th>
+                <th style='padding:8px 6px; text-align:right; overflow:hidden; white-space:nowrap;'>Aylık Tutar</th>
+                <th style='padding:8px 6px; text-align:right; overflow:hidden; white-space:nowrap;'>Kalan Bakiye</th>
+                <th style='padding:8px 6px; text-align:center; overflow:hidden; white-space:nowrap;'>Durum</th>
+            </tr>"""
+
+        for i, r in enumerate(rows):
+            bg = "#fff" if i % 2 == 0 else "#F3F4F6"
+            pay_str = r['payment_date'].strftime('%d.%m.%Y')
+            days_to = (r['payment_date'] - today).days
+            if r['is_paid_this_month']:
+                durum = "<span style='color:#2E7D32; font-weight:bold;'>✅ Ödendi</span>"
+                gun_str = f"<span style='color:#888;'>{pay_str}</span>"
+            elif days_to == 0:
+                durum = "<span style='color:#E65100; font-weight:bold;'>🔔 Bugün</span>"
+                gun_str = f"<span style='color:#E65100; font-weight:bold;'>{pay_str}</span>"
+            elif days_to <= 3:
+                durum = f"<span style='color:#E65100; font-weight:bold;'>⚠️ {days_to} gün</span>"
+                gun_str = f"<span style='color:#E65100;'>{pay_str}</span>"
+            else:
+                durum = f"<span style='color:#1565C0;'>🕐 {days_to} gün</span>"
+                gun_str = f"<span style='color:#555;'>{pay_str}</span>"
+
+            taksit_str = f"{r['paid_installments']}/{r['total_installments']}" if r['total_installments'] else f"{r['paid_installments']}/—"
+
+            html += f"""<tr style='background:{bg};'>
+                <td style='padding:7px 6px; font-weight:bold; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;' title='{r["loan_name"]}'>{r['loan_name']}</td>
+                <td style='padding:7px 6px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;'>{r['bank_name']}</td>
+                <td style='padding:7px 6px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;'>{r['company_name']}</td>
+                <td style='padding:7px 6px; text-align:center; white-space:nowrap;'>{gun_str}</td>
+                <td style='padding:7px 6px; text-align:center; color:#555; white-space:nowrap;'>{taksit_str}</td>
+                <td style='padding:7px 6px; text-align:right; font-weight:bold; white-space:nowrap;'>{fmt(r['monthly_payment'])}</td>
+                <td style='padding:7px 6px; text-align:right; color:#B71C1C; white-space:nowrap;'>{fmt(r['remaining_balance'])}</td>
+                <td style='padding:7px 6px; text-align:center; white-space:nowrap;'>{durum}</td>
+            </tr>"""
+
+        html += f"""<tr style='background:#1A237E; color:#fff; font-weight:bold;'>
+            <td colspan='5' style='padding:10px 8px; text-align:right;'>TOPLAM:</td>
+            <td style='padding:10px 8px; text-align:right;'>{fmt(toplam)}</td>
+            <td colspan='2'></td>
+        </tr>"""
+        html += "</table>"
         return html
 
     def _generate_kredi_bitis_report(self):
