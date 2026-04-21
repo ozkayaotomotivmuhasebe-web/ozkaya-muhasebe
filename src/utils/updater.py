@@ -48,8 +48,14 @@ class DownloadThread(QThread):
 
     def run(self):
         try:
-            with urllib.request.urlopen(self.url, timeout=30) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
+            # GitHub redirect'lerini takip et; User-Agent olmadan CDN reddedebilir
+            req = urllib.request.Request(
+                self.url,
+                headers={'User-Agent': 'Mozilla/5.0 OzkayaMuhasebe-Updater'}
+            )
+            # timeout=120: bağlantı ve her read() için 2 dakika — yavaş bağlantılar için yeterli
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers.get("Content-Length") or resp.headers.get("content-length") or 0)
                 downloaded = 0
                 chunk_size = 65536
                 with open(self.dest, "wb") as f:
@@ -61,6 +67,9 @@ class DownloadThread(QThread):
                         downloaded += len(chunk)
                         if total > 0:
                             self.progress.emit(int(downloaded * 100 / total))
+                        else:
+                            self.progress.emit(min(99, int(downloaded / (55 * 1024 * 1024) * 100)))
+            self.progress.emit(100)
             self.finished.emit(self.dest)
         except Exception as e:
             self.error.emit(str(e))
