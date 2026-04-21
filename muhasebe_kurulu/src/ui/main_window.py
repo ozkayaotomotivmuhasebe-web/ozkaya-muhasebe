@@ -7202,8 +7202,17 @@ Pasif Kullanıcı: {total_users - active_users}
                 Transaction.transaction_date <= end_date,
             ).order_by(Transaction.transaction_date.desc()).all()
 
-            # Tüm benzersiz konu değerlerini belirle
-            all_subjects = sorted(set((t.subject or "—") for t in transactions))
+            # Tüm zamanlardaki benzersiz konuları çek (yeni eklenen konular da görünsün)
+            all_time_subjects = session.query(Transaction.subject).filter(
+                Transaction.user_id == self.user.id,
+                Transaction.transaction_type == TransactionType.GIDER,
+                Transaction.subject != None,
+                Transaction.subject != "",
+            ).distinct().all()
+            all_subjects = sorted(set(
+                list(set((t.subject or "—") for t in transactions)) +
+                [row[0] for row in all_time_subjects if row[0]]
+            ))
         finally:
             session.close()
 
