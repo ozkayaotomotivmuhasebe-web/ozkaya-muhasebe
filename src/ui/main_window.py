@@ -4234,6 +4234,22 @@ Pasif Kullanıcı: {total_users - active_users}
         btn_sample_excel.clicked.connect(self.export_loan_template_excel)
         btn_layout.addWidget(btn_sample_excel)
         
+        btn_bulk_delete = QPushButton("🗑️ Toplu Sil")
+        btn_bulk_delete.setMinimumHeight(35)
+        btn_bulk_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #d32f2f; }
+        """)
+        btn_bulk_delete.clicked.connect(self.delete_loans_bulk)
+        btn_layout.addWidget(btn_bulk_delete)
+
         btn_refresh = QPushButton("🔄 Yenile")
         btn_refresh.setMinimumHeight(35)
         btn_refresh.clicked.connect(self.refresh_loans_table)
@@ -4287,7 +4303,7 @@ Pasif Kullanıcı: {total_users - active_users}
         self.table_loans.setColumnWidth(11, 100)
         self.table_loans.setColumnWidth(12, 260)
         self.table_loans.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table_loans.setSelectionMode(QTableWidget.SingleSelection)
+        self.table_loans.setSelectionMode(QTableWidget.ExtendedSelection)
         self.load_column_widths(self.table_loans, "loans")
         layout.addWidget(self.table_loans)
         
@@ -4583,8 +4599,8 @@ Pasif Kullanıcı: {total_users - active_users}
             return None
         if isinstance(value, (int, float)):
             return float(value)
-        text = str(value).strip().replace(" ", "")
-        if not text:
+        text = str(value).strip().replace(" ", "").replace("₺", "").replace("TL", "")
+        if not text or text in ("-", "--", "---", "N/A", "n/a", "-"):
             return None
         if "," in text and "." in text:
             if text.rfind(",") > text.rfind("."):
@@ -4595,7 +4611,10 @@ Pasif Kullanıcı: {total_users - active_users}
             normalized = text.replace(",", ".")
         else:
             normalized = text
-        return float(normalized)
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
 
     def _parse_excel_date(self, value):
         if value is None:
@@ -4634,7 +4653,7 @@ Pasif Kullanıcı: {total_users - active_users}
                 file_path += ".xlsx"
 
             headers = [
-                "Kredi Adı", "Banka", "Tip", "Çekilen Tutar", "Toplam Borç",
+                "Kredi Adı", "Banka", "Firma Adı", "Tip", "Çekilen Tutar", "Toplam Borç",
                 "Başlangıç Tarihi", "Ödeme Günü", "Aylık Taksit", "Faiz Oranı",
                 "Bitiş Tarihi", "Toplam Taksit", "Not"
             ]
@@ -4644,7 +4663,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ws.title = "Krediler"
             ws.append(headers)
             ws.append([
-                "İş Bankası Konut Kredisi", "İş Bankası", "KONUT", 1500000, 1650000,
+                "İş Bankası Konut Kredisi", "İş Bankası", "ÖZKAYA LTD.", "KONUT", 1500000, 1650000,
                 "01.02.2026", 15, 25000, 2.85,
                 "01.02.2036", 120, "Örnek kredi kaydı"
             ])
@@ -4684,6 +4703,9 @@ Pasif Kullanıcı: {total_users - active_users}
                 "krediadi": "loan_name",
                 "banka": "bank_name",
                 "bank": "bank_name",
+                "firmaadi": "company_name",
+                "firma": "company_name",
+                "sirket": "company_name",
                 "tip": "loan_type",
                 "kreditipi": "loan_type",
                 "cekilentutar": "loan_amount",
@@ -4719,6 +4741,7 @@ Pasif Kullanıcı: {total_users - active_users}
 
                 loan_name = str(data.get("loan_name", "") or "").strip()
                 bank_name = str(data.get("bank_name", "") or "").strip()
+                company_name = str(data.get("company_name", "") or "").strip() or None
                 loan_type = str(data.get("loan_type", "") or "").strip()
                 loan_amount = self._parse_excel_float(data.get("loan_amount"))
                 start_date = self._parse_excel_date(data.get("start_date"))
@@ -4739,10 +4762,11 @@ Pasif Kullanıcı: {total_users - active_users}
                     self.user.id,
                     loan_name,
                     bank_name,
-                    loan_type,
-                    float(loan_amount),
-                    start_date,
-                    int(due_day_raw),
+                    company_name=company_name,
+                    loan_type=loan_type,
+                    loan_amount=float(loan_amount),
+                    start_date=start_date,
+                    due_day=int(due_day_raw),
                     interest_rate=float(interest_rate),
                     monthly_payment=float(monthly_payment),
                     remaining_balance=float(remaining_balance) if remaining_balance is not None else None,
@@ -5095,6 +5119,60 @@ Pasif Kullanıcı: {total_users - active_users}
                 self.refresh_loans_table()
             else:
                 QMessageBox.critical(self, "Hata", msg)
+
+    def delete_loans_bulk(self):
+        """Seçili kredileri toplu sil"""
+        from src.services.loan_service import LoanService
+
+        selected_rows = self.table_loans.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz kredileri seçin.\n(Ctrl veya Shift ile çoklu seçim yapabilirsiniz.)")
+            return
+
+        loan_ids = []
+        loan_names = []
+        for index in selected_rows:
+            row = index.row()
+            name_item = self.table_loans.item(row, 0)
+            bank_item = self.table_loans.item(row, 1)
+            loan_id = name_item.data(Qt.UserRole) if name_item else None
+            if loan_id:
+                loan_ids.append(loan_id)
+                name = name_item.text() if name_item else ""
+                bank = bank_item.text() if bank_item else ""
+                loan_names.append(f"{name} ({bank})")
+
+        if not loan_ids:
+            QMessageBox.warning(self, "Uyarı", "Seçili satırlarda kredi bulunamadı.")
+            return
+
+        names_text = "\n".join(loan_names[:10])
+        if len(loan_names) > 10:
+            names_text += f"\n... ve {len(loan_names) - 10} tane daha"
+
+        reply = QMessageBox.question(
+            self, "Toplu Silme Onayı",
+            f"{len(loan_ids)} kredi silinecek:\n\n{names_text}\n\nEmin misiniz?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success_count = 0
+        errors = []
+        for loan_id in loan_ids:
+            ok, msg = LoanService.delete_loan(loan_id)
+            if ok:
+                success_count += 1
+            else:
+                errors.append(msg)
+
+        self.refresh_loans_table()
+        if errors:
+            QMessageBox.warning(self, "Toplu Silme Tamamlandı",
+                f"Silinen: {success_count}\nHatalı: {len(errors)}\n\n" + "\n".join(errors[:5]))
+        else:
+            QMessageBox.information(self, "Başarılı", f"{success_count} kredi başarıyla silindi.")
     
     def create_cari_extract_tab(self) -> QWidget:
         """Cari Ekstre sekmesi"""
