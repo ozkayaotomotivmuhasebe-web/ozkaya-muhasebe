@@ -119,6 +119,7 @@ class LoanDialog(QDialog):
         # Kredi Başlama Tarihi
         self.start_date_input = QDateEdit()
         self.start_date_input.setCalendarPopup(True)
+        self.start_date_input.setDisplayFormat("dd.MM.yyyy")
         self.start_date_input.setDate(QDate.currentDate())
         self.start_date_input.setMinimumHeight(35)
         form_layout.addRow("📅 Başlama Tarihi: <span style=\"color:#d32f2f\">*</span>", self.start_date_input)
@@ -126,6 +127,7 @@ class LoanDialog(QDialog):
         # Kredi Bitiş Tarihi
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
+        self.end_date_input.setDisplayFormat("dd.MM.yyyy")
         self.end_date_input.setMinimumHeight(35)
         form_layout.addRow("🏁 Bitiş Tarihi:", self.end_date_input)
         

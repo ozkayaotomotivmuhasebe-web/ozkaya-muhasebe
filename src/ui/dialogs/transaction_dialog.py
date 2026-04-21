@@ -84,6 +84,7 @@ class TransactionDialog(QDialog):
         # Tarih
         self.date_input = QDateEdit()
         self.date_input.setCalendarPopup(True)
+        self.date_input.setDisplayFormat("dd.MM.yyyy")
         self.date_input.setDate(QDate.currentDate())
         self.date_input.setMinimumHeight(35)
         form_layout.addRow("📅 Tarih: <span style=\"color:#d32f2f\">*</span>", self.date_input)
@@ -103,6 +104,7 @@ class TransactionDialog(QDialog):
         self.due_date_label = QLabel("📅 Vade Tarihi (30 gün):")
         self.due_date_input = QDateEdit()
         self.due_date_input.setCalendarPopup(True)
+        self.due_date_input.setDisplayFormat("dd.MM.yyyy")
         self.due_date_input.setDate(QDate.currentDate().addDays(30))
         self.due_date_input.setMinimumHeight(35)
         self.due_date_input.setStyleSheet("background-color: #FFF9C4;")

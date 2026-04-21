@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer
 from src.database.db import init_db, close_db
 from src.ui.dialogs.login_dialog import LoginDialog
@@ -49,6 +49,7 @@ def main():
     
     # PyQt5 uygulamasını oluştur
     app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create("Fusion"))  # EXE'de tutarlı buton render
     app_icon = get_app_icon()
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)

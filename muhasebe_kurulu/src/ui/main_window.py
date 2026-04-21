@@ -987,22 +987,34 @@ class MainWindow(QMainWindow):
         filter_layout.addWidget(QLabel("Başlangıç:"))
         self.start_date_filter = QDateEdit()
         self.start_date_filter.setCalendarPopup(True)
-        self.start_date_filter.setDate(QDate.currentDate().addMonths(-1))
+        self.start_date_filter.setDisplayFormat("dd.MM.yyyy")
+        self.start_date_filter.setDate(QDate(QDate.currentDate().year(), QDate.currentDate().month(), 1))
         self.start_date_filter.setMinimumHeight(30)
         filter_layout.addWidget(self.start_date_filter)
         
         filter_layout.addWidget(QLabel("Bitiş:"))
         self.end_date_filter = QDateEdit()
         self.end_date_filter.setCalendarPopup(True)
+        self.end_date_filter.setDisplayFormat("dd.MM.yyyy")
         self.end_date_filter.setDate(QDate.currentDate())
         self.end_date_filter.setMinimumHeight(30)
         filter_layout.addWidget(self.end_date_filter)
+
+        self.start_date_filter.dateChanged.connect(self.apply_transaction_filter)
+        self.end_date_filter.dateChanged.connect(self.apply_transaction_filter)
         
         # Filtre uygula butonu
         btn_filter = QPushButton("🔍 Filtrele")
         btn_filter.setMinimumHeight(30)
         btn_filter.clicked.connect(self.apply_transaction_filter)
         filter_layout.addWidget(btn_filter)
+
+        # Tüm dönem butonu
+        btn_all_period = QPushButton("📅 Tüm Dönem")
+        btn_all_period.setMinimumHeight(30)
+        btn_all_period.setToolTip("Tüm tarihlerdeki işlemleri göster")
+        btn_all_period.clicked.connect(self.show_all_transactions)
+        filter_layout.addWidget(btn_all_period)
         
         # Arama alanı - Tüm sütunlarda ara
         filter_layout.addWidget(QLabel("🔍 Ara:"))
@@ -1244,7 +1256,11 @@ class MainWindow(QMainWindow):
         self.load_column_widths(self.table_transactions, "transactions")
 
     def refresh_transactions_table(self):
-        """İşlemler tablosunu yenile"""
+        """İşlemler tablosunu yenile - aktif tarih filtreleriyle"""
+        self.apply_transaction_filter()
+
+    def _refresh_transactions_table_full(self):
+        """Tüm işlemleri yükler (dahili kullanım)"""
         try:
             self.table_transactions.setUpdatesEnabled(False)
             transactions = TransactionService.get_all_transactions(self.user.id)
@@ -1423,6 +1439,16 @@ class MainWindow(QMainWindow):
             self.load_transaction_column_widths()
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
+
+    def show_all_transactions(self):
+        """Tarih filtrelerini kaldırarak tüm işlemleri göster"""
+        self.start_date_filter.blockSignals(True)
+        self.end_date_filter.blockSignals(True)
+        self.start_date_filter.setDate(QDate(2000, 1, 1))
+        self.end_date_filter.setDate(QDate.currentDate())
+        self.start_date_filter.blockSignals(False)
+        self.end_date_filter.blockSignals(False)
+        self.apply_transaction_filter()
     
     def search_customer_transactions(self):
         """Tüm sütunlarda ara"""
@@ -1434,7 +1460,9 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            transactions = TransactionService.get_all_transactions(self.user.id)
+            start_date = self.start_date_filter.date().toPyDate()
+            end_date = self.end_date_filter.date().toPyDate()
+            transactions = TransactionService.get_all_transactions(self.user.id, start_date, end_date)
             # Yeni işlemler üstte olsun (descending sort)
             transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
             
@@ -10322,6 +10350,7 @@ Pasif Kullanıcı: {total_users - active_users}
         # Başlama Tarihi
         layout.addWidget(QLabel("Başlama Tarihi:"))
         start_date_field = QDateEdit()
+        start_date_field.setDisplayFormat("dd.MM.yyyy")
         start_date_field.setDate(QDate.currentDate())
         layout.addWidget(start_date_field)
         
