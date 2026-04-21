@@ -1,1 +1,3 @@
-{"version":"1.1.22","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.22/Muhasebe.exe","notes":"- Guncelleme motoru duzeltildi: PowerShell ile kopyalama (Turkce yol sorunu cozuldu)"}
+﻿{"version":"1.1.23","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.23/Muhasebe.exe","notes":"- python311.dll yukleme hatasi duzeltildi (Failed to load Python DLL)
+- Gecici dizin EXE yanina tasindi (runtime-tmpdir)
+- python311.dll cakismasi giderildi"}

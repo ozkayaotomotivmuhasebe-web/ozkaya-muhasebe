@@ -63,14 +63,11 @@ if exist "%PYTHON_DIR%\MSVCP140.dll" (
     set "VCRT_ARGS=%VCRT_ARGS% --add-binary "C:\Windows\System32\MSVCP140.dll;.""
 )
 
-REM python311.dll'yi de açıkça ekle
-if exist "%PYTHON_DIR%\python311.dll" (
-    set "VCRT_ARGS=%VCRT_ARGS% --add-binary "%PYTHON_DIR%\python311.dll;.""
-)
+REM python311.dll - PyInstaller otomatik handle eder, manuel ekleme cakismasini onlemek icin burada EKLENMEZ
 
 echo VCRT_ARGS: %VCRT_ARGS%
 
-%VENV_PYTHON% -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 %VCRT_ARGS% main.py
+%VENV_PYTHON% -m PyInstaller --clean --noconfirm --onefile --windowed --name "Muhasebe" --icon="%ICON_FILE%" --add-data "%ICON_FILE%;." --add-data "ICON.ico;." --add-data "logo.png;." --add-data "icon.png;." --hidden-import=PyQt5 --runtime-tmpdir "." %VCRT_ARGS% main.py
 
 if not exist dist\Muhasebe.exe (
     echo ❌ HATA: EXE oluşturulamadı!
