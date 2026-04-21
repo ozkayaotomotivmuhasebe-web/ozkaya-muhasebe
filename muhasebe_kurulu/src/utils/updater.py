@@ -48,10 +48,12 @@ class DownloadThread(QThread):
 
     def run(self):
         try:
+            # GitHub redirect'lerini takip et; User-Agent olmadan CDN reddedebilir
             req = urllib.request.Request(
                 self.url,
                 headers={'User-Agent': 'Mozilla/5.0 OzkayaMuhasebe-Updater'}
             )
+            # timeout=120: bağlantı ve her read() için 2 dakika — yavaş bağlantılar için yeterli
             with urllib.request.urlopen(req, timeout=120) as resp:
                 total = int(resp.headers.get("Content-Length") or resp.headers.get("content-length") or 0)
                 downloaded = 0
@@ -281,38 +283,42 @@ def _do_update(parent, download_url, new_ver):
             return
 
         if getattr(sys, "frozen", False):
-            # Çalışan EXE'yi değiştir
             current_exe = sys.executable
+            current_pid = os.getpid()          # PID'i şimdi al, exit'ten önce
             bat_path = os.path.join(tmp_dir, "_ozkaya_update.bat")
-            # _MEI temp klasörlerini temizleyip eski process ölene kadar bekle
-            bat_content = f"""@echo off
-echo Guncelleme basliyor...
-REM Eski process tamamen kapanana kadar bekle
-taskkill /f /im Muhasebe.exe >nul 2>&1
-timeout /t 6 /nobreak >nul
-REM Yeni EXE'yi yerleştir
-move /y "{new_exe}" "{current_exe}"
-if errorlevel 1 (
-    echo HATA: Dosya tasinamadi!
-    pause
-    del "%~f0"
-    exit /b 1
-)
-REM Dosyanin tamamen yazilmasini bekle (OneDrive sync icin)
-timeout /t 6 /nobreak >nul
-REM Dosya var mi kontrol et
-if not exist "{current_exe}" (
-    echo HATA: EXE bulunamadi!
-    pause
-    del "%~f0"
-    exit /b 1
-)
-REM Yeni EXE'yi baslat
-start "" "{current_exe}"
-REM Bat'i sil ve cik
-timeout /t 2 /nobreak >nul
-del "%~f0"
-"""
+
+            bat_content = (
+                "@echo off\n"
+                "title OZKAYA Guncelleme\n"
+                "echo.\n"
+                "echo  OZKAYA Muhasebe Guncelleniyor...\n"
+                "echo  Lutfen bu pencereyi kapatmayin.\n"
+                "echo.\n"
+                f":BEKLE\n"
+                f"tasklist /fi \"PID eq {current_pid}\" 2>nul | find /i \"{current_pid}\" >nul\n"
+                "if not errorlevel 1 (\n"
+                "    timeout /t 1 /nobreak >nul\n"
+                "    goto BEKLE\n"
+                ")\n"
+                "echo  Eski surum kapandi, dosya kopyalaniyor...\n"
+                "timeout /t 2 /nobreak >nul\n"
+                f"copy /y \"{new_exe}\" \"{current_exe}\"\n"
+                "if errorlevel 1 (\n"
+                "    echo.\n"
+                "    echo  HATA: Dosya kopyalanamadi!\n"
+                "    echo  Lütfen uygulamayi kapatip manuel olarak guncelleyin.\n"
+                "    pause\n"
+                f"    del \"{new_exe}\" >nul 2>&1\n"
+                "    del \"%~f0\"\n"
+                "    exit /b 1\n"
+                ")\n"
+                f"del \"{new_exe}\" >nul 2>&1\n"
+                "echo  Guncelleme tamamlandi! Uygulama baslatiliyor...\n"
+                "timeout /t 2 /nobreak >nul\n"
+                f"start \"\" \"{current_exe}\"\n"
+                "del \"%~f0\"\n"
+            )
+
             with open(bat_path, "w", encoding="cp1254") as f:
                 f.write(bat_content)
 
@@ -321,11 +327,12 @@ del "%~f0"
                 f"✅ Sürüm {new_ver} indirildi!\n\n"
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
-            subprocess.Popen(["cmd", "/c", bat_path],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
-            sys.exit(0)
+            subprocess.Popen(
+                ["cmd", "/c", bat_path],
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+            os._exit(0)
         else:
-            # Python script modunda
             QMessageBox.information(
                 parent, "Güncelleme İndirildi",
                 f"✅ Yeni sürüm {new_ver} indirildi:\n{new_exe}\n\n"

@@ -1,1 +1,1 @@
-﻿{"version":"1.1.19","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.19/Muhasebe.exe","notes":"- Guncelleme dongusu duzeltildi\n- Konuya Gore Giderler: yeni eklenen konular otomatik listeleniyor"}
+﻿{"version":"1.1.20","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.20/Muhasebe.exe","notes":"- Guncelleme motoru yeniden yazildi (PID beklemesi, guvenlir dosya degisimi)\n- Guncelleme dongusu ve hata gizlenme problemi cozuldu"}
