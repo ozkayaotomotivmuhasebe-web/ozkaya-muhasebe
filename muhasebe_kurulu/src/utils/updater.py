@@ -308,7 +308,7 @@ def _do_update(parent, download_url, new_ver):
                 "if errorlevel 1 (\n"
                 "    echo.\n"
                 "    echo  HATA: Dosya kopyalanamadi!\n"
-                "    echo  Lütfen uygulamayi kapatip manuel olarak guncelleyin.\n"
+                "    echo  Lutfen uygulamayi kapatip manuel olarak guncelleyin.\n"
                 "    pause\n"
                 f"    del \"{new_exe}\" >nul 2>&1\n"
                 "    del \"%~f0\"\n"

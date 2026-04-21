@@ -1268,6 +1268,18 @@ class KiraTakipWidget(QWidget):
             QMessageBox.Yes | QMessageBox.No
         )
         if ret == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                w = self.tabs.widget(idx)
+                if isinstance(w, TahsilatWidget):
+                    tab_data = {"tab_name": tab_name, **w.to_dict()}
+                    label = f"Kira Takip Sekme: {tab_name} | {len(w.contracts)} sözleşme"
+                    from src.services.recycle_bin_service import RecycleBinService
+                    RecycleBinService._add(
+                        self.user_id, 'kira_takip_sekme', None, label, tab_data
+                    )
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             self.tabs.removeTab(idx); self._save()
 
     def _tab_ctx_menu(self, pos):

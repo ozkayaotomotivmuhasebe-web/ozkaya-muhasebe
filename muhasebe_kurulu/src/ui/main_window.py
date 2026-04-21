@@ -233,6 +233,9 @@ class MainWindow(QMainWindow):
         if self.user.can_view_settings:
             self.tabs.addTab(self.create_settings_tab(), "⚙️ Ayarlar")
 
+        # Çöp Kutusu (her kullanıcı için)
+        self.tabs.addTab(self.create_recycle_bin_tab(), "🗑️ Çöp Kutusu")
+
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
         central_widget.setLayout(layout)
@@ -315,6 +318,8 @@ class MainWindow(QMainWindow):
             elif "Krediler" in tab_text and hasattr(self, 'table_loans'):
                 self.refresh_loan_stats()
                 self.refresh_loans_table()
+            elif "Çöp Kutusu" in tab_text and hasattr(self, 'table_recycle_bin'):
+                self.refresh_recycle_bin_table()
 
             self._loaded_tabs.add(tab_text)
         except Exception as e:
@@ -498,6 +503,211 @@ class MainWindow(QMainWindow):
         self.refresh_dashboard()
         return widget
     
+    def create_recycle_bin_tab(self) -> QWidget:
+        """Çöp Kutusu sekmesi"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        title = QLabel("🗑️ Çöp Kutusu")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setStyleSheet("color: #333;")
+        layout.addWidget(title)
+
+        info = QLabel("Silinen kayıtlar burada saklanır. 'Geri Al' ile orijinal konumuna döndürebilirsiniz.")
+        info.setStyleSheet("color: #666; font-size: 10pt;")
+        layout.addWidget(info)
+
+        # Buton çubuğu
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        btn_refresh_rb = QPushButton("🔄 Yenile")
+        btn_refresh_rb.setMinimumHeight(32)
+        btn_refresh_rb.clicked.connect(self.refresh_recycle_bin_table)
+        btn_row.addWidget(btn_refresh_rb)
+
+        btn_empty = QPushButton("🗑️ Çöp Kutusunu Boşalt")
+        btn_empty.setMinimumHeight(32)
+        btn_empty.setStyleSheet("""
+            QPushButton {
+                background-color: #b71c1c; color: white;
+                border: none; border-radius: 4px;
+                padding: 6px 14px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #7f0000; }
+        """)
+        btn_empty.clicked.connect(self.empty_recycle_bin)
+        btn_row.addWidget(btn_empty)
+        btn_row.addStretch()
+
+        layout.addLayout(btn_row)
+
+        # Tablo
+        self.table_recycle_bin = QTableWidget()
+        self.table_recycle_bin.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_recycle_bin.setColumnCount(4)
+        self.table_recycle_bin.setHorizontalHeaderLabels(["TÜR", "AÇIKLAMA", "SİLİNME TARİHİ", "İŞLEMLER"])
+        self.table_recycle_bin.setAlternatingRowColors(True)
+        self.table_recycle_bin.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table_recycle_bin.horizontalHeader().setStretchLastSection(False)
+        self.table_recycle_bin.setColumnWidth(0, 110)
+        self.table_recycle_bin.setColumnWidth(1, 500)
+        self.table_recycle_bin.setColumnWidth(2, 160)
+        self.table_recycle_bin.setColumnWidth(3, 200)
+        self.table_recycle_bin.setStyleSheet("""
+            QTableWidget { border: 1px solid #ddd; font-size: 10pt; }
+            QHeaderView::section {
+                background-color: #455A64; color: white;
+                padding: 6px; border: 1px solid #37474F; font-weight: bold;
+            }
+        """)
+        layout.addWidget(self.table_recycle_bin)
+
+        widget.setLayout(layout)
+        return widget
+
+    def refresh_recycle_bin_table(self):
+        """Çöp kutusu tablosunu yenile"""
+        try:
+            from src.services.recycle_bin_service import RecycleBinService
+            items = RecycleBinService.get_items(self.user.id)
+
+            self.table_recycle_bin.setRowCount(len(items))
+
+            type_labels = {
+                'transaction': '💰 İşlem',
+                'cari': '📋 Cari',
+                'banka': '🏦 Banka',
+                'kredi': '📊 Kredi',
+                'kredi_karti': '💳 KK',
+                'calisan': '👤 Çalışan',
+                'kira_takip_sekme': '🏠 Kira Sekme',
+            }
+
+            for i, item in enumerate(items):
+                type_item = QTableWidgetItem(type_labels.get(item.item_type, item.item_type))
+                type_item.setData(Qt.UserRole, item.id)
+                self.table_recycle_bin.setItem(i, 0, type_item)
+
+                self.table_recycle_bin.setItem(i, 1, QTableWidgetItem(item.item_label))
+
+                deleted_at_str = item.deleted_at.strftime("%d.%m.%Y %H:%M") if item.deleted_at else "-"
+                self.table_recycle_bin.setItem(i, 2, QTableWidgetItem(deleted_at_str))
+
+                # İşlem butonları
+                action_widget = QWidget()
+                action_layout = QHBoxLayout(action_widget)
+                action_layout.setContentsMargins(4, 2, 4, 2)
+                action_layout.setSpacing(6)
+                action_layout.setAlignment(Qt.AlignCenter)
+
+                btn_restore = QPushButton("↩️ Geri Al")
+                btn_restore.setMinimumHeight(26)
+                btn_restore.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50; color: white;
+                        border: none; border-radius: 3px;
+                        padding: 4px 8px; font-size: 9pt; font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #388E3C; }
+                """)
+                btn_restore.clicked.connect(lambda checked, iid=item.id: self._restore_recycle_bin_item(iid))
+                action_layout.addWidget(btn_restore)
+
+                btn_perm = QPushButton("🗑️ Kalıcı Sil")
+                btn_perm.setMinimumHeight(26)
+                btn_perm.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336; color: white;
+                        border: none; border-radius: 3px;
+                        padding: 4px 8px; font-size: 9pt; font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #c62828; }
+                """)
+                btn_perm.clicked.connect(lambda checked, iid=item.id: self._perm_delete_recycle_bin_item(iid))
+                action_layout.addWidget(btn_perm)
+
+                self.table_recycle_bin.setCellWidget(i, 3, action_widget)
+
+            self._resize_table(self.table_recycle_bin, stretch_col=1)
+        except Exception as e:
+            print(f"Çöp kutusu yükleme hatası: {e}")
+            import traceback; traceback.print_exc()
+
+    def _restore_recycle_bin_item(self, deleted_item_id: int):
+        """Çöp kutusundan bir öğeyi geri al"""
+        from src.services.recycle_bin_service import RecycleBinService
+        # Tip bilgisini önceden al
+        try:
+            from src.database.db import SessionLocal
+            from src.database.models import DeletedItem as _DI
+            _s = SessionLocal()
+            _di = _s.query(_DI).filter(_DI.id == deleted_item_id).first()
+            item_type = _di.item_type if _di else None
+            _s.close()
+        except Exception:
+            item_type = None
+
+        success, msg = RecycleBinService.restore_item(deleted_item_id)
+        if success:
+            QMessageBox.information(self, "Başarılı", f"Kayıt geri alındı.\n{msg}")
+            self.refresh_recycle_bin_table()
+            self.refresh_all_data()
+            # Kira takip sekmesini yenile
+            if item_type == 'kira_takip_sekme':
+                self._reload_kira_takip_widget()
+        else:
+            QMessageBox.critical(self, "Hata", f"Geri alma başarısız:\n{msg}")
+
+    def _reload_kira_takip_widget(self):
+        """Kira Takip widget'ını JSON dosyasından yeniden yükle"""
+        try:
+            from src.ui.kira_takip import KiraTakipWidget
+            for i in range(self.tabs.count()):
+                if "Kira Takip" in self.tabs.tabText(i):
+                    w = self.tabs.widget(i)
+                    if isinstance(w, KiraTakipWidget):
+                        # Mevcut sekmeleri temizle ve yeniden yükle
+                        for j in range(w.tabs.count() - 1, -1, -1):
+                            w.tabs.removeTab(j)
+                        w._load_from_file()
+                    break
+        except Exception as _e:
+            print(f"Kira takip yenileme hatası: {_e}")
+
+    def _perm_delete_recycle_bin_item(self, deleted_item_id: int):
+        """Çöp kutusundan kalıcı sil"""
+        reply = QMessageBox.question(
+            self, "Kalıcı Silme",
+            "Bu kaydı kalıcı olarak silmek istediğinize emin misiniz?\nBu işlem geri alınamaz!",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            from src.services.recycle_bin_service import RecycleBinService
+            success, msg = RecycleBinService.permanent_delete(deleted_item_id)
+            if success:
+                self.refresh_recycle_bin_table()
+            else:
+                QMessageBox.critical(self, "Hata", msg)
+
+    def empty_recycle_bin(self):
+        """Çöp kutusunu boşalt"""
+        reply = QMessageBox.question(
+            self, "Çöp Kutusunu Boşalt",
+            "Çöp kutusundaki TÜM kayıtlar kalıcı olarak silinecek.\nBu işlem geri alınamaz. Devam etmek istiyor musunuz?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            from src.services.recycle_bin_service import RecycleBinService
+            success, msg = RecycleBinService.empty_bin(self.user.id)
+            if success:
+                QMessageBox.information(self, "Başarılı", msg)
+                self.refresh_recycle_bin_table()
+            else:
+                QMessageBox.critical(self, "Hata", msg)
+
     def create_stat_card(self, title: str, value: str, color: str) -> QFrame:
         """İstatistik kartı oluştur"""
         card = QFrame()
@@ -1597,9 +1807,21 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                from src.database.db import SessionLocal
+                from src.database.models import Transaction as _Trans
+                from src.services.recycle_bin_service import RecycleBinService
+                _s = SessionLocal()
+                _t = _s.query(_Trans).filter(_Trans.id == transaction_id).first()
+                if _t:
+                    RecycleBinService.save_transaction(_t)
+                _s.close()
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             success, msg = TransactionService.delete_transaction(transaction_id)
             if success:
-                QMessageBox.information(self, "Başarılı", "İşlem silindi ve hesaplar güncellendi")
+                QMessageBox.information(self, "Başarılı", "İşlem silindi ve çöp kutusuna taşındı")
                 self.refresh_all_data()
             else:
                 QMessageBox.critical(self, "Hata", f"İşlem silinemedi: {msg}")
@@ -1635,22 +1857,40 @@ class MainWindow(QMainWindow):
             return
         errors = []
         success_count = 0
+        # Çöp kutusu için session
+        try:
+            from src.database.db import SessionLocal
+            from src.database.models import Transaction as _Trans
+            from src.services.recycle_bin_service import RecycleBinService
+            _rb_session = SessionLocal()
+        except Exception:
+            _rb_session = None
         for row in selected_rows:
             item = self.table_transactions.item(row, 0)
             if item:
                 tid = item.data(Qt.UserRole)
                 if tid:
+                    # Çöp kutusuna kaydet
+                    if _rb_session:
+                        try:
+                            _t = _rb_session.query(_Trans).filter(_Trans.id == tid).first()
+                            if _t:
+                                RecycleBinService.save_transaction(_t)
+                        except Exception as _e:
+                            print(f"Çöp kutusu kayıt hatası: {_e}")
                     ok, msg = TransactionService.delete_transaction(tid)
                     if ok:
                         success_count += 1
                     else:
                         errors.append(msg)
+        if _rb_session:
+            _rb_session.close()
         self.toggle_bulk_delete_mode()
         self.refresh_all_data()
         if errors:
             QMessageBox.warning(self, "Sonuç", f"{success_count} işlem silindi.\n{len(errors)} işlem silinemedi.")
         else:
-            QMessageBox.information(self, "Başarılı", f"{success_count} işlem başarıyla silindi.")
+            QMessageBox.information(self, "Başarılı", f"{success_count} işlem çöp kutusuna taşındı.")
 
     def create_invoices_tab(self) -> QWidget:
         """Faturalar sekmesi"""
@@ -2283,9 +2523,21 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                from src.database.db import SessionLocal
+                from src.database.models import Cari as _Cari
+                from src.services.recycle_bin_service import RecycleBinService
+                _s = SessionLocal()
+                _c = _s.query(_Cari).filter(_Cari.id == cari_id).first()
+                if _c:
+                    RecycleBinService.save_cari(_c)
+                _s.close()
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             success, msg = CariService.delete_cari(cari_id)
             if success:
-                QMessageBox.information(self, "Başarılı", "Cari silindi")
+                QMessageBox.information(self, "Başarılı", "Cari çöp kutusuna taşındı")
                 self.refresh_all_data()
             else:
                 QMessageBox.critical(self, "Hata", msg)
@@ -2602,9 +2854,21 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                from src.database.db import SessionLocal
+                from src.database.models import BankAccount as _Bank
+                from src.services.recycle_bin_service import RecycleBinService
+                _s = SessionLocal()
+                _b = _s.query(_Bank).filter(_Bank.id == account_id).first()
+                if _b:
+                    RecycleBinService.save_bank(_b)
+                _s.close()
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             success, msg = BankService.delete_account(account_id)
             if success:
-                QMessageBox.information(self, "Başarılı", "Banka hesabı silindi")
+                QMessageBox.information(self, "Başarılı", "Banka hesabı çöp kutusuna taşındı")
                 self.refresh_all_data()
             else:
                 QMessageBox.critical(self, "Hata", msg)
@@ -4167,9 +4431,21 @@ Pasif Kullanıcı: {total_users - active_users}
         reply = QMessageBox.question(self, "Onay", "Bu kredi kartını silmek istediğinize emin misiniz?",
                                     QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                from src.database.db import SessionLocal
+                from src.database.models import CreditCard as _Card
+                from src.services.recycle_bin_service import RecycleBinService
+                _s = SessionLocal()
+                _c = _s.query(_Card).filter(_Card.id == card_id).first()
+                if _c:
+                    RecycleBinService.save_credit_card(_c)
+                _s.close()
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             success, msg = CreditCardService.delete_card(card_id)
             if success:
-                QMessageBox.information(self, "Başarılı", "Kredi kartı silindi")
+                QMessageBox.information(self, "Başarılı", "Kredi kartı çöp kutusuna taşındı")
                 self.refresh_all_data()
             else:
                 QMessageBox.critical(self, "Hata", msg)
@@ -5154,9 +5430,21 @@ Pasif Kullanıcı: {total_users - active_users}
         reply = QMessageBox.question(self, "Onay", "Bu krediyi silmek istediğinize emin misiniz?",
                                     QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                from src.database.db import SessionLocal
+                from src.database.models import Loan as _Loan
+                from src.services.recycle_bin_service import RecycleBinService
+                _s = SessionLocal()
+                _l = _s.query(_Loan).filter(_Loan.id == loan_id).first()
+                if _l:
+                    RecycleBinService.save_loan(_l)
+                _s.close()
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             success, msg = LoanService.delete_loan(loan_id)
             if success:
-                QMessageBox.information(self, "Başarılı", "Kredi silindi")
+                QMessageBox.information(self, "Başarılı", "Kredi çöp kutusuna taşındı")
                 self.refresh_loans_table()
             else:
                 QMessageBox.critical(self, "Hata", msg)
@@ -11247,13 +11535,25 @@ Pasif Kullanıcı: {total_users - active_users}
         if reply == QMessageBox.Yes:
             try:
                 from src.services.employee_service import EmployeeService
-                from src.database.db import get_db
-                
+                from src.database.db import get_db, SessionLocal
+                from src.database.models import Employee as _Emp
+                from src.services.recycle_bin_service import RecycleBinService
+
+                # Çöp kutusuna kaydet
+                try:
+                    _s = SessionLocal()
+                    _emp = _s.query(_Emp).filter(_Emp.id == employee_id).first()
+                    if _emp:
+                        RecycleBinService.save_employee(_emp, self.user.id)
+                    _s.close()
+                except Exception as _e2:
+                    print(f"Çöp kutusu kayıt hatası: {_e2}")
+
                 db = get_db()
                 emp_service = EmployeeService(db)
                 emp_service.delete_employee(employee_id)
                 db.close()
-                QMessageBox.information(self, "Başarılı", "Çalışan silindi")
+                QMessageBox.information(self, "Başarılı", "Çalışan çöp kutusuna taşındı")
                 self.refresh_employees_table()
             except Exception as e:
                 QMessageBox.critical(self, "Hata", f"Silme işlemi başarısız:\n{str(e)}")

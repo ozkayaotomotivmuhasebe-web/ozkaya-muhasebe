@@ -342,3 +342,18 @@ class Employee(Base):
     
     def get_full_name(self):
         return f"{self.first_name} {self.last_name}".strip()
+
+
+class DeletedItem(Base):
+    """Silinen kayıtlar - çöp kutusu"""
+    __tablename__ = 'deleted_items'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    item_type = Column(String(50), nullable=False)  # 'transaction', 'cari', 'banka', 'kredi', 'kredi_karti', 'calisan'
+    item_id = Column(Integer, nullable=True)          # orijinal ID (soft-delete için)
+    item_label = Column(String(500), nullable=False)  # insan okunabilir açıklama
+    item_data = Column(Text, nullable=False)           # JSON snapshot
+    deleted_at = Column(DateTime, default=datetime.now)
+
+    user = relationship('User')

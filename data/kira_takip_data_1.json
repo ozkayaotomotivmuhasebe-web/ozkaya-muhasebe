@@ -91,8 +91,8 @@
       "yil_nots": {}
     },
     {
-      "tab_name": "GAZİANTEP",
-      "title": "GAZİANTEP",
+      "tab_name": "123",
+      "title": "12",
       "hdr_color": "#2e7d32",
       "year": 2026,
       "contracts": [],
@@ -104,7 +104,6 @@
   "tab_widths": {
     "TORBALI KİRA": 160,
     "TORBALI AİDAT": 170,
-    "DÜKKANLAR": 161,
-    "GAZİANTEP": 135
+    "DÜKKANLAR": 161
   }
 }

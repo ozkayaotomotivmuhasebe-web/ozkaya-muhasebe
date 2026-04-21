@@ -101,6 +101,26 @@ def _run_migrations():
             except Exception:
                 pass
 
+        # deleted_items tablosu
+        try:
+            conn.execute(text("SELECT id FROM deleted_items LIMIT 1"))
+        except Exception:
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS deleted_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL REFERENCES users(id),
+                        item_type VARCHAR(50) NOT NULL,
+                        item_id INTEGER,
+                        item_label VARCHAR(500) NOT NULL,
+                        item_data TEXT NOT NULL,
+                        deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.commit()
+            except Exception:
+                pass
+
 def init_db():
     """Tüm tabloları oluştur"""
     Base.metadata.create_all(bind=engine)
