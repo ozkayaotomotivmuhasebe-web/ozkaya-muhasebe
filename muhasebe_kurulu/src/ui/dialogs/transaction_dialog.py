@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton, 
                            QLabel, QLineEdit, QComboBox, QDateEdit, QTextEdit, QMessageBox,
                            QDoubleSpinBox, QRadioButton, QButtonGroup, QGroupBox,
-                           QWidget, QApplication)
+                           QWidget, QApplication, QCompleter)
 from PyQt5.QtCore import Qt, QDate, QSize
 from PyQt5.QtGui import QFont
 from src.database.models import TransactionType, PaymentMethod, Transaction
@@ -235,6 +235,14 @@ class TransactionDialog(QDialog):
         
         # Banka combosu için bağlantı ekle (KREDI_ODEME işleminde banka değişince kredileri güncelle)
         self.bank_combo.currentIndexChanged.connect(self.on_loan_bank_changed)
+
+        # Tüm hesap combo'larını yazılarak aranabilir hale getir
+        for combo in [
+            self.cari_combo, self.bank_combo, self.destination_bank_combo,
+            self.card_combo, self.credit_card_payment_combo,
+            self.loan_payment_combo, self.loan_source_bank_combo
+        ]:
+            self._make_searchable(combo)
         
         self.account_group.setLayout(self.account_layout)
         form_layout.addRow(self.account_group)
@@ -285,6 +293,19 @@ class TransactionDialog(QDialog):
         self.setLayout(layout)
         self.on_payment_method_changed()
     
+    @staticmethod
+    def _make_searchable(combo: QComboBox):
+        """Combo'yu yazılarak filtrelenebilir hale getirir."""
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        completer = combo.completer()
+        if completer:
+            completer.setFilterMode(Qt.MatchContains)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+        line = combo.lineEdit()
+        if line:
+            line.setPlaceholderText("Yazmaya başlayın veya ▼ seçin...")
+
     def load_cari_accounts(self):
         """Cari hesapları yükle"""
         try:
