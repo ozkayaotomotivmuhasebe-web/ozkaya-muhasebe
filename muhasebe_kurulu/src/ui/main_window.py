@@ -254,6 +254,10 @@ class MainWindow(QMainWindow):
         if row_count <= 200:
             table.resizeColumnsToContents()
             table.resizeRowsToContents()
+            # resizeRowsToContents Fusion style'da küçük ölçebilir, minimum 40px zorla
+            for i in range(row_count):
+                if table.rowHeight(i) < 40:
+                    table.setRowHeight(i, 40)
             table.verticalHeader().setDefaultSectionSize(45)
         else:
             table.verticalHeader().setDefaultSectionSize(32)
@@ -1355,6 +1359,7 @@ class MainWindow(QMainWindow):
     def apply_transaction_filter(self):
         """Tarih filtresini uygula"""
         try:
+            self.table_transactions.setUpdatesEnabled(False)
             start_date = self.start_date_filter.date().toPyDate()
             end_date = self.end_date_filter.date().toPyDate()
             
@@ -1439,6 +1444,8 @@ class MainWindow(QMainWindow):
             self.load_transaction_column_widths()
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
+        finally:
+            self.table_transactions.setUpdatesEnabled(True)
 
     def show_all_transactions(self):
         """Tarih filtrelerini kaldırarak tüm işlemleri göster"""
