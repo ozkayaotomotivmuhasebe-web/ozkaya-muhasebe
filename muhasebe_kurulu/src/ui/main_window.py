@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
         self.showMaximized()
         QTimer.singleShot(0, lambda: self._refresh_current_tab_data(force=True))
 
-    def _resize_table(self, table, stretch_col: int = None):
+    def _resize_table(self, table, stretch_col: int = None, min_row_height: int = 36):
         """Tablo kolon/satırlarını içeriğe göre ayarla.
         stretch_col: geri kalan boşluğu dolduracak sütun indexi (None = son sütun uzar)
         """
@@ -253,14 +253,14 @@ class MainWindow(QMainWindow):
         # Büyük tablolarda otomatik içerik hesaplaması eski bilgisayarlarda ciddi yavaşlığa neden olur.
         if row_count <= 200:
             # Fusion EXE'de setMinimumSectionSize ÖNCE ayarlanmalı, yoksa resizeRowsToContents sıfırlar
-            table.verticalHeader().setMinimumSectionSize(36)
-            table.verticalHeader().setDefaultSectionSize(36)
+            table.verticalHeader().setMinimumSectionSize(min_row_height)
+            table.verticalHeader().setDefaultSectionSize(min_row_height)
             table.resizeColumnsToContents()
             table.resizeRowsToContents()
             # Ekstra güvence: herhangi bir satır hâlâ küçükse zorla
             for i in range(row_count):
-                if table.rowHeight(i) < 36:
-                    table.setRowHeight(i, 36)
+                if table.rowHeight(i) < min_row_height:
+                    table.setRowHeight(i, min_row_height)
         else:
             table.verticalHeader().setMinimumSectionSize(28)
             table.verticalHeader().setDefaultSectionSize(32)
@@ -1351,7 +1351,7 @@ class MainWindow(QMainWindow):
 
                 self.table_transactions.setCellWidget(i, 8, action_widget)
 
-            self._resize_table(self.table_transactions, stretch_col=3)
+            self._resize_table(self.table_transactions, stretch_col=3, min_row_height=48)
             self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
         except Exception as e:
@@ -1444,7 +1444,7 @@ class MainWindow(QMainWindow):
                 
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
-            self._resize_table(self.table_transactions, stretch_col=3)
+            self._resize_table(self.table_transactions, stretch_col=3, min_row_height=48)
             self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
         except Exception as e:
@@ -1569,7 +1569,7 @@ class MainWindow(QMainWindow):
                 
                 self.table_transactions.setCellWidget(i, 8, action_widget)
             
-            self._resize_table(self.table_transactions, stretch_col=3)
+            self._resize_table(self.table_transactions, stretch_col=3, min_row_height=48)
             self.table_transactions.setColumnWidth(8, 200)
         except Exception as e:
             QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
