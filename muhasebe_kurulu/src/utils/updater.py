@@ -294,6 +294,7 @@ def _do_update(parent, download_url, new_ver):
                 "echo  OZKAYA Muhasebe Guncelleniyor...\n"
                 "echo  Lutfen bu pencereyi kapatmayin.\n"
                 "echo.\n"
+                # PID kaybolana kadar döngüde bekle (race condition yok)
                 f":BEKLE\n"
                 f"tasklist /fi \"PID eq {current_pid}\" 2>nul | find /i \"{current_pid}\" >nul\n"
                 "if not errorlevel 1 (\n"
@@ -302,7 +303,8 @@ def _do_update(parent, download_url, new_ver):
                 ")\n"
                 "echo  Eski surum kapandi, dosya kopyalaniyor...\n"
                 "timeout /t 2 /nobreak >nul\n"
-                f"copy /y \"{new_exe}\" \"{current_exe}\"\n"
+                # PowerShell ile kopyala: Unicode yolları güvenli handle eder
+                f"powershell -Command \"Copy-Item -LiteralPath '{new_exe}' -Destination '{current_exe}' -Force\"\n"
                 "if errorlevel 1 (\n"
                 "    echo.\n"
                 "    echo  HATA: Dosya kopyalanamadi!\n"
@@ -319,7 +321,7 @@ def _do_update(parent, download_url, new_ver):
                 "del \"%~f0\"\n"
             )
 
-            with open(bat_path, "w", encoding="cp1254") as f:
+            with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
 
             QMessageBox.information(
@@ -327,11 +329,12 @@ def _do_update(parent, download_url, new_ver):
                 f"✅ Sürüm {new_ver} indirildi!\n\n"
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
+            # CREATE_NEW_CONSOLE: bat penceresi görünür olsun, hata varsa kullanıcı görsün
             subprocess.Popen(
                 ["cmd", "/c", bat_path],
                 creationflags=subprocess.CREATE_NEW_CONSOLE
             )
-            os._exit(0)
+            os._exit(0)   # Anında çıkış — Qt cleanup bekleme, PID hemen ölsün
         else:
             QMessageBox.information(
                 parent, "Güncelleme İndirildi",

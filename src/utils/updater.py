@@ -303,12 +303,12 @@ def _do_update(parent, download_url, new_ver):
                 ")\n"
                 "echo  Eski surum kapandi, dosya kopyalaniyor...\n"
                 "timeout /t 2 /nobreak >nul\n"
-                # move yerine copy+del: farklı sürrücler arasında güvenli
-                f"copy /y \"{new_exe}\" \"{current_exe}\"\n"
+                # PowerShell ile kopyala: Unicode yolları güvenli handle eder
+                f"powershell -Command \"Copy-Item -LiteralPath '{new_exe}' -Destination '{current_exe}' -Force\"\n"
                 "if errorlevel 1 (\n"
                 "    echo.\n"
                 "    echo  HATA: Dosya kopyalanamadi!\n"
-                "    echo  Lütfen uygulamayi kapatip manuel olarak guncelleyin.\n"
+                "    echo  Lutfen uygulamayi kapatip manuel olarak guncelleyin.\n"
                 "    pause\n"
                 f"    del \"{new_exe}\" >nul 2>&1\n"
                 "    del \"%~f0\"\n"
@@ -321,7 +321,7 @@ def _do_update(parent, download_url, new_ver):
                 "del \"%~f0\"\n"
             )
 
-            with open(bat_path, "w", encoding="cp1254") as f:
+            with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
 
             QMessageBox.information(

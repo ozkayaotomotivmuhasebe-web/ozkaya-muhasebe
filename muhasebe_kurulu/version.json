@@ -1,1 +1,1 @@
-{"version":"1.1.21","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.21/Muhasebe.exe","notes":"- Bu Ay Odenecek Krediler raporu eklendi\n- Odeme durumu gercek islem kontrolu ile duzeltildi\n- Konuya Gore Giderler: kredi masraflari dahil edildi"}
+{"version":"1.1.22","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.22/Muhasebe.exe","notes":"- Guncelleme motoru duzeltildi: PowerShell ile kopyalama (Turkce yol sorunu cozuldu)"}
