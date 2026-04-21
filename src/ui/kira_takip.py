@@ -386,7 +386,8 @@ class TabNameDialog(QDialog):
 
 class TahsilatWidget(QWidget):
     def __init__(self, title, hdr_color, contracts, payments,
-                 year=None, odeme_detay=None, yil_nots=None, on_change=None, create_tx_cb=None):
+                 year=None, odeme_detay=None, yil_nots=None, on_change=None, create_tx_cb=None,
+                 user_id=0, tab_name=""):
         super().__init__()
         self.title       = title
         self.hdr_color   = hdr_color
@@ -399,6 +400,8 @@ class TahsilatWidget(QWidget):
         self.yil_nots    = {int(k): v for k, v in (yil_nots or {}).items()}
         self.on_change   = on_change   # callback → parent saves JSON
         self.create_tx_cb = create_tx_cb  # callback → DB işlem kaydı oluştur
+        self.user_id     = user_id
+        self._tab_name   = tab_name
         self._build(); self._load()
 
     def _notify(self):
@@ -740,6 +743,20 @@ class TahsilatWidget(QWidget):
             QMessageBox.Yes | QMessageBox.No
         )
         if ret == QMessageBox.Yes:
+            # Çöp kutusuna kaydet
+            try:
+                kiraci_data = {
+                    "tab_name": self._tab_name,
+                    "contract": cr,
+                    "payments": {str(cid): {str(m): v for m, v in self.payments.get(cid, {}).items()}},
+                    "odeme_detay": {str(cid): {str(m): v for m, v in self.odeme_detay.get(cid, {}).items()}},
+                    "yil_nots": {str(cid): self.yil_nots[cid]} if cid in self.yil_nots else {},
+                }
+                label = f"Kiracı: {cr['kiraci']} | {self._tab_name} | {cr.get('bas','')} - {cr.get('bit','')}"
+                from src.services.recycle_bin_service import RecycleBinService
+                RecycleBinService._add(self.user_id, 'kira_kiraci', None, label, kiraci_data)
+            except Exception as _e:
+                print(f"Çöp kutusu kayıt hatası: {_e}")
             self.contracts = [c for c in self.contracts if c["id"] != cid]
             self.payments.pop(cid, None); self.yil_nots.pop(cid, None)
             self._load(); self._notify()
@@ -804,6 +821,8 @@ class KiraTakipWidget(QWidget):
                 yil_nots   = td.get("yil_nots",{}),
                 on_change  = self._save,
                 create_tx_cb = self._create_kira_transaction,
+                user_id    = self.user_id,
+                tab_name   = td.get("tab_name", ""),
             )
             idx = self.tabs.addTab(w, td.get("tab_name","Sekme"))
             self.tabs.setTabToolTip(idx, td.get("tab_name","Sekme"))
@@ -885,7 +904,8 @@ class KiraTakipWidget(QWidget):
         if dlg.exec_() != QDialog.Accepted: return
         d = dlg.get_data()
         w = TahsilatWidget(d["title"], d["color"], [], {}, on_change=self._save,
-                           create_tx_cb=self._create_kira_transaction)
+                           create_tx_cb=self._create_kira_transaction,
+                           user_id=self.user_id, tab_name=d["tab_name"])
         self.tabs.addTab(w, d["tab_name"])
         self.tabs.setTabToolTip(self.tabs.count()-1, d["tab_name"])
         self.tabs.setCurrentIndex(self.tabs.count()-1)

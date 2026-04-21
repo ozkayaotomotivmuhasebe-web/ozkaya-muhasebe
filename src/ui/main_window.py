@@ -584,6 +584,7 @@ class MainWindow(QMainWindow):
                 'kredi_karti': '💳 KK',
                 'calisan': '👤 Çalışan',
                 'kira_takip_sekme': '🏠 Kira Sekme',
+            'kira_kiraci': '👤 Kira Kiracı',
             }
 
             for i, item in enumerate(items):
@@ -657,6 +658,8 @@ class MainWindow(QMainWindow):
             self.refresh_all_data()
             # Kira takip sekmesini yenile
             if item_type == 'kira_takip_sekme':
+                self._reload_kira_takip_widget()
+            if item_type == 'kira_kiraci':
                 self._reload_kira_takip_widget()
         else:
             QMessageBox.critical(self, "Hata", f"Geri alma başarısız:\n{msg}")

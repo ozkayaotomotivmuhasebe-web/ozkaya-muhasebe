@@ -196,6 +196,8 @@ class RecycleBinService:
                 return RecycleBinService._restore_soft(session, item, Employee)
             elif item.item_type == 'kira_takip_sekme':
                 return RecycleBinService._restore_kira_tab(session, item, data)
+            elif item.item_type == 'kira_kiraci':
+                return RecycleBinService._restore_kira_kiraci(session, item, data)
             else:
                 return False, f"Bilinmeyen kayıt türü: {item.item_type}"
         except Exception as e:
@@ -292,6 +294,67 @@ class RecycleBinService:
             session.delete(deleted_item)
             session.commit()
             return True, "Kira takip sekmesi geri alındı. Sayfayı yenileyin."
+        except Exception as e:
+            session.rollback()
+            return False, str(e)
+
+    @staticmethod
+    def _restore_kira_kiraci(session, deleted_item, data: dict) -> tuple:
+        """Kiracıyı kira takip JSON dosyasındaki ilgili sekmeye geri ekle"""
+        try:
+            from pathlib import Path as _Path
+            user_id = deleted_item.user_id
+            data_file = _Path("data") / f"kira_takip_data_{user_id}.json"
+            existing = {"tabs": [], "tab_widths": {}}
+            if data_file.exists():
+                try:
+                    existing = json.loads(data_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing.setdefault("tabs", [])
+
+            tab_name   = data.get("tab_name", "")
+            contract   = data.get("contract", {})
+            payments   = data.get("payments", {})
+            odeme_detay = data.get("odeme_detay", {})
+            yil_nots   = data.get("yil_nots", {})
+
+            # İlgili sekmeyi bul
+            target_tab = None
+            for tab in existing["tabs"]:
+                if tab.get("tab_name") == tab_name:
+                    target_tab = tab
+                    break
+            if target_tab is None:
+                if existing["tabs"]:
+                    target_tab = existing["tabs"][0]
+                else:
+                    return False, f"'{tab_name}' sekmesi bulunamadı"
+
+            # ID çakışmasını önle
+            existing_ids = {c["id"] for c in target_tab.get("contracts", [])}
+            old_cid = contract.get("id", 0)
+            new_cid = old_cid
+            if new_cid in existing_ids:
+                new_cid = max(existing_ids, default=0) + 1
+                contract = {**contract, "id": new_cid}
+
+            target_tab.setdefault("contracts", []).append(contract)
+
+            # Ödeme verilerini birleştir
+            old_key = str(old_cid); new_key = str(new_cid)
+            if old_key in payments:
+                target_tab.setdefault("payments", {})[new_key] = payments[old_key]
+            if old_key in odeme_detay:
+                target_tab.setdefault("odeme_detay", {})[new_key] = odeme_detay[old_key]
+            if old_key in yil_nots:
+                target_tab.setdefault("yil_nots", {})[new_key] = yil_nots[old_key]
+
+            data_file.parent.mkdir(exist_ok=True)
+            data_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            session.delete(deleted_item)
+            session.commit()
+            return True, f"Kiracı '{contract.get('kiraci', '')}' geri alındı."
         except Exception as e:
             session.rollback()
             return False, str(e)
