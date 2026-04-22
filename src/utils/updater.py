@@ -285,41 +285,54 @@ def _do_update(parent, download_url, new_ver):
         if getattr(sys, "frozen", False):
             current_exe = sys.executable
             current_pid = os.getpid()
-            bat_path = os.path.join(tmp_dir, "_ozkaya_update.bat")
+            ps1_path = os.path.join(tmp_dir, "_ozkaya_update.ps1")
 
-            # Ham byte kopyası: Zone.Identifier dahil hiçbir ADS kopyalanmaz
-            bat_content = (
-                "@echo off\n"
-                # PID kaybolana kadar döngüde bekle
-                f":BEKLE\n"
-                f"tasklist /fi \"PID eq {current_pid}\" 2>nul | find /i \"{current_pid}\" >nul\n"
-                "if not errorlevel 1 (\n"
-                "    timeout /t 1 /nobreak >nul\n"
-                "    goto BEKLE\n"
-                ")\n"
-                "timeout /t 3 /nobreak >nul\n"
-                # ReadAllBytes/WriteAllBytes - ADS yoktur, Unblock gerekmez
-                f"powershell -ExecutionPolicy Bypass -Command \"$b=[IO.File]::ReadAllBytes('{new_exe}'); [IO.File]::WriteAllBytes('{current_exe}', $b)\" >nul 2>&1\n"
-                "timeout /t 3 /nobreak >nul\n"
-                f"start \"\" \"{current_exe}\"\n"
-                f"del \"{new_exe}\" >nul 2>&1\n"
-                "del \"%~f0\"\n"
+            # PS1 içinde tek tırnak için '' kaçış karakteri
+            src_ps = new_exe.replace("'", "''")
+            dst_ps = current_exe.replace("'", "''")
+
+            # Tüm işlemi yapan PowerShell scripti:
+            # - Eski process bitene kadar bekle (Get-Process döngüsü)
+            # - Ham bayt kopyası: Zone.Identifier ADS kopyalanmaz
+            # - Dosya kilidi için 15 deneme (retry loop)
+            # - Yeni EXE'yi başlat
+            ps1_content = (
+                f"$oldpid = {current_pid}\n"
+                f"$src = '{src_ps}'\n"
+                f"$dst = '{dst_ps}'\n"
+                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) {\n"
+                "    Start-Sleep -Milliseconds 500\n"
+                "}\n"
+                "Start-Sleep -Seconds 2\n"
+                "$bytes = [System.IO.File]::ReadAllBytes($src)\n"
+                "for ($i = 0; $i -lt 15; $i++) {\n"
+                "    try {\n"
+                "        [System.IO.File]::WriteAllBytes($dst, $bytes)\n"
+                "        break\n"
+                "    } catch {\n"
+                "        Start-Sleep -Seconds 1\n"
+                "    }\n"
+                "}\n"
+                "Start-Sleep -Seconds 1\n"
+                "Start-Process $dst\n"
+                "Remove-Item $src -Force -ErrorAction SilentlyContinue\n"
             )
-
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(bat_content)
+            # UTF-8 BOM: PowerShell 5 Unicode yolları doğru okur
+            with open(ps1_path, "w", encoding="utf-8-sig") as f:
+                f.write(ps1_content)
 
             QMessageBox.information(
                 parent, "Güncelleme Hazır",
                 f"✅ Sürüm {new_ver} indirildi!\n\n"
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
-            # Bat'ı gizli pencereyle başlat (CMD görünmez)
+            # PowerShell'i doğrudan başlat (cmd araya girmiyor, encoding sorunu yok)
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
             subprocess.Popen(
-                ["cmd", "/c", bat_path],
+                ["powershell", "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-File", ps1_path],
                 startupinfo=si,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
             )
