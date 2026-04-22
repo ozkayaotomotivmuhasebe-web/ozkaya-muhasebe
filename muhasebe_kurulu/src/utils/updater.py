@@ -282,42 +282,43 @@ def _do_update(parent, download_url, new_ver):
         if dl_dlg.exec_() != QDialog.Accepted or not dl_dlg.result_path:
             return
 
+        # İndirilen dosyanın Windows "engel" işaretini kaldır (Zone.Identifier ADS)
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            subprocess.run(
+                ["powershell", "-Command", f"Unblock-File -LiteralPath '{new_exe}'"],
+                startupinfo=si,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=10
+            )
+        except Exception:
+            pass
+
         if getattr(sys, "frozen", False):
             current_exe = sys.executable
-            current_pid = os.getpid()          # PID'i şimdi al, exit'ten önce
+            current_pid = os.getpid()
             bat_path = os.path.join(tmp_dir, "_ozkaya_update.bat")
 
             bat_content = (
                 "@echo off\n"
-                "title OZKAYA Guncelleme\n"
-                "echo.\n"
-                "echo  OZKAYA Muhasebe Guncelleniyor...\n"
-                "echo  Lutfen bu pencereyi kapatmayin.\n"
-                "echo.\n"
-                # PID kaybolana kadar döngüde bekle (race condition yok)
+                # PID kaybolana kadar döngüde bekle
                 f":BEKLE\n"
                 f"tasklist /fi \"PID eq {current_pid}\" 2>nul | find /i \"{current_pid}\" >nul\n"
                 "if not errorlevel 1 (\n"
                 "    timeout /t 1 /nobreak >nul\n"
                 "    goto BEKLE\n"
                 ")\n"
-                "echo  Eski surum kapandi, dosya kopyalaniyor...\n"
-                "timeout /t 2 /nobreak >nul\n"
-                # PowerShell ile kopyala: Unicode yolları güvenli handle eder
-                f"powershell -Command \"Copy-Item -LiteralPath '{new_exe}' -Destination '{current_exe}' -Force\"\n"
-                "if errorlevel 1 (\n"
-                "    echo.\n"
-                "    echo  HATA: Dosya kopyalanamadi!\n"
-                "    echo  Lutfen uygulamayi kapatip manuel olarak guncelleyin.\n"
-                "    pause\n"
-                f"    del \"{new_exe}\" >nul 2>&1\n"
-                "    del \"%~f0\"\n"
-                "    exit /b 1\n"
-                ")\n"
-                f"del \"{new_exe}\" >nul 2>&1\n"
-                "echo  Guncelleme tamamlandi! Uygulama baslatiliyor...\n"
+                "timeout /t 3 /nobreak >nul\n"
+                # PowerShell ile kopyala
+                f"powershell -Command \"Copy-Item -LiteralPath '{new_exe}' -Destination '{current_exe}' -Force\" >nul 2>&1\n"
+                "timeout /t 3 /nobreak >nul\n"
+                # Kopyalanan dosyanın da Zone.Identifier engelini kaldır
+                f"powershell -Command \"Unblock-File -LiteralPath '{current_exe}'\" >nul 2>&1\n"
                 "timeout /t 2 /nobreak >nul\n"
                 f"start \"\" \"{current_exe}\"\n"
+                f"del \"{new_exe}\" >nul 2>&1\n"
                 "del \"%~f0\"\n"
             )
 
@@ -329,12 +330,16 @@ def _do_update(parent, download_url, new_ver):
                 f"✅ Sürüm {new_ver} indirildi!\n\n"
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
-            # CREATE_NEW_CONSOLE: bat penceresi görünür olsun, hata varsa kullanıcı görsün
+            # Bat'ı gizli pencereyle başlat (CMD görünmez)
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
             subprocess.Popen(
                 ["cmd", "/c", bat_path],
-                creationflags=subprocess.CREATE_NEW_CONSOLE
+                startupinfo=si,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
             )
-            os._exit(0)   # Anında çıkış — Qt cleanup bekleme, PID hemen ölsün
+            os._exit(0)
         else:
             QMessageBox.information(
                 parent, "Güncelleme İndirildi",
