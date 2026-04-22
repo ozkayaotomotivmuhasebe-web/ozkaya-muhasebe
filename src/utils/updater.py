@@ -273,11 +273,9 @@ def check_and_update(parent=None):
 def _do_update(parent, download_url, new_ver):
     """Güncellemeyi indir ve uygula"""
     try:
-        # İndirme hedefi
         tmp_dir = tempfile.gettempdir()
         new_exe = os.path.join(tmp_dir, "Muhasebe_guncelleme.exe")
 
-        # İndir
         dl_dlg = DownloadDialog(download_url, new_exe, parent)
         if dl_dlg.exec_() != QDialog.Accepted or not dl_dlg.result_path:
             return
@@ -286,36 +284,37 @@ def _do_update(parent, download_url, new_ver):
             current_exe = sys.executable
             current_pid = os.getpid()
             ps1_path = os.path.join(tmp_dir, "_ozkaya_update.ps1")
+            log_path = os.path.join(tmp_dir, "_ozkaya_update_log.txt")
 
-            # PS1 içinde tek tırnak için '' kaçış karakteri
-            src_ps = new_exe.replace("'", "''")
-            dst_ps = current_exe.replace("'", "''")
+            # PS1 içinde tek tırnak için '' kaçış
+            src_ps  = new_exe.replace("'", "''")
+            dst_ps  = current_exe.replace("'", "''")
+            log_ps  = log_path.replace("'", "''")
 
-            # Tüm işlemi yapan PowerShell scripti:
-            # - Eski process bitene kadar bekle (Get-Process döngüsü)
-            # - Ham bayt kopyası: Zone.Identifier ADS kopyalanmaz
-            # - Dosya kilidi için 15 deneme (retry loop)
-            # - Yeni EXE'yi başlat
             ps1_content = (
-                f"$oldpid = {current_pid}\n"
                 f"$src = '{src_ps}'\n"
                 f"$dst = '{dst_ps}'\n"
-                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) {\n"
+                f"$log = '{log_ps}'\n"
+                "function wlog($m) {{ Add-Content -Path $log -Value \"$(Get-Date -f 'HH:mm:ss') $m\" }}\n"
+                f"wlog 'Baslatildi, PID {current_pid} bekleniyor'\n"
+                f"$oldpid = {current_pid}\n"
+                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) {{\n"
                 "    Start-Sleep -Milliseconds 500\n"
-                "}\n"
+                "}}\n"
+                "wlog 'Process bitti'\n"
                 "Start-Sleep -Seconds 2\n"
-                "$bytes = [System.IO.File]::ReadAllBytes($src)\n"
-                "for ($i = 0; $i -lt 15; $i++) {\n"
-                "    try {\n"
-                "        [System.IO.File]::WriteAllBytes($dst, $bytes)\n"
-                "        break\n"
-                "    } catch {\n"
-                "        Start-Sleep -Seconds 1\n"
-                "    }\n"
-                "}\n"
-                "Start-Sleep -Seconds 1\n"
-                "Start-Process $dst\n"
+                "if (-not (Test-Path $src)) {{ wlog 'HATA: kaynak yok'; exit 1 }}\n"
+                "try {{ $bytes = [IO.File]::ReadAllBytes($src); wlog \"Okundu: $($bytes.Length) byte\" }}\n"
+                "catch {{ wlog \"HATA okuma: $_\"; exit 1 }}\n"
+                "$ok = $false\n"
+                "for ($i=0; $i -lt 20; $i++) {{\n"
+                "    try {{ [IO.File]::WriteAllBytes($dst, $bytes); $ok=$true; wlog \"Kopyalandi: $($i+1). deneme\"; break }}\n"
+                "    catch {{ wlog \"Deneme $($i+1) basarisiz: $_\"; Start-Sleep -Seconds 1 }}\n"
+                "}}\n"
+                "if ($ok) {{ Start-Sleep -Seconds 1; wlog \"Baslatiliyor: $dst\"; Start-Process $dst }}\n"
+                "else {{ wlog 'HATA: kopyalama basarisiz' }}\n"
                 "Remove-Item $src -Force -ErrorAction SilentlyContinue\n"
+                "wlog 'Bitti'\n"
             )
             # UTF-8 BOM: PowerShell 5 Unicode yolları doğru okur
             with open(ps1_path, "w", encoding="utf-8-sig") as f:
@@ -326,15 +325,18 @@ def _do_update(parent, download_url, new_ver):
                 f"✅ Sürüm {new_ver} indirildi!\n\n"
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
-            # PowerShell'i doğrudan başlat (cmd araya girmiyor, encoding sorunu yok)
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
+
+            # Tam yol ile powershell: PATH bağımlılığı yok
+            # Sadece CREATE_NO_WINDOW kullan - DETACHED_PROCESS ile birleştirme
+            # (bu iki flag Windows'ta çakışıyor, PS başlamayor)
+            powershell_exe = os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                r"System32\WindowsPowerShell\v1.0\powershell.exe"
+            )
             subprocess.Popen(
-                ["powershell", "-ExecutionPolicy", "Bypass",
-                 "-WindowStyle", "Hidden", "-File", ps1_path],
-                startupinfo=si,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+                [powershell_exe, "-ExecutionPolicy", "Bypass",
+                 "-NonInteractive", "-WindowStyle", "Hidden", "-File", ps1_path],
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             os._exit(0)
         else:
