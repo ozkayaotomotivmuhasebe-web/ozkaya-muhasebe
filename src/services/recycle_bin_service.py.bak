@@ -1,7 +1,6 @@
 import json
 from datetime import datetime
 from src.database.db import SessionLocal
-from src.utils.helpers import format_tr
 from src.database.models import (
     DeletedItem, Transaction, Cari, BankAccount, Loan, CreditCard, Employee,
     TransactionType, PaymentMethod
@@ -41,7 +40,7 @@ class RecycleBinService:
             f"{transaction.transaction_date} | "
             f"{transaction.transaction_type.value if transaction.transaction_type else '?'} | "
             f"{transaction.customer_name} | "
-            f"{format_tr(transaction.amount)} ₺"
+            f"{transaction.amount:,.2f} ₺"
         )
         RecycleBinService._add(transaction.user_id, 'transaction', None, label, data)
 
@@ -78,7 +77,7 @@ class RecycleBinService:
                 f"{transaction.transaction_date} | "
                 f"{transaction.transaction_type.value if transaction.transaction_type else '?'} | "
                 f"{transaction.customer_name} | "
-                f"{format_tr(transaction.amount)} ₺"
+                f"{transaction.amount:,.2f} ₺"
             )
             item = DeletedItem(
                 user_id=transaction.user_id,
@@ -109,7 +108,7 @@ class RecycleBinService:
             'city': cari.city,
             'balance': cari.balance,
         }
-        label = f"Cari: {cari.name} | Bakiye: {format_tr(cari.balance)} ₺"
+        label = f"Cari: {cari.name} | Bakiye: {cari.balance:,.2f} ₺"
         RecycleBinService._add(cari.user_id, 'cari', cari.id, label, data)
 
     @staticmethod
@@ -124,7 +123,7 @@ class RecycleBinService:
             'overdraft_limit': bank.overdraft_limit,
             'currency': bank.currency,
         }
-        label = f"Banka: {bank.bank_name} | Hesap: {bank.account_number} | Bakiye: {format_tr(bank.balance)} ₺"
+        label = f"Banka: {bank.bank_name} | Hesap: {bank.account_number} | Bakiye: {bank.balance:,.2f} ₺"
         RecycleBinService._add(bank.user_id, 'banka', bank.id, label, data)
 
     @staticmethod
@@ -148,7 +147,7 @@ class RecycleBinService:
             'status': loan.status,
             'notes': loan.notes,
         }
-        label = f"Kredi: {loan.loan_name} | {loan.bank_name} | Kalan: {format_tr(loan.remaining_balance)} ₺"
+        label = f"Kredi: {loan.loan_name} | {loan.bank_name} | Kalan: {loan.remaining_balance:,.2f} ₺"
         RecycleBinService._add(loan.user_id, 'kredi', loan.id, label, data)
 
     @staticmethod
@@ -165,7 +164,7 @@ class RecycleBinService:
             'due_day': card.due_day,
             'parent_card_id': card.parent_card_id,
         }
-        label = f"KK: {card.card_name} | {card.bank_name} | Borç: {format_tr(card.current_debt)} ₺"
+        label = f"KK: {card.card_name} | {card.bank_name} | Borç: {card.current_debt:,.2f} ₺"
         RecycleBinService._add(card.user_id, 'kredi_karti', card.id, label, data)
 
     @staticmethod
@@ -184,7 +183,7 @@ class RecycleBinService:
             'stamp_tax_rate': employee.stamp_tax_rate,
             'child_count': employee.child_count,
         }
-        label = f"Çalışan: {employee.first_name} {employee.last_name} | Maaş: {format_tr(employee.gross_salary)} ₺"
+        label = f"Çalışan: {employee.first_name} {employee.last_name} | Maaş: {employee.gross_salary:,.2f} ₺"
         RecycleBinService._add(user_id, 'calisan', employee.id, label, data)
 
     @staticmethod

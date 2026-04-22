@@ -1,1 +1,1 @@
-﻿{"version":"1.1.26","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.26/Muhasebe.exe","notes":"- Kira Takip kiracı silme cop kutusuna dusuyor\n- Silinen kiracılar geri alınabilıyor"}
+﻿{"version":"1.1.28","download_url":"https://github.com/ozkayaotomotivmuhasebe-web/ozkaya-muhasebe/releases/download/v1.1.28/Muhasebe.exe","notes":"- Türkçe para formatı düzeltildi (bindelik . kuruş ,)\n- Excel'de ₺ işareti kaldırıldı, rakamlar hesaplanabilir\n- Sayı formatlama hatası giderildi"}

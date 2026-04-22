@@ -275,8 +275,8 @@ class KiraciDokumDialog(QDialog):
         ozet_style = "font-size:11pt;padding:8px 14px;border-radius:5px;"
         ozet_style += "background:#fff3e0;" if gecikme_sayisi > 0 else "background:#e8f5e9;"
         ozet = QLabel(
-            f"<b>Toplam Ödenen:</b> ₺{toplam_odenen:,.0f}".replace(",",".")
-            + f"&nbsp;&nbsp;|&nbsp;&nbsp;<b>Bekleyen/Gecikmiş:</b> ₺{toplam_bekleyen:,.0f}".replace(",",".")
+            f"<b>Toplam Ödenen:</b> ₺{toplam_odenen:,.0f}"
+            f"&nbsp;&nbsp;|&nbsp;&nbsp;<b>Bekleyen/Gecikmiş:</b> ₺{toplam_bekleyen:,.0f}".replace(",",".")
         )
         ozet.setStyleSheet(ozet_style); lay.addWidget(ozet)
 

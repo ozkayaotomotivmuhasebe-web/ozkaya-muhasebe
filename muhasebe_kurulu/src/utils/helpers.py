@@ -11,7 +11,11 @@ def format_tr(value: float, decimals: int = 2) -> str:
         return str(value)
 
     s = f"{val_float:.{decimals}f}"
-    integer_part, decimal_part = s.split('.')
+    parts = s.split('.')
+    if len(parts) == 2:
+        integer_part, decimal_part = parts
+    else:
+        integer_part, decimal_part = parts[0], ''
     sign = ""
     if integer_part.startswith('-'):
         sign = "-"
@@ -23,7 +27,9 @@ def format_tr(value: float, decimals: int = 2) -> str:
         integer_part = integer_part[:-3]
     grouped_integer = '.'.join(reversed(groups)) if groups else "0"
 
-    return f"{sign}{grouped_integer},{decimal_part}"
+    if decimal_part:
+        return f"{sign}{grouped_integer},{decimal_part}"
+    return f"{sign}{grouped_integer}"
 
 
 def format_currency_tr(amount: float, currency: str = "TRY") -> str:

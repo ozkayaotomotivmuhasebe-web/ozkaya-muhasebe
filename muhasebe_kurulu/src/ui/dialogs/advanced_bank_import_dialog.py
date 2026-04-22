@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                            QDateEdit, QSpinBox, QLineEdit)
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont, QColor
+from src.utils.helpers import format_tr
 from src.services.transaction_service import TransactionService
 from src.services.cari_service import CariService
 from src.services.bank_service import BankService
@@ -435,7 +436,7 @@ class AdvancedBankImportDialog(QDialog):
             remaining_amount = max(0.0, total_repayment - float(loan.total_paid or 0))
             company_prefix = f"{loan.company_name} - " if (loan.company_name or '').strip() else ""
             combo.addItem(
-                f"{company_prefix}{loan.loan_name} (Kalan: {remaining_amount:,.2f} ₺)",
+                f"{company_prefix}{loan.loan_name} (Kalan: {format_tr(remaining_amount)} ₺)",
                 loan.id
             )
 

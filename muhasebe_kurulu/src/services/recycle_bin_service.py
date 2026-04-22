@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from src.database.db import SessionLocal
+from src.utils.helpers import format_tr
 from src.database.models import (
     DeletedItem, Transaction, Cari, BankAccount, Loan, CreditCard, Employee,
     TransactionType, PaymentMethod
@@ -40,9 +41,60 @@ class RecycleBinService:
             f"{transaction.transaction_date} | "
             f"{transaction.transaction_type.value if transaction.transaction_type else '?'} | "
             f"{transaction.customer_name} | "
-            f"{transaction.amount:,.2f} ₺"
+            f"{format_tr(transaction.amount)} ₺"
         )
         RecycleBinService._add(transaction.user_id, 'transaction', None, label, data)
+
+    @staticmethod
+    def save_transaction_by_id(transaction_id: int) -> None:
+        """Transaction ID ile çöp kutusuna kaydet (tek session - SQLite kilitleme sorunu yaşanmaz)"""
+        session = SessionLocal()
+        try:
+            transaction = session.query(Transaction).filter(Transaction.id == transaction_id).first()
+            if not transaction:
+                return
+            data = {
+                'user_id': transaction.user_id,
+                'transaction_date': str(transaction.transaction_date),
+                'transaction_type': transaction.transaction_type.value if transaction.transaction_type else None,
+                'payment_method': transaction.payment_method.value if transaction.payment_method else None,
+                'cari_id': transaction.cari_id,
+                'bank_account_id': transaction.bank_account_id,
+                'destination_bank_account_id': transaction.destination_bank_account_id,
+                'credit_card_id': transaction.credit_card_id,
+                'customer_name': transaction.customer_name,
+                'description': transaction.description,
+                'subject': transaction.subject,
+                'payment_type': transaction.payment_type,
+                'amount': transaction.amount,
+                'person': transaction.person,
+                'notes': transaction.notes,
+                'due_date': str(transaction.due_date) if transaction.due_date else None,
+                'is_paid': transaction.is_paid,
+                'paid_date': str(transaction.paid_date) if transaction.paid_date else None,
+                'paid_amount': transaction.paid_amount,
+            }
+            label = (
+                f"{transaction.transaction_date} | "
+                f"{transaction.transaction_type.value if transaction.transaction_type else '?'} | "
+                f"{transaction.customer_name} | "
+                f"{format_tr(transaction.amount)} ₺"
+            )
+            item = DeletedItem(
+                user_id=transaction.user_id,
+                item_type='transaction',
+                item_id=None,
+                item_label=label,
+                item_data=json.dumps(data, ensure_ascii=False, default=str),
+                deleted_at=datetime.now(),
+            )
+            session.add(item)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"RecycleBin kayıt hatası (by_id): {e}")
+        finally:
+            session.close()
 
     @staticmethod
     def save_cari(cari) -> None:
@@ -57,7 +109,7 @@ class RecycleBinService:
             'city': cari.city,
             'balance': cari.balance,
         }
-        label = f"Cari: {cari.name} | Bakiye: {cari.balance:,.2f} ₺"
+        label = f"Cari: {cari.name} | Bakiye: {format_tr(cari.balance)} ₺"
         RecycleBinService._add(cari.user_id, 'cari', cari.id, label, data)
 
     @staticmethod
@@ -72,7 +124,7 @@ class RecycleBinService:
             'overdraft_limit': bank.overdraft_limit,
             'currency': bank.currency,
         }
-        label = f"Banka: {bank.bank_name} | Hesap: {bank.account_number} | Bakiye: {bank.balance:,.2f} ₺"
+        label = f"Banka: {bank.bank_name} | Hesap: {bank.account_number} | Bakiye: {format_tr(bank.balance)} ₺"
         RecycleBinService._add(bank.user_id, 'banka', bank.id, label, data)
 
     @staticmethod
@@ -96,7 +148,7 @@ class RecycleBinService:
             'status': loan.status,
             'notes': loan.notes,
         }
-        label = f"Kredi: {loan.loan_name} | {loan.bank_name} | Kalan: {loan.remaining_balance:,.2f} ₺"
+        label = f"Kredi: {loan.loan_name} | {loan.bank_name} | Kalan: {format_tr(loan.remaining_balance)} ₺"
         RecycleBinService._add(loan.user_id, 'kredi', loan.id, label, data)
 
     @staticmethod
@@ -113,7 +165,7 @@ class RecycleBinService:
             'due_day': card.due_day,
             'parent_card_id': card.parent_card_id,
         }
-        label = f"KK: {card.card_name} | {card.bank_name} | Borç: {card.current_debt:,.2f} ₺"
+        label = f"KK: {card.card_name} | {card.bank_name} | Borç: {format_tr(card.current_debt)} ₺"
         RecycleBinService._add(card.user_id, 'kredi_karti', card.id, label, data)
 
     @staticmethod
@@ -132,7 +184,7 @@ class RecycleBinService:
             'stamp_tax_rate': employee.stamp_tax_rate,
             'child_count': employee.child_count,
         }
-        label = f"Çalışan: {employee.first_name} {employee.last_name} | Maaş: {employee.gross_salary:,.2f} ₺"
+        label = f"Çalışan: {employee.first_name} {employee.last_name} | Maaş: {format_tr(employee.gross_salary)} ₺"
         RecycleBinService._add(user_id, 'calisan', employee.id, label, data)
 
     @staticmethod

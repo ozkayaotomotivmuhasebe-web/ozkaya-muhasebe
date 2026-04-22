@@ -1853,41 +1853,29 @@ class MainWindow(QMainWindow):
             return
         reply = QMessageBox.question(
             self, "Toplu Silme Onayı",
-            f"{len(selected_rows)} adet işlemi silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+            f"{len(selected_rows)} adet işlemi çöp kutusuna taşımak istediğinize emin misiniz?",
             QMessageBox.Yes | QMessageBox.No
         )
         if reply != QMessageBox.Yes:
             return
         errors = []
         success_count = 0
-        # Çöp kutusu için session
-        try:
-            from src.database.db import SessionLocal
-            from src.database.models import Transaction as _Trans
-            from src.services.recycle_bin_service import RecycleBinService
-            _rb_session = SessionLocal()
-        except Exception:
-            _rb_session = None
+        from src.services.recycle_bin_service import RecycleBinService
         for row in selected_rows:
             item = self.table_transactions.item(row, 0)
             if item:
                 tid = item.data(Qt.UserRole)
                 if tid:
-                    # Çöp kutusuna kaydet
-                    if _rb_session:
-                        try:
-                            _t = _rb_session.query(_Trans).filter(_Trans.id == tid).first()
-                            if _t:
-                                RecycleBinService.save_transaction(_t)
-                        except Exception as _e:
-                            print(f"Çöp kutusu kayıt hatası: {_e}")
+                    # Çöp kutusuna kaydet (tek session - SQLite kilitleme yok)
+                    try:
+                        RecycleBinService.save_transaction_by_id(tid)
+                    except Exception as _e:
+                        print(f"Çöp kutusu kayıt hatası: {_e}")
                     ok, msg = TransactionService.delete_transaction(tid)
                     if ok:
                         success_count += 1
                     else:
                         errors.append(msg)
-        if _rb_session:
-            _rb_session.close()
         self.toggle_bulk_delete_mode()
         self.refresh_all_data()
         if errors:
@@ -2561,9 +2549,9 @@ class MainWindow(QMainWindow):
             stats = BankService.get_bank_statistics(self.user.id)
             
             stats_layout.addWidget(self.create_stat_card("Toplam Hesap", str(stats['total_accounts']), "#1976D2"))
-            stats_layout.addWidget(self.create_stat_card("Toplam Bakiye", f"{stats['total_balance']:,.0f} ₺", "#4CAF50"))
-            stats_layout.addWidget(self.create_stat_card("Ek Hesap Limiti", f"{stats['total_overdraft']:,.0f} ₺", "#FF9800"))
-            stats_layout.addWidget(self.create_stat_card("Kullanılabilir", f"{stats['total_available']:,.0f} ₺", "#9C27B0"))
+            stats_layout.addWidget(self.create_stat_card("Toplam Bakiye", f"{format_tr(stats['total_balance'], 0)} ₺", "#4CAF50"))
+            stats_layout.addWidget(self.create_stat_card("Ek Hesap Limiti", f"{format_tr(stats['total_overdraft'], 0)} ₺", "#FF9800"))
+            stats_layout.addWidget(self.create_stat_card("Kullanılabilir", f"{format_tr(stats['total_available'], 0)} ₺", "#9C27B0"))
         except Exception as e:
             print(f"Banka stats hatası: {e}")
         
@@ -4085,9 +4073,9 @@ Pasif Kullanıcı: {total_users - active_users}
             stats = CreditCardService.get_card_statistics(self.user.id)
             
             stats_layout.addWidget(self.create_stat_card("Toplam Kart", str(stats['total_cards']), "#9C27B0"))
-            stats_layout.addWidget(self.create_stat_card("Toplam Limit", f"{stats['total_limit']:,.0f} ₺", "#2196F3"))
-            stats_layout.addWidget(self.create_stat_card("Toplam Borç", f"{stats['total_debt']:,.0f} ₺", "#f44336"))
-            stats_layout.addWidget(self.create_stat_card("Kullanılabilir", f"{stats['total_available']:,.0f} ₺", "#4CAF50"))
+            stats_layout.addWidget(self.create_stat_card("Toplam Limit", f"{format_tr(stats['total_limit'], 0)} ₺", "#2196F3"))
+            stats_layout.addWidget(self.create_stat_card("Toplam Borç", f"{format_tr(stats['total_debt'], 0)} ₺", "#f44336"))
+            stats_layout.addWidget(self.create_stat_card("Kullanılabilir", f"{format_tr(stats['total_available'], 0)} ₺", "#4CAF50"))
         except Exception as e:
             print(f"Kart stats hatası: {e}")
         
@@ -4553,7 +4541,23 @@ Pasif Kullanıcı: {total_users - active_users}
         """)
         btn_sample_excel.clicked.connect(self.export_loan_template_excel)
         btn_layout.addWidget(btn_sample_excel)
-        
+
+        btn_export_excel = QPushButton("📊 Excele Aktar")
+        btn_export_excel.setMinimumHeight(35)
+        btn_export_excel.setStyleSheet("""
+            QPushButton {
+                background-color: #1B5E20;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #154a18; }
+        """)
+        btn_export_excel.clicked.connect(self.export_loans_to_excel)
+        btn_layout.addWidget(btn_export_excel)
+
         btn_bulk_delete = QPushButton("🗑️ Toplu Sil")
         btn_bulk_delete.setMinimumHeight(35)
         btn_bulk_delete.setStyleSheet("""
@@ -4646,9 +4650,9 @@ Pasif Kullanıcı: {total_users - active_users}
 
         try:
             stats = LoanService.get_loans_summary(self.user.id) or {}
-            self._set_loan_stat_card_value('toplam_kredi', f"{stats.get('toplam_kredi', 0):,.0f} ₺")
-            self._set_loan_stat_card_value('toplam_odenen', f"{stats.get('toplam_odenen', 0):,.0f} ₺")
-            self._set_loan_stat_card_value('toplam_kalan', f"{stats.get('toplam_kalan', 0):,.0f} ₺")
+            self._set_loan_stat_card_value('toplam_kredi', f"{format_tr(stats.get('toplam_kredi', 0), 0)} ₺")
+            self._set_loan_stat_card_value('toplam_odenen', f"{format_tr(stats.get('toplam_odenen', 0), 0)} ₺")
+            self._set_loan_stat_card_value('toplam_kalan', f"{format_tr(stats.get('toplam_kalan', 0), 0)} ₺")
             self._set_loan_stat_card_value('akif_kredi_sayisi', str(stats.get('akif_kredi_sayisi', 0)))
         except Exception as e:
             print(f"Kredi stats yenileme hatası: {e}")
@@ -4992,6 +4996,105 @@ Pasif Kullanıcı: {total_users - active_users}
             QMessageBox.information(self, "Başarılı", f"Örnek Excel oluşturuldu:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Örnek Excel oluşturulamadı:\n{str(e)}")
+
+    def export_loans_to_excel(self):
+        """Tüm kredileri Excel dosyasına aktar"""
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from src.services.loan_service import LoanService
+
+            loans = LoanService.get_loans(self.user.id, active_only=True)
+            if not loans:
+                QMessageBox.information(self, "Bilgi", "Aktarılacak kredi bulunamadı.")
+                return
+
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Kredileri Excel'e Aktar",
+                "krediler.xlsx",
+                "Excel Dosyası (*.xlsx)"
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".xlsx"):
+                file_path += ".xlsx"
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Krediler"
+
+            # Başlık satırı stilleri
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+            center = Alignment(horizontal="center", vertical="center")
+            thin = Side(style="thin", color="AAAAAA")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            headers = [
+                "Kredi Adı", "Banka", "Firma", "Tip",
+                "Çekilen Tutar", "Toplam Geri Ödeme", "Ödenen", "Kalan",
+                "Aylık Taksit", "Faiz Oranı (%)", "Durum",
+                "Ödeme Günü", "Toplam Taksit", "Kalan Taksit",
+                "Başlangıç Tarihi", "Bitiş Tarihi", "Not"
+            ]
+            col_widths = [25, 18, 20, 14, 20, 22, 18, 18, 18, 14, 12, 12, 14, 14, 16, 16, 30]
+
+            for col, (header, width) in enumerate(zip(headers, col_widths), 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center
+                cell.border = border
+                ws.column_dimensions[cell.column_letter].width = width
+
+            ws.row_dimensions[1].height = 22
+
+            for i, loan in enumerate(loans, 2):
+                total_repayment = self._get_loan_total_repayment(loan)
+                remaining = self._get_loan_remaining_amount(loan)
+                remaining_installments = 0
+                if loan.total_installments and loan.paid_installments:
+                    remaining_installments = max(0, loan.total_installments - loan.paid_installments)
+                elif loan.total_installments:
+                    remaining_installments = loan.total_installments
+
+                row_data = [
+                    loan.loan_name,
+                    loan.bank_name,
+                    loan.company_name or "",
+                    loan.loan_type or "",
+                    float(loan.loan_amount or 0),
+                    float(total_repayment),
+                    float(loan.total_paid or 0),
+                    float(remaining),
+                    float(loan.monthly_payment or 0),
+                    float(loan.interest_rate or 0),
+                    loan.status or "",
+                    loan.due_day or "",
+                    loan.total_installments or "",
+                    remaining_installments,
+                    str(loan.start_date) if loan.start_date else "",
+                    str(loan.end_date) if loan.end_date else "",
+                    loan.notes or "",
+                ]
+                alt_fill = PatternFill(start_color="F1F8E9", end_color="F1F8E9", fill_type="solid") if i % 2 == 0 else None
+                for col, value in enumerate(row_data, 1):
+                    cell = ws.cell(row=i, column=col, value=value)
+                    cell.border = border
+                    if alt_fill:
+                        cell.fill = alt_fill
+                    # Para sütunlarına sayı formatı
+                    if col in (5, 6, 7, 8, 9):
+                        cell.number_format = '#,##0.00'
+                    elif col == 10:
+                        cell.number_format = '0.00'
+
+            wb.save(file_path)
+            QMessageBox.information(self, "Başarılı", f"{len(loans)} kredi Excel'e aktarıldı:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{str(e)}")
 
     def import_loans_from_excel(self):
         try:
@@ -6499,27 +6602,27 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh("🏠", "Genel Finansal Özet", "Tüm hesapların anlık durumu", "#1A237E")
 
         html += self._kpi_row([
-            ("💰", "Toplam Gelir",    f"{ie['total_income']:,.0f} ₺",    "#1B5E20"),
-            ("📉", "Toplam Gider",    f"{ie['total_expense']:,.0f} ₺",   "#B71C1C"),
-            ("📊", "Net Kar/Zarar",   f"{net_profit:,.0f} ₺",            np_color if net_profit>=0 else "#C62828"),
-            ("🏦", "Banka Bakiyesi",  f"{bs['total_balance_try']:,.0f} ₺","#0D47A1"),
+            ("💰", "Toplam Gelir",    f"{format_tr(ie['total_income'], 0)} ₺",    "#1B5E20"),
+            ("📉", "Toplam Gider",    f"{format_tr(ie['total_expense'], 0)} ₺",   "#B71C1C"),
+            ("📊", "Net Kar/Zarar",   f"{format_tr(net_profit, 0)} ₺",            np_color if net_profit>=0 else "#C62828"),
+            ("🏦", "Banka Bakiyesi",  f"{format_tr(bs['total_balance_try'], 0)} ₺","#0D47A1"),
         ])
 
         # Genel mali durum
         html += self._section("💼 Genel Mali Durum", "#1A237E")
         html += self._table_header(["Kalem", "Tutar"])
         rows = [
-            ("Likit Varlıklar (Banka)",  f"{ofh['liquid_assets']:,.2f} ₺",  "#1B5E20"),
-            ("Alacaklar (Cari)",         f"{ofh['receivables']:,.2f} ₺",    "#1B5E20"),
-            ("Ödenecek Borçlar",         f"-{ofh['payables']:,.2f} ₺",      "#C62828"),
-            ("Kredi Kartı Borcu",        f"-{ofh['credit_card_debt']:,.2f} ₺","#C62828"),
+            ("Likit Varlıklar (Banka)",  f"{format_tr(ofh['liquid_assets'])} ₺",  "#1B5E20"),
+            ("Alacaklar (Cari)",         f"{format_tr(ofh['receivables'])} ₺",    "#1B5E20"),
+            ("Ödenecek Borçlar",         f"-{format_tr(ofh['payables'])} ₺",      "#C62828"),
+            ("Kredi Kartı Borcu",        f"-{format_tr(ofh['credit_card_debt'])} ₺","#C62828"),
         ]
         for i, (lbl, val, vc) in enumerate(rows):
             bg = "#FAFAFA" if i % 2 else "white"
             html += self._tr([lbl, val], [None, vc], bg=bg)
         # Net değer satırı
         html += self._tr(
-            ["NET DEĞER", f"{net_worth:,.2f} ₺"],
+            ["NET DEĞER", f"{format_tr(net_worth)} ₺"],
             [None, nw_color], bold=True, bg="#E8EAF6"
         )
         html += "</table><br>"
@@ -6527,27 +6630,27 @@ Pasif Kullanıcı: {total_users - active_users}
         # Gelir-Gider özeti
         html += self._section("💰 Gelir-Gider Özeti", "#1B5E20")
         html += self._table_header(["Kalem", "Tutar"])
-        html += self._tr(["Toplam Gelir",   f"{ie['total_income']:,.2f} ₺"],  [None, "#1B5E20"], bg="white")
-        html += self._tr(["Toplam Gider",   f"{ie['total_expense']:,.2f} ₺"], [None, "#C62828"], bg="#FAFAFA")
-        html += self._tr(["Net Kar/Zarar",  f"{net_profit:,.2f} ₺"],          [None, np_color],  bold=True, bg="#E8F5E9")
+        html += self._tr(["Toplam Gelir",   f"{format_tr(ie['total_income'])} ₺"],  [None, "#1B5E20"], bg="white")
+        html += self._tr(["Toplam Gider",   f"{format_tr(ie['total_expense'])} ₺"], [None, "#C62828"], bg="#FAFAFA")
+        html += self._tr(["Net Kar/Zarar",  f"{format_tr(net_profit)} ₺"],          [None, np_color],  bold=True, bg="#E8F5E9")
         html += self._tr(["Toplam İşlem",   str(ie['transaction_count'])],     [None, None],      bg="white")
         html += "</table><br>"
 
         # Cari hesaplar
         html += self._section("👥 Cari Hesaplar", "#E65100")
         html += self._table_header(["Kalem", "Tutar"])
-        html += self._tr(["Toplam Alacak", f"{cb['total_receivable']:,.2f} ₺"], [None, "#1B5E20"], bg="white")
-        html += self._tr(["Toplam Borç",   f"{cb['total_payable']:,.2f} ₺"],   [None, "#C62828"], bg="#FAFAFA")
-        html += self._tr(["Net Bakiye",    f"{cb['net_balance']:,.2f} ₺"],     [None, None],      bold=True, bg="#FFF3E0")
+        html += self._tr(["Toplam Alacak", f"{format_tr(cb['total_receivable'])} ₺"], [None, "#1B5E20"], bg="white")
+        html += self._tr(["Toplam Borç",   f"{format_tr(cb['total_payable'])} ₺"],   [None, "#C62828"], bg="#FAFAFA")
+        html += self._tr(["Net Bakiye",    f"{format_tr(cb['net_balance'])} ₺"],     [None, None],      bold=True, bg="#FFF3E0")
         html += "</table><br>"
 
         # Kredi kartları
         html += self._section("💳 Kredi Kartları", "#4A148C")
         html += self._table_header(["Kalem", "Tutar"])
         usage = cc['overall_usage_rate'] if 'overall_usage_rate' in cc else 0
-        html += self._tr(["Toplam Limit",         f"{cc['total_limit']:,.2f} ₺"],     [None, None],      bg="white")
-        html += self._tr(["Toplam Borç",           f"{cc['total_debt']:,.2f} ₺"],      [None, "#C62828"],  bg="#FAFAFA")
-        html += self._tr(["Kullanılabilir Limit",  f"{cc['total_available']:,.2f} ₺"], [None, "#1B5E20"],  bg="white")
+        html += self._tr(["Toplam Limit",         f"{format_tr(cc['total_limit'])} ₺"],     [None, None],      bg="white")
+        html += self._tr(["Toplam Borç",           f"{format_tr(cc['total_debt'])} ₺"],      [None, "#C62828"],  bg="#FAFAFA")
+        html += self._tr(["Kullanılabilir Limit",  f"{format_tr(cc['total_available'])} ₺"], [None, "#1B5E20"],  bg="white")
         html += self._tr(["Kullanım Oranı",        f"{usage:.1f}%"],                   [None, None],      bold=True, bg="#F3E5F5")
         html += "</table>"
         return html
@@ -6563,18 +6666,18 @@ Pasif Kullanıcı: {total_users - active_users}
 
         html  = self._rh("💰", "Gelir-Gider Raporu", subtitle, "#1B5E20")
         html += self._kpi_row([
-            ("➕", "Toplam Gelir",   f"{data['total_income']:,.0f} ₺",   "#1B5E20"),
-            ("➖", "Toplam Gider",   f"{data['total_expense']:,.0f} ₺",  "#B71C1C"),
-            ("📊", "Net Kar/Zarar",  f"{net:,.0f} ₺",                    "#0D47A1" if net >= 0 else "#B71C1C"),
+            ("➕", "Toplam Gelir",   f"{format_tr(data['total_income'], 0)} ₺",   "#1B5E20"),
+            ("➖", "Toplam Gider",   f"{format_tr(data['total_expense'], 0)} ₺",  "#B71C1C"),
+            ("📊", "Net Kar/Zarar",  f"{format_tr(net, 0)} ₺",                    "#0D47A1" if net >= 0 else "#B71C1C"),
             ("🔢", "İşlem Sayısı",   str(data['transaction_count']),     "#37474F"),
         ])
 
         html += self._section("📋 Özet", "#1B5E20")
         html += self._table_header(["Kalem", "Tutar", "Oran"])
         total = data['total_income'] + data['total_expense'] or 1
-        html += self._tr(["Toplam Gelir",  f"{data['total_income']:,.2f} ₺",  f"{data['total_income']/total*100:.1f}%"],  [None, "#1B5E20", None], bg="white")
-        html += self._tr(["Toplam Gider",  f"{data['total_expense']:,.2f} ₺", f"{data['total_expense']/total*100:.1f}%"], [None, "#C62828", None], bg="#FAFAFA")
-        html += self._tr(["Net Kar/Zarar", f"{net:,.2f} ₺",                   ""],                                        [None, nc, None],        bold=True, bg="#E8F5E9")
+        html += self._tr(["Toplam Gelir",  f"{format_tr(data['total_income'])} ₺",  f"{data['total_income']/total*100:.1f}%"],  [None, "#1B5E20", None], bg="white")
+        html += self._tr(["Toplam Gider",  f"{format_tr(data['total_expense'])} ₺", f"{data['total_expense']/total*100:.1f}%"], [None, "#C62828", None], bg="#FAFAFA")
+        html += self._tr(["Net Kar/Zarar", f"{format_tr(net)} ₺",                   ""],                                        [None, nc, None],        bold=True, bg="#E8F5E9")
         html += "</table><br>"
 
         if detail_level == 'Detaylı':
@@ -6596,7 +6699,7 @@ Pasif Kullanıcı: {total_users - active_users}
                         f"{icon} {t.transaction_type.value}",
                         t.customer_name or "—",
                         (t.description or "")[:50],
-                        f"{t.amount:,.2f} ₺"
+                        f"{format_tr(t.amount)} ₺"
                     ], [None, vc, None, None, vc], bg=bg)
             finally:
                 session.close()
@@ -6611,9 +6714,9 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh("👥", "Cari Bakiye Raporu", f"Toplam {data['total_caris']} cari hesap", "#E65100")
         html += self._kpi_row([
             ("👥", "Toplam Cari",    str(data['total_caris']),                "#37474F"),
-            ("📥", "Toplam Alacak",  f"{data['total_receivable']:,.0f} ₺",   "#1B5E20"),
-            ("📤", "Toplam Borç",    f"{data['total_payable']:,.0f} ₺",      "#B71C1C"),
-            ("⚖️", "Net Bakiye",    f"{nb:,.0f} ₺",                          "#0D47A1" if nb >= 0 else "#B71C1C"),
+            ("📥", "Toplam Alacak",  f"{format_tr(data['total_receivable'], 0)} ₺",   "#1B5E20"),
+            ("📤", "Toplam Borç",    f"{format_tr(data['total_payable'], 0)} ₺",      "#B71C1C"),
+            ("⚖️", "Net Bakiye",    f"{format_tr(nb, 0)} ₺",                          "#0D47A1" if nb >= 0 else "#B71C1C"),
         ])
 
         html += self._section("📋 Cari Hesap Detayları", "#E65100")
@@ -6624,7 +6727,7 @@ Pasif Kullanıcı: {total_users - active_users}
             bg  = "white" if i % 2 == 0 else "#FAFAFA"
             html += self._tr([
                 cari['name'], cari['type'],
-                f"{bal:,.2f} ₺", cari['status']
+                f"{format_tr(bal)} ₺", cari['status']
             ], [None, None, vc, None], bg=bg)
         html += "</table>"
         return html
@@ -6634,7 +6737,7 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh("🏦", "Banka Hesapları Raporu", f"Toplam {data['total_accounts']} hesap", "#0D47A1")
         html += self._kpi_row([
             ("🏦", "Toplam Hesap",      str(data['total_accounts']),                 "#37474F"),
-            ("💵", "Toplam Bakiye TRY", f"{data['total_balance_try']:,.0f} ₺",       "#1B5E20"),
+            ("💵", "Toplam Bakiye TRY", f"{format_tr(data['total_balance_try'], 0)} ₺",       "#1B5E20"),
         ])
         html += self._section("🏦 Hesap Detayları", "#0D47A1")
         html += self._table_header(["Banka", "Hesap No", "Bakiye", "Para Birimi"])
@@ -6654,9 +6757,9 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh("💳", "Kredi Kartları Raporu", f"Toplam {data['total_cards']} kart  |  Kullanım: {usage:.1f}%", "#4A148C")
         html += self._kpi_row([
             ("💳", "Toplam Kart",       str(data['total_cards']),                "#37474F"),
-            ("🔢", "Toplam Limit",      f"{data['total_limit']:,.0f} ₺",        "#1565C0"),
-            ("💸", "Toplam Borç",       f"{data['total_debt']:,.0f} ₺",         "#B71C1C"),
-            ("✅", "Kullanılabilir",    f"{data['total_available']:,.0f} ₺",    "#1B5E20"),
+            ("🔢", "Toplam Limit",      f"{format_tr(data['total_limit'], 0)} ₺",        "#1565C0"),
+            ("💸", "Toplam Borç",       f"{format_tr(data['total_debt'], 0)} ₺",         "#B71C1C"),
+            ("✅", "Kullanılabilir",    f"{format_tr(data['total_available'], 0)} ₺",    "#1B5E20"),
         ])
         html += self._section("💳 Kart Detayları", "#4A148C")
         html += self._table_header(["Kart Adı", "Banka", "Limit", "Borç", "Kullanılabilir", "Kullanım"])
@@ -6666,9 +6769,9 @@ Pasif Kullanıcı: {total_users - active_users}
             uc = "#C62828" if ur > 80 else "#E65100" if ur > 50 else "#2E7D32"
             html += self._tr([
                 card['card_name'], card['bank'],
-                f"{card['limit']:,.2f} ₺",
-                f"{card['debt']:,.2f} ₺",
-                f"{card['available']:,.2f} ₺",
+                f"{format_tr(card['limit'])} ₺",
+                f"{format_tr(card['debt'])} ₺",
+                f"{format_tr(card['available'])} ₺",
                 self._progress_bar_html(ur)
             ], [None, None, None, "#C62828", "#1B5E20", None], bg=bg)
         html += "</table>"
@@ -6681,9 +6784,9 @@ Pasif Kullanıcı: {total_users - active_users}
                          "#1A237E")
         html += self._kpi_row([
             ("📋", "Toplam Kredi",   str(data['total_loans']),                  "#37474F"),
-            ("💰", "Toplam Tutar",   f"{data['total_loan_amount']:,.0f} ₺",    "#0D47A1"),
-            ("✅", "Toplam Ödenen",  f"{data['total_paid']:,.0f} ₺",           "#1B5E20"),
-            ("⏳", "Kalan Borç",     f"{data['total_remaining']:,.0f} ₺",      "#B71C1C"),
+            ("💰", "Toplam Tutar",   f"{format_tr(data['total_loan_amount'], 0)} ₺",    "#0D47A1"),
+            ("✅", "Toplam Ödenen",  f"{format_tr(data['total_paid'], 0)} ₺",           "#1B5E20"),
+            ("⏳", "Kalan Borç",     f"{format_tr(data['total_remaining'], 0)} ₺",      "#B71C1C"),
         ])
         html += self._section("📋 Kredi Detayları", "#1A237E")
         html += self._table_header(["Kredi", "Banka", "Tip", "Toplam", "Ödenen", "Kalan", "Durum", "İlerleme"])
@@ -6692,9 +6795,9 @@ Pasif Kullanıcı: {total_users - active_users}
             pr = loan['progress_rate']
             html += self._tr([
                 loan['loan_name'], loan['bank_name'], loan['loan_type'],
-                f"{loan['loan_amount']:,.2f} ₺",
-                f"{loan['total_paid']:,.2f} ₺",
-                f"{loan['remaining_balance']:,.2f} ₺",
+                f"{format_tr(loan['loan_amount'])} ₺",
+                f"{format_tr(loan['total_paid'])} ₺",
+                f"{format_tr(loan['remaining_balance'])} ₺",
                 loan['status'],
                 self._progress_bar_html(pr)
             ], [None, None, None, None, "#1B5E20", "#C62828", None, None], bg=bg)
@@ -6865,7 +6968,7 @@ Pasif Kullanıcı: {total_users - active_users}
         
         for label, value in items:
             ws[f'A{row}'] = label
-            ws[f'B{row}'] = format_currency_tr(value)
+            ws[f'B{row}'] = float(value)
             ws[f'A{row}'].border = border
             ws[f'B{row}'].border = border
             if label == 'NET DEĞER':
@@ -6885,19 +6988,19 @@ Pasif Kullanıcı: {total_users - active_users}
         
         ie = data['income_expense']
         ws[f'A{row}'] = 'Toplam Gelir'
-        ws[f'B{row}'] = f"{ie['total_income']:,.2f} ₺"
+        ws[f'B{row}'] = float(ie['total_income'])
         ws[f'A{row}'].border = border
         ws[f'B{row}'].border = border
         row += 1
         
         ws[f'A{row}'] = 'Toplam Gider'
-        ws[f'B{row}'] = f"{ie['total_expense']:,.2f} ₺"
+        ws[f'B{row}'] = float(ie['total_expense'])
         ws[f'A{row}'].border = border
         ws[f'B{row}'].border = border
         row += 1
         
         ws[f'A{row}'] = 'Net Kar/Zarar'
-        ws[f'B{row}'] = f"{ie['net_profit']:,.2f} ₺"
+        ws[f'B{row}'] = float(ie['net_profit'])
         ws[f'A{row}'].font = Font(bold=True)
         ws[f'B{row}'].font = Font(bold=True)
         ws[f'A{row}'].border = border
@@ -6929,7 +7032,7 @@ Pasif Kullanıcı: {total_users - active_users}
         for label, value in headers:
             ws[f'A{row}'] = label
             if isinstance(value, (int, float)) and label != 'İşlem Sayısı':
-                ws[f'B{row}'] = format_currency_tr(value)
+                ws[f'B{row}'] = float(value)
             else:
                 ws[f'B{row}'] = value
             ws[f'A{row}'].border = border
@@ -6958,15 +7061,18 @@ Pasif Kullanıcı: {total_users - active_users}
         ws[f'B{row}'] = data['total_caris']
         row += 1
         ws[f'A{row}'] = 'Toplam Alacak'
-        ws[f'B{row}'] = f"{data['total_receivable']:,.2f} ₺"
+        ws[f'B{row}'] = float(data['total_receivable'])
+        ws[f'B{row}'].number_format = '#,##0.00'
         ws[f'B{row}'].fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
         row += 1
         ws[f'A{row}'] = 'Toplam Borç'
-        ws[f'B{row}'] = f"{data['total_payable']:,.2f} ₺"
+        ws[f'B{row}'] = float(data['total_payable'])
+        ws[f'B{row}'].number_format = '#,##0.00'
         ws[f'B{row}'].fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
         row += 1
         ws[f'A{row}'] = 'Net Bakiye'
-        ws[f'B{row}'] = f"{data['net_balance']:,.2f} ₺"
+        ws[f'B{row}'] = float(data['net_balance'])
+        ws[f'B{row}'].number_format = '#,##0.00'
         ws[f'A{row}'].font = Font(bold=True)
         ws[f'B{row}'].font = Font(bold=True, size=12)
         
@@ -6991,7 +7097,8 @@ Pasif Kullanıcı: {total_users - active_users}
         for cari in data['caris']:
             ws[f'A{row}'] = cari['name']
             ws[f'B{row}'] = cari['type']
-            ws[f'C{row}'] = f"{cari['balance']:,.2f} ₺"
+            ws[f'C{row}'] = float(cari['balance'])
+            ws[f'C{row}'].number_format = '#,##0.00'
             ws[f'D{row}'] = cari['status']
             
             for col in range(1, 5):
@@ -7024,7 +7131,8 @@ Pasif Kullanıcı: {total_users - active_users}
         ws[f'B{row}'] = data['total_accounts']
         row += 1
         ws[f'A{row}'] = 'Toplam Bakiye (TRY)'
-        ws[f'B{row}'] = f"{data['total_balance_try']:,.2f} ₺"
+        ws[f'B{row}'] = float(data['total_balance_try'])
+        ws[f'B{row}'].number_format = '#,##0.00'
         ws[f'A{row}'].font = Font(bold=True)
         ws[f'B{row}'].font = Font(bold=True, size=12)
         ws[f'B{row}'].fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
@@ -7048,7 +7156,8 @@ Pasif Kullanıcı: {total_users - active_users}
         for bank in data['banks']:
             ws[f'A{row}'] = bank['bank_name']
             ws[f'B{row}'] = bank['account_number']
-            ws[f'C{row}'] = f"{bank['balance']:,.2f}"
+            ws[f'C{row}'] = float(bank['balance'])
+            ws[f'C{row}'].number_format = '#,##0.00'
             ws[f'D{row}'] = bank['currency']
             
             for col in range(1, 5):
@@ -7073,18 +7182,20 @@ Pasif Kullanıcı: {total_users - active_users}
         
         row = 3
         summary = [
-            ('Toplam Kart Sayısı', data['total_cards'], None),
-            ('Toplam Limit', f"{data['total_limit']:,.2f} ₺", None),
-            ('Toplam Borç', f"{data['total_debt']:,.2f} ₺", 'FFC7CE'),
-            ('Kullanılabilir Limit', f"{data['total_available']:,.2f} ₺", 'C6EFCE'),
-            ('Genel Kullanım Oranı', f"{data['overall_usage_rate']:.1f}%", None)
+            ('Toplam Kart Sayısı', data['total_cards'], None, False),
+            ('Toplam Limit', data['total_limit'], None, True),
+            ('Toplam Borç', data['total_debt'], 'FFC7CE', True),
+            ('Kullanılabilir Limit', data['total_available'], 'C6EFCE', True),
+            ('Genel Kullanım Oranı', f"{data['overall_usage_rate']:.1f}%", None, False)
         ]
         
-        for label, value, fill in summary:
+        for label, value, fill, is_currency in summary:
             ws[f'A{row}'] = label
             ws[f'B{row}'] = value
             ws[f'A{row}'].border = border
             ws[f'B{row}'].border = border
+            if is_currency:
+                ws[f'B{row}'].number_format = '#,##0.00'
             if fill:
                 ws[f'B{row}'].fill = PatternFill(start_color=fill, end_color=fill, fill_type='solid')
             if 'Toplam Borç' in label or 'Kullanılabilir' in label:
@@ -7111,9 +7222,12 @@ Pasif Kullanıcı: {total_users - active_users}
         for card in data['cards']:
             ws[f'A{row}'] = card['card_name']
             ws[f'B{row}'] = card['bank']
-            ws[f'C{row}'] = f"{card['limit']:,.2f} ₺"
-            ws[f'D{row}'] = f"{card['debt']:,.2f} ₺"
-            ws[f'E{row}'] = f"{card['available']:,.2f} ₺"
+            ws[f'C{row}'] = float(card['limit'])
+            ws[f'C{row}'].number_format = '#,##0.00'
+            ws[f'D{row}'] = float(card['debt'])
+            ws[f'D{row}'].number_format = '#,##0.00'
+            ws[f'E{row}'] = float(card['available'])
+            ws[f'E{row}'].number_format = '#,##0.00'
             ws[f'F{row}'] = f"{card['usage_rate']:.1f}%"
             
             for col in range(1, 7):
@@ -7147,18 +7261,20 @@ Pasif Kullanıcı: {total_users - active_users}
 
         row = 3
         summary = [
-            ('Toplam Kredi Sayısı', data['total_loans'], None),
-            ('Toplam Kredi Tutarı', f"{data['total_loan_amount']:,.2f} ₺", None),
-            ('Toplam Ödenen', f"{data['total_paid']:,.2f} ₺", 'C6EFCE'),
-            ('Toplam Kalan Borç', f"{data['total_remaining']:,.2f} ₺", 'FFC7CE'),
-            ('Aktif Kredi Sayısı', data['active_loans'], None)
+            ('Toplam Kredi Sayısı', data['total_loans'], None, False),
+            ('Toplam Kredi Tutarı', data['total_loan_amount'], None, True),
+            ('Toplam Ödenen', data['total_paid'], 'C6EFCE', True),
+            ('Toplam Kalan Borç', data['total_remaining'], 'FFC7CE', True),
+            ('Aktif Kredi Sayısı', data['active_loans'], None, False)
         ]
 
-        for label, value, fill in summary:
+        for label, value, fill, is_currency in summary:
             ws[f'A{row}'] = label
             ws[f'B{row}'] = value
             ws[f'A{row}'].border = border
             ws[f'B{row}'].border = border
+            if is_currency:
+                ws[f'B{row}'].number_format = '#,##0.00'
             if fill:
                 ws[f'B{row}'].fill = PatternFill(start_color=fill, end_color=fill, fill_type='solid')
             row += 1
@@ -7183,9 +7299,12 @@ Pasif Kullanıcı: {total_users - active_users}
             ws[f'A{row}'] = loan['loan_name']
             ws[f'B{row}'] = loan['bank_name']
             ws[f'C{row}'] = loan['loan_type']
-            ws[f'D{row}'] = f"{loan['loan_amount']:,.2f} ₺"
-            ws[f'E{row}'] = f"{loan['total_paid']:,.2f} ₺"
-            ws[f'F{row}'] = f"{loan['remaining_balance']:,.2f} ₺"
+            ws[f'D{row}'] = float(loan['loan_amount'])
+            ws[f'D{row}'].number_format = '#,##0.00'
+            ws[f'E{row}'] = float(loan['total_paid'])
+            ws[f'E{row}'].number_format = '#,##0.00'
+            ws[f'F{row}'] = float(loan['remaining_balance'])
+            ws[f'F{row}'].number_format = '#,##0.00'
             ws[f'G{row}'] = loan['status']
             ws[f'H{row}'] = f"{loan['progress_rate']:.1f}%"
 
@@ -7365,7 +7484,7 @@ Pasif Kullanıcı: {total_users - active_users}
             ws.merge_cells('A1:H1')
             ws.row_dimensions[1].height = 28
 
-            headers = ['Kredi Adı', 'Banka', 'Firma', 'Ödeme Günü', 'Taksit', 'Aylık Tutar (₺)', 'Kalan Bakiye (₺)', 'Durum']
+            headers = ['Kredi Adı', 'Banka', 'Firma', 'Ödeme Günü', 'Taksit', 'Aylık Tutar', 'Kalan Bakiye', 'Durum']
             for col, h in enumerate(headers, 1):
                 cell = ws.cell(row=3, column=col, value=h)
                 cell.font = h_font
@@ -7510,9 +7629,9 @@ Pasif Kullanıcı: {total_users - active_users}
             html  = self._rh('📊', 'Aylık Karşılaştırma Raporu',
                              f'{start_date} — {end_date}', '#2196F3')
             html += self._kpi_row([
-                ('📅', 'Toplam Gelir',  f'{total_gelir:,.2f} ₺', '#4CAF50'),
-                ('📉', 'Toplam Gider',  f'{total_gider:,.2f} ₺', '#f44336'),
-                ('📊', 'Net Toplam',    f'{net_total:,.2f} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
+                ('📅', 'Toplam Gelir',  f'{format_tr(total_gelir)} ₺', '#4CAF50'),
+                ('📉', 'Toplam Gider',  f'{format_tr(total_gider)} ₺', '#f44336'),
+                ('📊', 'Net Toplam',    f'{format_tr(net_total)} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
                 ('🗓', 'Ay Sayısı',     str(len(sorted_months)),  '#2196F3'),
             ])
             html += self._section('Aylık Detay', '#2196F3')
@@ -7568,8 +7687,8 @@ Pasif Kullanıcı: {total_users - active_users}
                              f'{start_date} — {end_date}', '#FF9800')
             html += self._kpi_row([
                 ('👥', 'Toplam Cari',       str(len(cari_stats)),          '#FF9800'),
-                ('💰', 'Toplam Tutar',      f'{grand_total:,.2f} ₺',       '#4CAF50'),
-                ('🏆', 'En Yüksek',         f'{cari_stats[0][2]:,.2f} ₺' if cari_stats else '—', '#2196F3'),
+                ('💰', 'Toplam Tutar',      f'{format_tr(grand_total)} ₺',       '#4CAF50'),
+                ('🏆', 'En Yüksek',         f'{format_tr(cari_stats[0][2])} ₺' if cari_stats else '—', '#2196F3'),
                 ('📅', 'Dönem',             f'{start_date} / {end_date}',  '#9C27B0'),
             ])
             html += self._section('Cari Sıralaması', '#FF9800')
@@ -7635,7 +7754,7 @@ Pasif Kullanıcı: {total_users - active_users}
             html  = self._rh('💳', 'Ödeme Yöntemi Dağılımı',
                              f'{start_date} — {end_date}', '#9C27B0')
             html += self._kpi_row([
-                ('💳', 'Toplam Tutar',    f'{total_amount:,.2f} ₺',     '#9C27B0'),
+                ('💳', 'Toplam Tutar',    f'{format_tr(total_amount)} ₺',     '#9C27B0'),
                 ('🔢', 'Toplam İşlem',    str(total_count),              '#2196F3'),
                 ('📋', 'Yöntem Sayısı',   str(len(payment_stats)),       '#FF9800'),
                 ('📅', 'Dönem',           f'{start_date} / {end_date}',  '#4CAF50'),
@@ -7689,9 +7808,9 @@ Pasif Kullanıcı: {total_users - active_users}
             html  = self._rh('📈', 'Haftalık Trend Analizi',
                              f'{start_date} — {end_date}', '#4CAF50')
             html += self._kpi_row([
-                ('📈', 'Toplam Gelir',  f'{total_gelir:,.2f} ₺', '#4CAF50'),
-                ('📉', 'Toplam Gider',  f'{total_gider:,.2f} ₺', '#f44336'),
-                ('📊', 'Net',           f'{net_total:,.2f} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
+                ('📈', 'Toplam Gelir',  f'{format_tr(total_gelir)} ₺', '#4CAF50'),
+                ('📉', 'Toplam Gider',  f'{format_tr(total_gider)} ₺', '#f44336'),
+                ('📊', 'Net',           f'{format_tr(net_total)} ₺',   '#4CAF50' if net_total >= 0 else '#f44336'),
                 ('🗓', 'Hafta Sayısı',  str(len(sorted_weeks)),  '#2196F3'),
             ])
             html += self._section('Haftalık Detay', '#4CAF50')
@@ -7796,9 +7915,9 @@ Pasif Kullanıcı: {total_users - active_users}
                          f'{start_date} — {end_date}', '#1565C0')
         html += self._kpi_row([
             ('👷', 'Çalışan Sayısı',    str(kisi_sayisi),           '#1565C0'),
-            ('💵', 'Toplam Brüt',       f'{toplam_brut:,.2f} ₺',    '#4CAF50'),
-            ('💰', 'Toplam Net',        f'{toplam_net:,.2f} ₺',      '#2196F3'),
-            ('📉', 'Toplam Kesinti',    f'{toplam_kesinti:,.2f} ₺',  '#f44336'),
+            ('💵', 'Toplam Brüt',       f'{format_tr(toplam_brut)} ₺',    '#4CAF50'),
+            ('💰', 'Toplam Net',        f'{format_tr(toplam_net)} ₺',      '#2196F3'),
+            ('📉', 'Toplam Kesinti',    f'{format_tr(toplam_kesinti)} ₺',  '#f44336'),
         ])
 
         # Aktif çalışanlar listesi (DB'den — kaydedilmiş bordro olmasa bile gösterilsin)
@@ -7950,7 +8069,7 @@ Pasif Kullanıcı: {total_users - active_users}
                          f"{start_date} — {end_date}{subtitle_konu}", "#B71C1C")
         html += self._kpi_row([
             ("📋", "İşlem Sayısı",  str(sayi),               "#546E7A"),
-            ("📉", "Toplam Gider",  f"{toplam:,.2f} ₺",      "#B71C1C"),
+            ("📉", "Toplam Gider",  f"{format_tr(toplam)} ₺",      "#B71C1C"),
             ("🏷️", "Konu Adedi",   str(len(konu_totals)),    "#37474F"),
         ])
 
@@ -7970,7 +8089,7 @@ Pasif Kullanıcı: {total_users - active_users}
                     color = KONU_COLORS[(chunk_start + ci) % len(KONU_COLORS)]
                     konu_label = konu if len(konu) <= 22 else konu[:20] + "…"
                     kpi_items.append(
-                        ("🏷️", konu_label, f"{info['tutar']:,.2f} ₺", color)
+                        ("🏷️", konu_label, f"{format_tr(info['tutar'])} ₺", color)
                     )
                 html += self._kpi_row(kpi_items)
 
@@ -8118,14 +8237,14 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh("🏠", "Kira Takip Raporu", f"Tüm Sekmeler — Yıl(lar): {year_str}", "#1565C0")
         html += self._kpi_row([
             ("👥", "Toplam Kiracı",    str(total_tenants),                                 "#3f51b5"),
-            ("✅", "Toplam Tahsilat",  f"{grand_collected:,.0f} ₺".replace(",", "."),       "#4caf50"),
-            ("⏳", "Toplam Bekliyor",  f"{grand_pending:,.0f} ₺".replace(",", "."),         "#f44336"),
-            ("💰", "Yıllık Beklenen",  f"{grand_expected:,.0f} ₺".replace(",", "."),        "#ff9800"),
+            ("✅", "Toplam Tahsilat",  f"{format_tr(grand_collected, 0)} ₺".replace(",", "."),       "#4caf50"),
+            ("⏳", "Toplam Bekliyor",  f"{format_tr(grand_pending, 0)} ₺".replace(",", "."),         "#f44336"),
+            ("💰", "Yıllık Beklenen",  f"{format_tr(grand_expected, 0)} ₺".replace(",", "."),        "#ff9800"),
         ])
         html += self._kpi_row([
-            ("📅", "Bu Ay Beklenen",   f"{cur_month_expected:,.0f} ₺".replace(",", "."),   "#1976D2"),
-            ("📅", "Bu Ay Tahsilat",   f"{cur_month_collected:,.0f} ₺".replace(",", "."),  "#2e7d32"),
-            ("📅", "Bu Ay Kalan",      f"{cur_remaining:,.0f} ₺".replace(",", "."),        "#c62828"),
+            ("📅", "Bu Ay Beklenen",   f"{format_tr(cur_month_expected, 0)} ₺".replace(",", "."),   "#1976D2"),
+            ("📅", "Bu Ay Tahsilat",   f"{format_tr(cur_month_collected, 0)} ₺".replace(",", "."),  "#2e7d32"),
+            ("📅", "Bu Ay Kalan",      f"{format_tr(cur_remaining, 0)} ₺".replace(",", "."),        "#c62828"),
             ("📊", "Tahsilat Oranı",   f"%{oran_pct:.1f}",                                 "#6a1b9a"),
         ])
 
@@ -8530,7 +8649,7 @@ Pasif Kullanıcı: {total_users - active_users}
                 paid_loan_ids.add(lid)
 
         def fmt(v):
-            return f"{v:,.2f} ₺".replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"{format_tr(v)} ₺"
 
         rows = []
         for l in loans:
@@ -8673,7 +8792,7 @@ Pasif Kullanıcı: {total_users - active_users}
         sorted_loans = with_date + without_date
 
         def fmt(v):
-            return f"{v:,.2f} ₺".replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"{format_tr(v)} ₺"
 
         def date_cell(end_date):
             if not end_date:
@@ -8823,17 +8942,17 @@ Pasif Kullanıcı: {total_users - active_users}
         html  = self._rh('💵', 'Nakit Kasası Raporu',
                          f'Dönem: {start_date} — {end_date}', '#2E7D32')
         html += self._kpi_row([
-            ('💵', 'Güncel Nakit Bakiye', f'{nakit_bakiye:,.2f} ₺', bakiye_renk),
-            ('📥', 'Toplam Banka Çekim',  f'{toplam_cekilis:,.2f} ₺', '#1565C0'),
-            ('📤', 'Toplam Banka Yatırım',f'{toplam_yatirim:,.2f} ₺', '#FF6F00'),
-            ('📊', 'Dönem Net Değişim',   f'{donem_net:,.2f} ₺', donem_renk),
+            ('💵', 'Güncel Nakit Bakiye', f'{format_tr(nakit_bakiye)} ₺', bakiye_renk),
+            ('📥', 'Toplam Banka Çekim',  f'{format_tr(toplam_cekilis)} ₺', '#1565C0'),
+            ('📤', 'Toplam Banka Yatırım',f'{format_tr(toplam_yatirim)} ₺', '#FF6F00'),
+            ('📊', 'Dönem Net Değişim',   f'{format_tr(donem_net)} ₺', donem_renk),
         ])
 
         html += self._kpi_row([
-            ('📈', 'Dönem Nakit Giriş',   f'{donem_giris + donem_cekilis:,.2f} ₺', '#388E3C'),
-            ('📉', 'Dönem Nakit Çıkış',   f'{donem_cikis + donem_yatirim:,.2f} ₺', '#C62828'),
-            ('🏦', 'Tüm Zamanlarda Çekim',f'{toplam_cekilis:,.2f} ₺', '#1976D2'),
-            ('🏦', 'Tüm Zamanlarda Yatırım',f'{toplam_yatirim:,.2f} ₺', '#E65100'),
+            ('📈', 'Dönem Nakit Giriş',   f'{format_tr(donem_giris + donem_cekilis)} ₺', '#388E3C'),
+            ('📉', 'Dönem Nakit Çıkış',   f'{format_tr(donem_cikis + donem_yatirim)} ₺', '#C62828'),
+            ('🏦', 'Tüm Zamanlarda Çekim',f'{format_tr(toplam_cekilis)} ₺', '#1976D2'),
+            ('🏦', 'Tüm Zamanlarda Yatırım',f'{format_tr(toplam_yatirim)} ₺', '#E65100'),
         ])
 
         # Nakit kasası özeti kutusu
@@ -8842,11 +8961,11 @@ Pasif Kullanıcı: {total_users - active_users}
         <tr><td style='background-color:#1B5E20; padding:14px 18px; border-radius:6px;'>
             <span style='font-size:12pt; font-weight:bold; color:white;'>💵 Nakit Kasası Güncel Durumu</span><br>
             <span style='font-size:10pt; color:#A5D6A7;'>
-                Nakit Gelir: <b>{toplam_nakit_giris:,.2f} ₺</b> &nbsp;+&nbsp;
-                Bankadan Çekim: <b>{toplam_cekilis:,.2f} ₺</b> &nbsp;−&nbsp;
-                Nakit Gider: <b>{toplam_nakit_cikis:,.2f} ₺</b> &nbsp;−&nbsp;
-                Bankaya Yatırım: <b>{toplam_yatirim:,.2f} ₺</b> &nbsp;=&nbsp;
-                <span style='color:#69F0AE; font-size:12pt;'><b>Kasa: {nakit_bakiye:,.2f} ₺</b></span>
+                Nakit Gelir: <b>{format_tr(toplam_nakit_giris)} ₺</b> &nbsp;+&nbsp;
+                Bankadan Çekim: <b>{format_tr(toplam_cekilis)} ₺</b> &nbsp;−&nbsp;
+                Nakit Gider: <b>{format_tr(toplam_nakit_cikis)} ₺</b> &nbsp;−&nbsp;
+                Bankaya Yatırım: <b>{format_tr(toplam_yatirim)} ₺</b> &nbsp;=&nbsp;
+                <span style='color:#69F0AE; font-size:12pt;'><b>Kasa: {format_tr(nakit_bakiye)} ₺</b></span>
             </span>
         </td></tr></table><br>
         """
