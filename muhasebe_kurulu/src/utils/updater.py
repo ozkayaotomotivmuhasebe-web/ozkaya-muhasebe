@@ -326,9 +326,7 @@ def _do_update(parent, download_url, new_ver):
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
 
-            # Subprocess: Compatibility ve debugging için
-            # -NoProfile: startup profile'ı skip et (hız + compatibility)
-            # -Normal: Visible (debug için, sonra Hidden yapabiliriz)
+            # Subprocess: DETACHED_PROCESS ile çalıştır (PIPE problemleri yok)
             powershell_exe = os.path.join(
                 os.environ.get("SystemRoot", r"C:\Windows"),
                 r"System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -342,31 +340,22 @@ def _do_update(parent, download_url, new_ver):
                 QMessageBox.critical(parent, "HATA", f"PowerShell bulunamadı: {powershell_exe}")
                 return
             
+            # Log dosyasını önceden create et (PS1'in yazabilmesi için)
             try:
+                open(log_path, "w").close()
+            except:
+                pass
+            
+            try:
+                # DETACHED_PROCESS: Process background'da çalışır, parent exit edebilir
+                # Stdout/stderr redirect etmiyoruz (PIPE problemleri yok)
                 proc = subprocess.Popen(
                     [powershell_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                     "-NonInteractive", "-WindowStyle", "Normal", "-File", ps1_path],
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                     "-NonInteractive", "-WindowStyle", "Minimized", "-File", ps1_path],
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                 )
-                # Wait ve exit code check
-                stdout, stderr = proc.communicate(timeout=120)  # 2 dakika timeout
-                
-                # Log dosyasına stdout/stderr yaz
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"[Python] Process PID={proc.pid}, exit_code={proc.returncode}\n")
-                    if stdout:
-                        f.write(f"[Python] STDOUT:\n{stdout.decode('utf-8', errors='replace')}\n")
-                    if stderr:
-                        f.write(f"[Python] STDERR:\n{stderr.decode('utf-8', errors='replace')}\n")
             except Exception as e:
                 msg = f"PowerShell hatası: {e}"
-                try:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"[Python] EXCEPTION: {msg}\n")
-                except:
-                    pass
                 QMessageBox.critical(parent, "HATA", msg)
                 return
             
