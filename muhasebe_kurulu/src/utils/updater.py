@@ -286,37 +286,37 @@ def _do_update(parent, download_url, new_ver):
             ps1_path = os.path.join(tmp_dir, "_ozkaya_update.ps1")
             log_path = os.path.join(tmp_dir, "_ozkaya_update_log.txt")
 
-            # PS1 içinde tek tırnak için '' kaçış
-            src_ps  = new_exe.replace("'", "''")
-            dst_ps  = current_exe.replace("'", "''")
-            log_ps  = log_path.replace("'", "''")
-
+            # Basit ve robust PS1 script
+            # Direct file append ile logging (Add-Content reliability problems için)
             ps1_content = (
-                f"$src = '{src_ps}'\n"
-                f"$dst = '{dst_ps}'\n"
-                f"$log = '{log_ps}'\n"
-                "function wlog($m) {{ Add-Content -Path $log -Value \"$(Get-Date -f 'HH:mm:ss') $m\" }}\n"
-                f"wlog 'Baslatildi, PID {current_pid} bekleniyor'\n"
+                "$ErrorActionPreference = 'Continue'\n"
+                f"$src = \"{new_exe}\"\n"
+                f"$dst = \"{current_exe}\"\n"
+                f"$log = \"{log_path}\"\n"
                 f"$oldpid = {current_pid}\n"
-                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) {{\n"
-                "    Start-Sleep -Milliseconds 500\n"
-                "}}\n"
+                "function wlog($m) {\n"
+                "    try { [IO.File]::AppendAllText($log, \"$(Get-Date -f 'HH:mm:ss') $m`r`n\") }\n"
+                "    catch { }\n"
+                "}\n"
+                "\n"
+                "wlog 'Baslatildi'\n"
+                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }\n"
                 "wlog 'Process bitti'\n"
                 "Start-Sleep -Seconds 2\n"
-                "if (-not (Test-Path $src)) {{ wlog 'HATA: kaynak yok'; exit 1 }}\n"
-                "try {{ $bytes = [IO.File]::ReadAllBytes($src); wlog \"Okundu: $($bytes.Length) byte\" }}\n"
-                "catch {{ wlog \"HATA okuma: $_\"; exit 1 }}\n"
+                "if (-not (Test-Path $src)) { wlog 'HATA: kaynak yok'; exit 1 }\n"
+                "try { $bytes = [IO.File]::ReadAllBytes($src); wlog \"Okundu: $($bytes.Length) byte\" }\n"
+                "catch { wlog \"HATA okuma: $_\"; exit 1 }\n"
                 "$ok = $false\n"
-                "for ($i=0; $i -lt 20; $i++) {{\n"
-                "    try {{ [IO.File]::WriteAllBytes($dst, $bytes); $ok=$true; wlog \"Kopyalandi: $($i+1). deneme\"; break }}\n"
-                "    catch {{ wlog \"Deneme $($i+1) basarisiz: $_\"; Start-Sleep -Seconds 1 }}\n"
-                "}}\n"
-                "if ($ok) {{ Start-Sleep -Seconds 1; wlog \"Baslatiliyor: $dst\"; Start-Process $dst }}\n"
-                "else {{ wlog 'HATA: kopyalama basarisiz' }}\n"
+                "for ($i=0; $i -lt 20; $i++) {\n"
+                "    try { [IO.File]::WriteAllBytes($dst, $bytes); $ok=$true; wlog \"Kopyalandi: $(++$i). deneme\"; break }\n"
+                "    catch { wlog \"Deneme $($i+1) basarisiz: $_\"; Start-Sleep -Seconds 1 }\n"
+                "}\n"
+                "if ($ok) { Start-Sleep -Seconds 1; wlog \"Baslatiliyor: $dst\"; Start-Process $dst }\n"
+                "else { wlog 'HATA: kopyalama basarisiz' }\n"
                 "Remove-Item $src -Force -ErrorAction SilentlyContinue\n"
                 "wlog 'Bitti'\n"
             )
-            # UTF-8 BOM: PowerShell 5 Unicode yolları doğru okur
+            # UTF-8 BOM
             with open(ps1_path, "w", encoding="utf-8-sig") as f:
                 f.write(ps1_content)
 
@@ -326,15 +326,15 @@ def _do_update(parent, download_url, new_ver):
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
 
-            # Tam yol ile powershell: PATH bağımlılığı yok
-            # Sadece CREATE_NO_WINDOW kullan - DETACHED_PROCESS ile birleştirme
-            # (bu iki flag Windows'ta çakışıyor, PS başlamayor)
+            # Subprocess: Compatibility ve debugging için
+            # -NoProfile: startup profile'ı skip et (hız + compatibility)
+            # -Normal: Visible (debug için, sonra Hidden yapabiliriz)
             powershell_exe = os.path.join(
                 os.environ.get("SystemRoot", r"C:\Windows"),
                 r"System32\WindowsPowerShell\v1.0\powershell.exe"
             )
             
-            # Debug: PS1 dosyası ve yolu kontrol et
+            # Path'leri validate et
             if not os.path.exists(ps1_path):
                 QMessageBox.critical(parent, "HATA", f"PS1 dosyası oluşturulamadı: {ps1_path}")
                 return
@@ -342,23 +342,31 @@ def _do_update(parent, download_url, new_ver):
                 QMessageBox.critical(parent, "HATA", f"PowerShell bulunamadı: {powershell_exe}")
                 return
             
-            # Verbose log: subprocess'i başlat ve hata yakala
             try:
                 proc = subprocess.Popen(
-                    [powershell_exe, "-ExecutionPolicy", "Bypass",
-                     "-NonInteractive", "-WindowStyle", "Hidden", "-File", ps1_path],
+                    [powershell_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-NonInteractive", "-WindowStyle", "Normal", "-File", ps1_path],
                     creationflags=subprocess.CREATE_NO_WINDOW,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE
                 )
-                # Logla PID ve komut
+                # Wait ve exit code check
+                stdout, stderr = proc.communicate(timeout=120)  # 2 dakika timeout
+                
+                # Log dosyasına stdout/stderr yaz
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"[Python] Subprocess başlatıldı, PID={proc.pid}\n")
-                    f.write(f"[Python] Komut: {powershell_exe} -File {ps1_path}\n")
+                    f.write(f"[Python] Process PID={proc.pid}, exit_code={proc.returncode}\n")
+                    if stdout:
+                        f.write(f"[Python] STDOUT:\n{stdout.decode('utf-8', errors='replace')}\n")
+                    if stderr:
+                        f.write(f"[Python] STDERR:\n{stderr.decode('utf-8', errors='replace')}\n")
             except Exception as e:
-                msg = f"PowerShell başlatılamadı: {e}"
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"[Python] HATA: {msg}\n")
+                msg = f"PowerShell hatası: {e}"
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"[Python] EXCEPTION: {msg}\n")
+                except:
+                    pass
                 QMessageBox.critical(parent, "HATA", msg)
                 return
             
