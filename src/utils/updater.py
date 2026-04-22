@@ -282,25 +282,12 @@ def _do_update(parent, download_url, new_ver):
         if dl_dlg.exec_() != QDialog.Accepted or not dl_dlg.result_path:
             return
 
-        # İndirilen dosyanın Windows "engel" işaretini kaldır (Zone.Identifier ADS)
-        try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            subprocess.run(
-                ["powershell", "-Command", f"Unblock-File -LiteralPath '{new_exe}'"],
-                startupinfo=si,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=10
-            )
-        except Exception:
-            pass
-
         if getattr(sys, "frozen", False):
             current_exe = sys.executable
             current_pid = os.getpid()
             bat_path = os.path.join(tmp_dir, "_ozkaya_update.bat")
 
+            # Ham byte kopyası: Zone.Identifier dahil hiçbir ADS kopyalanmaz
             bat_content = (
                 "@echo off\n"
                 # PID kaybolana kadar döngüde bekle
@@ -311,12 +298,9 @@ def _do_update(parent, download_url, new_ver):
                 "    goto BEKLE\n"
                 ")\n"
                 "timeout /t 3 /nobreak >nul\n"
-                # PowerShell ile kopyala
-                f"powershell -Command \"Copy-Item -LiteralPath '{new_exe}' -Destination '{current_exe}' -Force\" >nul 2>&1\n"
+                # ReadAllBytes/WriteAllBytes - ADS yoktur, Unblock gerekmez
+                f"powershell -ExecutionPolicy Bypass -Command \"$b=[IO.File]::ReadAllBytes('{new_exe}'); [IO.File]::WriteAllBytes('{current_exe}', $b)\" >nul 2>&1\n"
                 "timeout /t 3 /nobreak >nul\n"
-                # Kopyalanan dosyanın da Zone.Identifier engelini kaldır
-                f"powershell -Command \"Unblock-File -LiteralPath '{current_exe}'\" >nul 2>&1\n"
-                "timeout /t 2 /nobreak >nul\n"
                 f"start \"\" \"{current_exe}\"\n"
                 f"del \"{new_exe}\" >nul 2>&1\n"
                 "del \"%~f0\"\n"
