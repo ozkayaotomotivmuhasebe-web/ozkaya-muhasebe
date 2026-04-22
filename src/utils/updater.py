@@ -333,11 +333,35 @@ def _do_update(parent, download_url, new_ver):
                 os.environ.get("SystemRoot", r"C:\Windows"),
                 r"System32\WindowsPowerShell\v1.0\powershell.exe"
             )
-            subprocess.Popen(
-                [powershell_exe, "-ExecutionPolicy", "Bypass",
-                 "-NonInteractive", "-WindowStyle", "Hidden", "-File", ps1_path],
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            
+            # Debug: PS1 dosyası ve yolu kontrol et
+            if not os.path.exists(ps1_path):
+                QMessageBox.critical(parent, "HATA", f"PS1 dosyası oluşturulamadı: {ps1_path}")
+                return
+            if not os.path.exists(powershell_exe):
+                QMessageBox.critical(parent, "HATA", f"PowerShell bulunamadı: {powershell_exe}")
+                return
+            
+            # Verbose log: subprocess'i başlat ve hata yakala
+            try:
+                proc = subprocess.Popen(
+                    [powershell_exe, "-ExecutionPolicy", "Bypass",
+                     "-NonInteractive", "-WindowStyle", "Hidden", "-File", ps1_path],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                # Logla PID ve komut
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[Python] Subprocess başlatıldı, PID={proc.pid}\n")
+                    f.write(f"[Python] Komut: {powershell_exe} -File {ps1_path}\n")
+            except Exception as e:
+                msg = f"PowerShell başlatılamadı: {e}"
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[Python] HATA: {msg}\n")
+                QMessageBox.critical(parent, "HATA", msg)
+                return
+            
             os._exit(0)
         else:
             QMessageBox.information(
