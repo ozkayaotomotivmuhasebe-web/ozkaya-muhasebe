@@ -278,13 +278,28 @@ def _do_update(parent, download_url, new_ver):
         
         tmp_dir = tempfile.gettempdir()
         new_exe = os.path.join(tmp_dir, "Muhasebe_guncelleme.exe")
+        log_path = os.path.join(tmp_dir, "_ozkaya_update_log.txt")
+        
+        # Log helper
+        def log_msg(msg):
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            except:
+                pass
 
         dl_dlg = DownloadDialog(download_url, new_exe, parent)
         if dl_dlg.exec_() != QDialog.Accepted or not dl_dlg.result_path:
+            log_msg("HATA: Download iptal edildi")
             return
+
+        log_msg(f"INDIRME_OK: {new_exe}")
+        log_msg(f"Dosya boyutu: {os.path.getsize(new_exe)} byte")
 
         if getattr(sys, "frozen", False):
             current_exe = sys.executable
+            log_msg(f"CURRENT_EXE: {current_exe}")
+            log_msg(f"CURRENT_PID: {os.getpid()}")
             
             QMessageBox.information(
                 parent, "Güncelleme Hazır",
@@ -292,39 +307,57 @@ def _do_update(parent, download_url, new_ver):
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
             
+            log_msg("MESSAGE_BOX_KAPATILDI")
+            
             # Eski program'ın lock'ı kalksın diye bekle
-            # (dialog kapatılmış, ama OS dosya handle'ı hemen serbest etmeyebilir)
             time.sleep(2)
+            log_msg("WAIT_2_SEC_BITTI")
             
             # Dosyayı kopyala - 20 deneme (dosya lock'ı için)
             copy_ok = False
             for attempt in range(1, 21):
                 try:
+                    log_msg(f"DENEME_{attempt}_BASLADI")
                     shutil.copy2(new_exe, current_exe)
                     copy_ok = True
+                    log_msg(f"DENEME_{attempt}_BASARILI")
                     break
                 except Exception as copy_err:
+                    log_msg(f"DENEME_{attempt}_HATA: {str(copy_err)}")
                     if attempt < 20:
                         time.sleep(1)
                     else:
+                        log_msg(f"20_DENEME_BASARISIZ_FINAL_HATA: {str(copy_err)}")
                         raise copy_err
             
-            # Temp dosyasını sil
-            try:
-                os.remove(new_exe)
-            except:
-                pass
-            
-            # Yeni programı başlat
-            try:
-                subprocess.Popen([current_exe])
-            except Exception as e:
-                QMessageBox.critical(parent, "HATA", f"Yeni sürüm başlatılamadı:\n{e}")
-                return
+            if copy_ok:
+                log_msg("KOPYALAMA_TAMAMLANDI")
+                
+                # Temp dosyasını sil
+                try:
+                    os.remove(new_exe)
+                    log_msg(f"TEMP_DOSYA_SILINDI: {new_exe}")
+                except Exception as del_err:
+                    log_msg(f"TEMP_SILME_HATA: {str(del_err)}")
+                
+                # Yeni programı başlat
+                try:
+                    log_msg(f"YENI_PROGRAM_BASLANIYOR: {current_exe}")
+                    subprocess.Popen([current_exe])
+                    log_msg("YENI_PROGRAM_BASLATILDI_OK")
+                except Exception as e:
+                    log_msg(f"YENI_PROGRAM_HATA: {str(e)}")
+                    QMessageBox.critical(parent, "HATA", f"Yeni sürüm başlatılamadı:\n{e}")
+                    return
+                
+                log_msg("UYGULAMADAN_CIKILIYOR")
+            else:
+                log_msg("COPY_OK_FALSE_ERROR")
             
             # Uygulamayı çıkış yap
             os._exit(0)
         else:
+            log_msg("SCRIPT_MODUNDA_CALISILIYOR")
             QMessageBox.information(
                 parent, "Güncelleme İndirildi",
                 f"✅ Yeni sürüm {new_ver} indirildi:\n{new_exe}\n\n"
@@ -332,5 +365,10 @@ def _do_update(parent, download_url, new_ver):
             )
 
     except Exception as e:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[FINAL_EXCEPTION] {str(e)}\n")
+        except:
+            pass
         QMessageBox.critical(parent, "Güncelleme Hatası",
                              f"Güncelleme uygulanamadı:\n{e}")
