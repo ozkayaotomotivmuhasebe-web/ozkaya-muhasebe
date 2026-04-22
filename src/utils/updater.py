@@ -287,34 +287,86 @@ def _do_update(parent, download_url, new_ver):
             log_path = os.path.join(tmp_dir, "_ozkaya_update_log.txt")
 
             # Basit ve robust PS1 script
-            # Direct file append ile logging (Add-Content reliability problems için)
+            # UTF-8 BOM ile yazılacak, Türkçe karakterler düzgün olur
             ps1_content = (
                 "$ErrorActionPreference = 'Continue'\n"
                 f"$src = \"{new_exe}\"\n"
                 f"$dst = \"{current_exe}\"\n"
                 f"$log = \"{log_path}\"\n"
                 f"$oldpid = {current_pid}\n"
+                "\n"
                 "function wlog($m) {\n"
-                "    try { [IO.File]::AppendAllText($log, \"$(Get-Date -f 'HH:mm:ss') $m`r`n\") }\n"
-                "    catch { }\n"
+                "    try {\n"
+                "        $ts = (Get-Date -f 'HH:mm:ss')\n"
+                "        [IO.File]::AppendAllText($log, \"[$ts] $m`r`n\")\n"
+                "    } catch { }\n"
                 "}\n"
                 "\n"
-                "wlog 'Baslatildi'\n"
-                "while (Get-Process -Id $oldpid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }\n"
-                "wlog 'Process bitti'\n"
-                "Start-Sleep -Seconds 2\n"
-                "if (-not (Test-Path $src)) { wlog 'HATA: kaynak yok'; exit 1 }\n"
-                "try { $bytes = [IO.File]::ReadAllBytes($src); wlog \"Okundu: $($bytes.Length) byte\" }\n"
-                "catch { wlog \"HATA okuma: $_\"; exit 1 }\n"
-                "$ok = $false\n"
-                "for ($i=0; $i -lt 20; $i++) {\n"
-                "    try { [IO.File]::WriteAllBytes($dst, $bytes); $ok=$true; wlog \"Kopyalandi: $(++$i). deneme\"; break }\n"
-                "    catch { wlog \"Deneme $($i+1) basarisiz: $_\"; Start-Sleep -Seconds 1 }\n"
+                "# İlk log kaydı\n"
+                "wlog 'UPDATE_BASLATILDI'\n"
+                "\n"
+                "# Eski process'in kapanmasını bekle\n"
+                "$waited = 0\n"
+                "while ((Get-Process -Id $oldpid -ErrorAction SilentlyContinue) -and ($waited -lt 30)) {\n"
+                "    Start-Sleep -Milliseconds 500\n"
+                "    $waited++\n"
                 "}\n"
-                "if ($ok) { Start-Sleep -Seconds 1; wlog \"Baslatiliyor: $dst\"; Start-Process $dst }\n"
-                "else { wlog 'HATA: kopyalama basarisiz' }\n"
-                "Remove-Item $src -Force -ErrorAction SilentlyContinue\n"
-                "wlog 'Bitti'\n"
+                "wlog 'OLP_PROCESS_BITTI_(waited_' $waited ')'\n"
+                "\n"
+                "Start-Sleep -Seconds 2\n"
+                "\n"
+                "# Kontrolleri yap\n"
+                "if (-not (Test-Path $src -PathType Leaf)) {\n"
+                "    wlog 'HATA_1_KAYNAK_DOSYA_YOK'\n"
+                "    exit 1\n"
+                "}\n"
+                "\n"
+                "wlog 'KAYNAK_DOSYA_KONTROL_OK'\n"
+                "\n"
+                "# Dosyayı oku\n"
+                "try {\n"
+                "    $bytes = [IO.File]::ReadAllBytes($src)\n"
+                "    $size = $bytes.Length\n"
+                "    wlog \"DOSYA_OKUNDU_size_$size\"\n"
+                "} catch {\n"
+                "    wlog \"HATA_2_OKUMA_$_\"\n"
+                "    exit 1\n"
+                "}\n"
+                "\n"
+                "# Kopyala (20 deneme)\n"
+                "$ok = $false\n"
+                "for ($i = 1; $i -le 20; $i++) {\n"
+                "    try {\n"
+                "        [IO.File]::WriteAllBytes($dst, $bytes)\n"
+                "        $ok = $true\n"
+                "        wlog \"KOPYALANDI_deneme_$i\"\n"
+                "        break\n"
+                "    } catch {\n"
+                "        wlog \"DENEME_$i_HATA_$_\"\n"
+                "        if ($i -lt 20) { Start-Sleep -Seconds 1 }\n"
+                "    }\n"
+                "}\n"
+                "\n"
+                "if ($ok) {\n"
+                "    wlog 'BASLATILIYOR_YENİ_SURUM'\n"
+                "    Start-Sleep -Seconds 1\n"
+                "    try {\n"
+                "        Start-Process $dst\n"
+                "        wlog 'YENI_SURUM_BASLATILDI_OK'\n"
+                "    } catch {\n"
+                "        wlog \"HATA_3_BASLAT_$_\"\n"
+                "    }\n"
+                "} else {\n"
+                "    wlog 'HATA_4_KOPYALAMA_20_DENEME_BASARISIZ'\n"
+                "}\n"
+                "\n"
+                "# Temp dosyasını sil\n"
+                "try {\n"
+                "    Remove-Item $src -Force -ErrorAction SilentlyContinue\n"
+                "    wlog 'TEMP_DOSYA_SILINDI'\n"
+                "} catch { }\n"
+                "\n"
+                "wlog 'UPDATE_TAMAMLANDI'\n"
             )
             # UTF-8 BOM
             with open(ps1_path, "w", encoding="utf-8-sig") as f:
@@ -326,34 +378,33 @@ def _do_update(parent, download_url, new_ver):
                 "Uygulama şimdi kapanacak ve yeni sürüm otomatik başlayacak."
             )
 
-            # Subprocess: DETACHED_PROCESS ile çalıştır (PIPE problemleri yok)
-            powershell_exe = os.path.join(
-                os.environ.get("SystemRoot", r"C:\Windows"),
-                r"System32\WindowsPowerShell\v1.0\powershell.exe"
-            )
-            
-            # Path'leri validate et
-            if not os.path.exists(ps1_path):
-                QMessageBox.critical(parent, "HATA", f"PS1 dosyası oluşturulamadı: {ps1_path}")
-                return
-            if not os.path.exists(powershell_exe):
-                QMessageBox.critical(parent, "HATA", f"PowerShell bulunamadı: {powershell_exe}")
-                return
-            
             # Log dosyasını önceden create et (PS1'in yazabilmesi için)
             try:
                 open(log_path, "w").close()
             except:
                 pass
             
+            # Windows START komutu ile PowerShell'i ayrı process'te başlat
+            # START /B = detached (parent'ın kapanması child'i etkilemez)
+            # START /MIN = pencereyi minimize
+            # START /WAIT değil = async
             try:
-                # DETACHED_PROCESS: Process background'da çalışır, parent exit edebilir
-                # Stdout/stderr redirect etmiyoruz (PIPE problemleri yok)
+                # shell=True ile cmd.exe'ye delegete et
+                # Bu şekilde parent process çocuk processin başladığından emin olur
+                cmd = f'START /B /MIN "" "{os.environ.get("SystemRoot", r"C:\Windows")}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "{ps1_path}"'
+                
+                # CREATE_NEW_PROCESS_GROUP: Child process'in kendi process grubu olur
+                # stdin/stdout/stderr: None (silent)
                 proc = subprocess.Popen(
-                    [powershell_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                     "-NonInteractive", "-WindowStyle", "Minimized", "-File", ps1_path],
-                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                    cmd,
+                    shell=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
+                # Process tamamlanmasını bekleme - hemen exit et
+                # shell=True ile subprocess.Popen çocuğu bağımsız hale getiriyor
             except Exception as e:
                 msg = f"PowerShell hatası: {e}"
                 QMessageBox.critical(parent, "HATA", msg)
