@@ -1,6 +1,8 @@
 from src.database.db import SessionLocal
 from src.database.models import CreditCard
-from datetime import datetime
+from src.utils.helpers import adjust_to_business_day
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 
 
 class CreditCardService:
@@ -230,5 +232,37 @@ class CreditCardService:
                 'total_available': total_available,
                 'usage_rate': (total_debt / total_limit * 100) if total_limit > 0 else 0
             }
+        finally:
+            session.close()
+
+    @staticmethod
+    def get_next_payment_date(card_id):
+        """Sonraki kredi kartı ödeme tarihini hesapla (iş günü ayarlaması ile)"""
+        session = SessionLocal()
+        try:
+            card = session.query(CreditCard).filter(CreditCard.id == card_id).first()
+            if not card:
+                return None
+            
+            today = date.today()
+            next_payment_day = card.due_day
+            
+            # Eğer bu aydaki gün geçtiyse, gelecek aya kaydır
+            if today.day >= next_payment_day:
+                next_date = today + relativedelta(months=1)
+            else:
+                next_date = today
+            
+            # Gün ayarla
+            try:
+                next_date = next_date.replace(day=next_payment_day)
+            except ValueError:
+                # Ay sonunda gün sayısı daha az ise
+                next_date = next_date.replace(day=28)
+            
+            # Hafta sonu veya tatil günü ise, sonraki iş gününü bul
+            next_date = adjust_to_business_day(next_date, forward=True)
+            
+            return next_date
         finally:
             session.close()

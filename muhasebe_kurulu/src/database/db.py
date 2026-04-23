@@ -4,6 +4,11 @@ from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
 import config
 from .models import Base
+import warnings
+
+# Suppress SQLAlchemy deprecation warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message='.*__init__.*')
 
 # Optimized engine - Connection pooling ve caching
 engine = create_engine(

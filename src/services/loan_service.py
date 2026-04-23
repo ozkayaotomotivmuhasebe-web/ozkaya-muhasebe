@@ -1,5 +1,6 @@
 from src.database.db import SessionLocal
 from src.database.models import Loan
+from src.utils.helpers import adjust_to_business_day
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 
@@ -146,7 +147,7 @@ class LoanService:
     
     @staticmethod
     def get_next_payment_date(loan_id):
-        """Sonraki ödeme tarihini hesapla"""
+        """Sonraki ödeme tarihini hesapla (iş günü ayarlaması ile)"""
         session = SessionLocal()
         try:
             loan = session.query(Loan).filter(Loan.id == loan_id).first()
@@ -168,6 +169,9 @@ class LoanService:
             except ValueError:
                 # Ay sonunda gün sayısı daha az ise
                 next_date = next_date.replace(day=28)
+            
+            # Hafta sonu veya tatil günü ise, sonraki iş gününü bul
+            next_date = adjust_to_business_day(next_date, forward=True)
             
             return next_date
         except Exception as e:

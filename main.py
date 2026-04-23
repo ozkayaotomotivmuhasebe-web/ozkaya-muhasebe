@@ -1,4 +1,12 @@
 import sys
+import os
+
+# Windows'ta UTF-8 encoding'i aktif et
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 from PyQt5.QtWidgets import QApplication, QMessageBox, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer
 from src.database.db import init_db, close_db

@@ -1,0 +1,1173 @@
+{
+  "tabs": [
+    {
+      "tab_name": "TORBALI KİRA",
+      "title": "TORBALI KİRA",
+      "hdr_color": "#c2185b",
+      "year": 2026,
+      "contracts": [
+        {
+          "kiraci": "TORBALI-TİBET BAYRAKTAROĞLU",
+          "bas": "01.04.2025",
+          "bit": "01.04.2026",
+          "tutar": 23000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 1
+        },
+        {
+          "kiraci": "TORBALI-ALİ YEKTA KILIÇARSLAN",
+          "bas": "27.04.2025",
+          "bit": "27.04.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 2
+        },
+        {
+          "kiraci": "YAHYA ELDENİZ(DAİRE 7)",
+          "bas": "01.05.2025",
+          "bit": "01.05.2026",
+          "tutar": 22000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 3
+        },
+        {
+          "kiraci": "RAMAZAN CAN YAKAPINAR",
+          "bas": "15.05.2025",
+          "bit": "15.05.2026",
+          "tutar": 26000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 4
+        },
+        {
+          "kiraci": "EMRE DEMİRAY",
+          "bas": "22.05.2025",
+          "bit": "22.05.2026",
+          "tutar": 26000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 5
+        },
+        {
+          "kiraci": "AYŞE KAYA",
+          "bas": "27.06.2025",
+          "bit": "27.06.2026",
+          "tutar": 20000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 6
+        },
+        {
+          "kiraci": "PELİN KATRANCI",
+          "bas": "01.07.2025",
+          "bit": "01.07.2026",
+          "tutar": 20000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 7
+        },
+        {
+          "kiraci": "TORBALI- LEVENT ATAY",
+          "bas": "12.07.2025",
+          "bit": "12.07.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 8
+        },
+        {
+          "kiraci": "AHMET KATKO",
+          "bas": "20.08.2025",
+          "bit": "20.08.2026",
+          "tutar": 25000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 9
+        },
+        {
+          "kiraci": "ÖZLEM KARADOĞAN",
+          "bas": "25.08.2025",
+          "bit": "25.08.2026",
+          "tutar": 25000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 10
+        },
+        {
+          "kiraci": "AHMET KURU",
+          "bas": "27.08.2025",
+          "bit": "27.08.2026",
+          "tutar": 25000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 11
+        },
+        {
+          "kiraci": "CEMAL UĞUR",
+          "bas": "03.09.2025",
+          "bit": "03.09.2026",
+          "tutar": 23500.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 12
+        },
+        {
+          "kiraci": "TORBALI-ŞAHİN YİĞİT",
+          "bas": "20.09.2025",
+          "bit": "20.09.2026",
+          "tutar": 20000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 13
+        },
+        {
+          "kiraci": "FATMA AKBAŞ",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 31000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 14
+        },
+        {
+          "kiraci": "FİLİZ SATIR",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 23500.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 15
+        },
+        {
+          "kiraci": "MAHMUT AKIN",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 26000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 16
+        },
+        {
+          "kiraci": "MURAT MAMUK",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 17
+        },
+        {
+          "kiraci": "BÜLENT AY",
+          "bas": "05.10.2025",
+          "bit": "05.10.2026",
+          "tutar": 25000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 18
+        },
+        {
+          "kiraci": "NİLÜFER ŞEN",
+          "bas": "13.10.2025",
+          "bit": "13.10.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 19
+        },
+        {
+          "kiraci": "TORBALI-CEVZA SİNANLAR(B BLOK)",
+          "bas": "18.10.2025",
+          "bit": "18.10.2026",
+          "tutar": 27000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 20
+        },
+        {
+          "kiraci": "KADİR GÜRBÜZ",
+          "bas": "06.11.2025",
+          "bit": "06.11.2026",
+          "tutar": 23000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 21
+        },
+        {
+          "kiraci": "MUSTAFA AY",
+          "bas": "18.03.2026",
+          "bit": "18.04.2027",
+          "tutar": 25500.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 22
+        },
+        {
+          "kiraci": "MEHMET İHSAN ERKUŞ",
+          "bas": "03.01.2025",
+          "bit": "03.01.2026",
+          "tutar": 25000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 23
+        },
+        {
+          "kiraci": "SİNEM ARICAN",
+          "bas": "15.07.2025",
+          "bit": "15.07.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 24
+        },
+        {
+          "kiraci": "TORBALI-ÖMER TEKİN",
+          "bas": "21.03.2025",
+          "bit": "21.04.2026",
+          "tutar": 24000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 25
+        },
+        {
+          "kiraci": "ŞEMİKLER EV-TİNA HANIM",
+          "bas": "13.07.2023",
+          "bit": "13.07.2024",
+          "tutar": 20000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 26
+        },
+        {
+          "kiraci": "BALÇOVA-İBRAHİM TOPRAK",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 42000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 27
+        }
+      ],
+      "payments": {
+        "5": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "6": {
+          "1": "ODENDI",
+          "4": "ODENDI"
+        },
+        "7": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "11": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "15": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "16": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "18": {
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI",
+          "1": "ODENDI"
+        },
+        "19": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "21": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "1": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "2": {
+          "1": "ODENDI",
+          "2": "ODENDI"
+        },
+        "3": {
+          "1": "ODENDI",
+          "2": "ODENDI"
+        },
+        "4": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "8": {
+          "1": "ODENDI"
+        },
+        "9": {
+          "1": "ODENMEDI"
+        },
+        "10": {
+          "1": "ODENDI",
+          "2": "KISMI:10.000 TL ÖDEDİ"
+        },
+        "12": {
+          "1": "ODENDI"
+        },
+        "14": {
+          "1": "ODENDI",
+          "2": "ODENDI"
+        },
+        "17": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "20": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "22": {
+          "3": "ODENDI"
+        },
+        "25": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "KISMI:10.000 TL KALDI"
+        },
+        "27": {
+          "1": "ODENDI"
+        }
+      },
+      "odeme_detay": {
+        "5": {
+          "1": {
+            "tarih": "28.01.2026",
+            "banka": "EMRE DEMİRAY",
+            "aciklama": "AİDAT | Konu: KONUT KİRASI"
+          }
+        },
+        "6": {
+          "1": {
+            "tarih": "05.01.2026",
+            "banka": "AYŞE KAYA",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "07.04.2026",
+            "banka": "AYŞE KAYA",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "7": {
+          "1": {
+            "tarih": "09.01.2026",
+            "banka": "PELİN KATRANCI",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "06.02.2026",
+            "banka": "PELİN KATRANCI",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "06.03.2026",
+            "banka": "PELİN KATRANCI",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "09.04.2026",
+            "banka": "PELİN KATRANCI",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "11": {
+          "1": {
+            "tarih": "15.01.2026",
+            "banka": "AHMET KURU",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "24.02.2026",
+            "banka": "AHMET KURU",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "19.03.2026",
+            "banka": "AHMET KURU",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "15": {
+          "1": {
+            "tarih": "01.01.2026",
+            "banka": "FİLİZ SATIR",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "02.02.2026",
+            "banka": "FİLİZ SATIR",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "02.03.2026",
+            "banka": "FİLİZ SATIR",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "01.04.2026",
+            "banka": "FİLİZ SATIR",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "16": {
+          "1": {
+            "tarih": "06.01.2026",
+            "banka": "MAHMUT AKIN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "05.02.2026",
+            "banka": "MAHMUT AKIN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "06.03.2026",
+            "banka": "MAHMUT AKIN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "06.04.2026",
+            "banka": "MAHMUT AKIN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "18": {
+          "2": {
+            "tarih": "06.02.2026",
+            "banka": "BÜLENT AY",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "02.03.2026",
+            "banka": "BÜLENT AY",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "01.04.2026",
+            "banka": "BÜLENT AY",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "19": {
+          "1": {
+            "tarih": "21.01.2026",
+            "banka": "NİLÜFER ŞEN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "14.02.2026",
+            "banka": "NİLÜFER ŞEN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "13.03.2026",
+            "banka": "NİLÜFER ŞEN",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "21": {
+          "1": {
+            "tarih": "06.01.2026",
+            "banka": "KADİR GÜRBÜZ",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "2": {
+            "tarih": "06.02.2026",
+            "banka": "KADİR GÜRBÜZ",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "3": {
+            "tarih": "06.03.2026",
+            "banka": "KADİR GÜRBÜZ",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          },
+          "4": {
+            "tarih": "06.04.2026",
+            "banka": "KADİR GÜRBÜZ",
+            "aciklama": "TORBALI KONUT KİRASI | Konu: KONUT KİRASI"
+          }
+        },
+        "9": {
+          "1": {
+            "tarih": "01.01.2026",
+            "banka": "",
+            "aciklama": "OCAK KIRA ÖDEMESİ"
+          }
+        },
+        "10": {
+          "2": {
+            "tarih": "01.02.2026",
+            "banka": "",
+            "aciklama": "ŞUBAT KIRA ÖDEMESİ"
+          }
+        }
+      },
+      "yil_nots": {
+        "25": "Nisan kira dahil 53.000+Mayıs eylül arası 125.000tl+Toplam eylül dahil  178.000 tl+60.0000 tl pazartesi gönderdi+Kalan bakiye eylül dahil 118.000"
+      }
+    },
+    {
+      "tab_name": "TORBALI AİDAT",
+      "title": "TORBALI AİDAT",
+      "hdr_color": "#7b1fa2",
+      "year": 2026,
+      "contracts": [
+        {
+          "kiraci": "MEHMET İHSAN ERKUŞ",
+          "bas": "10.12.2024",
+          "bit": "10.12.2025",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 1
+        },
+        {
+          "kiraci": "TORBALI-TİBET BAYRAKTAROĞLU",
+          "bas": "01.04.2025",
+          "bit": "01.04.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 2
+        },
+        {
+          "kiraci": "TORBALI-ALİ YEKTA KILIÇARSLAN",
+          "bas": "27.04.2025",
+          "bit": "27.04.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 3
+        },
+        {
+          "kiraci": "YAHYA ELDENİZ(DAİRE 7)",
+          "bas": "01.05.2025",
+          "bit": "01.05.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 4
+        },
+        {
+          "kiraci": "RAMAZAN CAN YAKAPINAR",
+          "bas": "15.05.2025",
+          "bit": "15.05.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 5
+        },
+        {
+          "kiraci": "EMRE DEMİRAY",
+          "bas": "22.05.2025",
+          "bit": "22.05.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 6
+        },
+        {
+          "kiraci": "AYŞE KAYA",
+          "bas": "27.06.2025",
+          "bit": "27.06.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 7
+        },
+        {
+          "kiraci": "PELİN KATRANCI",
+          "bas": "01.07.2025",
+          "bit": "01.07.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 8
+        },
+        {
+          "kiraci": "TORBALI- LEVENT ATAY",
+          "bas": "12.07.2025",
+          "bit": "12.07.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 9
+        },
+        {
+          "kiraci": "SİNEM ARICAN",
+          "bas": "15.07.2025",
+          "bit": "15.07.2025",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 10
+        },
+        {
+          "kiraci": "SÜLEYMAN DEMİR",
+          "bas": "13.08.2025",
+          "bit": "13.08.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 11
+        },
+        {
+          "kiraci": "AHMET KATKO",
+          "bas": "20.08.2025",
+          "bit": "20.08.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 12
+        },
+        {
+          "kiraci": "ÖZLEM KARADOĞAN",
+          "bas": "25.08.2025",
+          "bit": "25.08.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 13
+        },
+        {
+          "kiraci": "AHMET KURU",
+          "bas": "27.08.2025",
+          "bit": "27.08.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 14
+        },
+        {
+          "kiraci": "CEMAL UĞUR",
+          "bas": "03.09.2025",
+          "bit": "03.09.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 15
+        },
+        {
+          "kiraci": "TORBALI-ŞAHİN YİĞİT",
+          "bas": "20.09.2025",
+          "bit": "20.09.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 16
+        },
+        {
+          "kiraci": "FATMA AKBAŞ",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 17
+        },
+        {
+          "kiraci": "MURAT MAMUK",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 18
+        },
+        {
+          "kiraci": "MAHMUT AKIN",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 19
+        },
+        {
+          "kiraci": "FİLİZ SATIR",
+          "bas": "01.10.2025",
+          "bit": "01.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 20
+        },
+        {
+          "kiraci": "BÜLENT AY",
+          "bas": "05.10.2025",
+          "bit": "05.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 21
+        },
+        {
+          "kiraci": "NİLÜFER ŞEN",
+          "bas": "13.10.2025",
+          "bit": "13.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 22
+        },
+        {
+          "kiraci": "TORBALI-CEVZA SİNANLAR(B BLOK)",
+          "bas": "18.10.2025",
+          "bit": "18.10.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 23
+        },
+        {
+          "kiraci": "KADİR GÜRBÜZ",
+          "bas": "06.11.2025",
+          "bit": "06.11.2026",
+          "tutar": 2000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "ai̇dat",
+          "id": 24
+        }
+      ],
+      "payments": {
+        "5": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "6": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "8": {
+          "1": "ODENMEDI",
+          "2": "ODENMEDI",
+          "3": "ODENMEDI"
+        },
+        "9": {
+          "1": "ODENDI"
+        },
+        "14": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "15": {
+          "1": "ODENDI"
+        },
+        "17": {
+          "1": "ODENDI",
+          "2": "ODENDI"
+        },
+        "19": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "20": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "21": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "22": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "23": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "24": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        }
+      },
+      "odeme_detay": {},
+      "yil_nots": {}
+    },
+    {
+      "tab_name": "DÜKKANLAR",
+      "title": "DÜKKANLAR",
+      "hdr_color": "#1565c0",
+      "year": 2026,
+      "contracts": [
+        {
+          "kiraci": "HALKAPINAR-KUASAR",
+          "bas": "01.03.2025",
+          "bit": "01.03.2026",
+          "tutar": 48000.0,
+          "odeme_gunu": "HER AYIN 20'Sİ",
+          "aciklama_kw": "ki̇ra",
+          "id": 1
+        },
+        {
+          "kiraci": "1.SAN. SİTESİ DÜKKAN ÜST KAT-ARDA KAZCIOĞLU",
+          "bas": "15.05.2025",
+          "bit": "15.05.2026",
+          "tutar": 20000.0,
+          "odeme_gunu": "HER AYIN 13'Ü",
+          "aciklama_kw": "kira",
+          "id": 2
+        },
+        {
+          "kiraci": "HALKAPINAR-TUNCAY YURDAKUL OTO.",
+          "bas": "01.08.2025",
+          "bit": "01.08.2026",
+          "tutar": 28000.0,
+          "odeme_gunu": "HER AYIN 1 VE 5 ARASI",
+          "aciklama_kw": "kira",
+          "id": 3
+        },
+        {
+          "kiraci": "DEPO",
+          "bas": "27.11.2025",
+          "bit": "27.11.2026",
+          "tutar": 6000.0,
+          "odeme_gunu": "",
+          "aciklama_kw": "kira",
+          "id": 4
+        },
+        {
+          "kiraci": "KARABAĞLAR İŞYERİ-ALPARLA TASARIM",
+          "bas": "01.12.2025",
+          "bit": "01.12.2026",
+          "tutar": 98000.0,
+          "odeme_gunu": "HER AYIN 1 VE 5 ARASI",
+          "aciklama_kw": "kira",
+          "id": 5
+        },
+        {
+          "kiraci": "BEYTÜRK OTOMOTİV / VAY MOTORLU ARAÇLAR",
+          "bas": "01.12.2025",
+          "bit": "01.12.2026",
+          "tutar": 80000.0,
+          "odeme_gunu": "yeni sözleşme",
+          "aciklama_kw": "kira",
+          "id": 6
+        },
+        {
+          "kiraci": "1.SANAYİ DÜKKAN-DEMİREL TORNA-TOLGA BEY",
+          "bas": "13.01.2026",
+          "bit": "13.01.2027",
+          "tutar": 45000.0,
+          "odeme_gunu": "HER AYIN 13'Ü",
+          "aciklama_kw": "kira",
+          "id": 7
+        },
+        {
+          "kiraci": "HALKAPINAR-UPSOLED (BATTERY SOLAR)(KOMŞU İBR.)",
+          "bas": "01.02.2026",
+          "bit": "01.02.2027",
+          "tutar": 67000.0,
+          "odeme_gunu": "HER AYIN 1 VE 5 ARASI",
+          "aciklama_kw": "kira",
+          "id": 8
+        },
+        {
+          "kiraci": "DMY ELEKTRİK",
+          "bas": "30.04.2025",
+          "bit": "30.04.2027",
+          "tutar": 33700.0,
+          "odeme_gunu": "HER AYIN 1 VE 5 ARASI",
+          "aciklama_kw": "kira",
+          "id": 9
+        }
+      ],
+      "payments": {
+        "1": {
+          "1": "ODENDI"
+        },
+        "2": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "9": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "4": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "3": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "5": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "6": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI"
+        },
+        "7": {
+          "1": "ODENDI",
+          "2": "ODENDI",
+          "3": "ODENDI",
+          "4": "ODENDI"
+        },
+        "8": {
+          "2": "ODENDI",
+          "3": "ODENDI"
+        }
+      },
+      "odeme_detay": {
+        "2": {
+          "1": {
+            "tarih": "14.01.2026",
+            "banka": "NAKİT",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "2": {
+            "tarih": "17.02.2026",
+            "banka": "NAKİT",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "3": {
+            "tarih": "13.03.2026",
+            "banka": "NAKİT",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "4": {
+            "tarih": "15.04.2026",
+            "banka": "NAKIT",
+            "aciklama": "DÜKKAN KİRASI"
+          }
+        },
+        "10": {
+          "4": {
+            "tarih": "18.04.2026",
+            "banka": "NAKIT",
+            "aciklama": "KİRA"
+          }
+        },
+        "1": {
+          "1": {
+            "tarih": "01.01.2026",
+            "banka": "NAKIT",
+            "aciklama": "DÜKKAN KİRA ÖDEMESİ OCAK"
+          }
+        },
+        "9": {
+          "1": {
+            "tarih": "02.01.2026",
+            "banka": "BANKA",
+            "aciklama": "DÜKKAN KİRA ÖDEMESİ"
+          },
+          "2": {
+            "tarih": "02.02.2026",
+            "banka": "DMY ELEKTRİK",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "3": {
+            "tarih": "02.03.2026",
+            "banka": "DMY ELEKTRİK",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "4": {
+            "tarih": "02.04.2026",
+            "banka": "BANKA",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          }
+        },
+        "4": {
+          "1": {
+            "tarih": "19.01.2026",
+            "banka": "DEPO",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "2": {
+            "tarih": "16.02.2026",
+            "banka": "DEPO",
+            "aciklama": "DÜKKAN DEPO KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "3": {
+            "tarih": "17.03.2026",
+            "banka": "DEPO",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          },
+          "4": {
+            "tarih": "17.04.2026",
+            "banka": "BANKA",
+            "aciklama": "DÜKKAN KİRASI | Konu: DÜKKAN KİRASI"
+          }
+        }
+      },
+      "yil_nots": {}
+    },
+    {
+      "tab_name": "GAZİANTEP",
+      "title": "GAZİANTEP",
+      "hdr_color": "#2e7d32",
+      "year": 2026,
+      "contracts": [
+        {
+          "kiraci": "ALA ALİ  (KAT:3) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 12000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 1
+        },
+        {
+          "kiraci": "HAZEM SHAMTA (KAT:4) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 8000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 2
+        },
+        {
+          "kiraci": "ABDÜLBASİL HAC HALİL (KAT:4 TERAS) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 9000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 3
+        },
+        {
+          "kiraci": "NEVRAS ELBERİR (KAT:2 DAİRE:4) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 12000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 4
+        },
+        {
+          "kiraci": "HASAN EROL (HİLAL SİTESİ) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 17000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 5
+        },
+        {
+          "kiraci": "AMMAR HELO (KAT:1) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 12000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 6
+        },
+        {
+          "kiraci": "AHMET ALBAKKAR (KAT:1) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 12000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 7
+        },
+        {
+          "kiraci": "MAHMUD MENEFİHİ (ZEMİN KAT) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 9000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 8
+        },
+        {
+          "kiraci": "ALA ALİ (AMBAR) (GAZİANTEP)",
+          "bas": "01.12.2023",
+          "bit": "01.12.2024",
+          "tutar": 5500.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 9
+        },
+        {
+          "kiraci": "İLHAN CRCE (KAT 3 GÖLGELER APT) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 15000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 10
+        },
+        {
+          "kiraci": "MEHMET ALİ ÜSTÜNODA (KAT:3) (GAZİANTEP)",
+          "bas": "01.01.2025",
+          "bit": "01.01.2026",
+          "tutar": 12000.0,
+          "odeme_gunu": "HER AYIN 8'İNDE",
+          "aciklama_kw": "kira",
+          "id": 11
+        }
+      ],
+      "payments": {
+        "5": {
+          "1": "ODENDI"
+        }
+      },
+      "odeme_detay": {},
+      "yil_nots": {}
+    }
+  ],
+  "tab_widths": {
+    "TORBALI KİRA": 199,
+    "TORBALI AİDAT": 198,
+    "DÜKKANLAR": 166,
+    "GAZİANTEP": 193
+  }
+}

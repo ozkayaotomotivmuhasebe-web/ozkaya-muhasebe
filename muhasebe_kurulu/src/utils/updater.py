@@ -309,155 +309,101 @@ def _do_update(parent, download_url, new_ver):
             
             log_msg("MESSAGE_BOX_KAPATILDI")
             
-            # Windows'ta kilitli dosyayı değiştirmek için geliştirilmiş PowerShell script
-            # Tüm klasörlerde (Desktop, Program Files, Network drives vs) çalışacak şekilde
-            
-            ps_script = f"""
-# Parametreleri al - path'lerden bağımsız çalış
-$$old_exe = "{current_exe}"
-$$new_exe = "{new_exe}"
-$$backup_exe = $$old_exe + ".backup"
+            # Batch script kullanarak dosyayı güncelle (OneDrive bypass)
+            batch_script = f"""@echo off
+REM Batch script OneDrive cloud sync'i bypass eder
+REM ve dosyayı günceller
+setlocal enabledelayedexpansion
 
-# Path'leri normalize et - UNC, network drives vb. için
-$$old_exe = [System.IO.Path]::GetFullPath($$old_exe)
-$$new_exe = [System.IO.Path]::GetFullPath($$new_exe)
+set "OLD_EXE={current_exe}"
+set "NEW_EXE={new_exe}"
+set "BACKUP_EXE=!OLD_EXE!.backup"
+set "LOG_FILE={log_path}"
 
-# 3 saniye bekle - Python process kapatılması için
-Start-Sleep -Seconds 3
+REM 5 saniye bekle - Python process kapatılması için
+timeout /t 5 /nobreak
 
-# Fonksiyon: Dosya ile ilgilenen process'leri kapat
-function Close-FileHandles {{
-    param([string]$$file_path)
+REM Deneme loop - 30 kez dene
+for /L %%i in (1,1,30) do (
+    if exist "!OLD_EXE!" (
+        REM Eski dosyayı backup'la
+        if not exist "!BACKUP_EXE!" (
+            copy "!OLD_EXE!" "!BACKUP_EXE!" >nul 2>&1
+        )
+        
+        REM Eski dosyayı sil
+        del "!OLD_EXE!" >nul 2>&1
+        
+        if not exist "!OLD_EXE!" (
+            REM Silme başarılı - yeni dosyayı taşı
+            if exist "!NEW_EXE!" (
+                move "!NEW_EXE!" "!OLD_EXE!" >nul 2>&1
+                if exist "!OLD_EXE!" (
+                    REM Taşıma başarılı
+                    echo [UPDATE_SUCCESS] Dosya güncellendi >> "!LOG_FILE!"
+                    
+                    REM Backup'u sil
+                    if exist "!BACKUP_EXE!" (
+                        del "!BACKUP_EXE!" >nul 2>&1
+                    )
+                    
+                    REM Yeni uygulamayı başlat
+                    start "" "!OLD_EXE!"
+                    goto :done
+                )
+            )
+        )
+    )
     
-    if (Test-Path $$file_path) {{
-        try {{
-            # WMI üzerinden açık dosyaları bul ve kapat
-            Get-Process | Where-Object {{
-                $$_.Handles -gt 0
-            }} | ForEach-Object {{
-                try {{
-                    $$_ | Stop-Process -Force -ErrorAction SilentlyContinue
-                }} catch {{}}
-            }}
-        }} catch {{}}
-    }}
-}}
+    REM Bir sonraki deneme öncesi bekle
+    timeout /t 1 /nobreak >nul
+)
 
-# Adım 1: Eski EXE'yi backup'la (fallback için)
-$$backup_ok = $$false
-try {{
-    if (Test-Path $$old_exe) {{
-        Copy-Item $$old_exe $$backup_exe -Force -ErrorAction SilentlyContinue
-        $$backup_ok = $$true
-    }}
-}} catch {{}}
+REM Başarısız olursa fallback - kopyala
+if exist "!NEW_EXE!" (
+    copy "!NEW_EXE!" "!OLD_EXE!" /Y >nul 2>&1
+    del "!NEW_EXE!" >nul 2>&1
+    if exist "!BACKUP_EXE!" (
+        del "!BACKUP_EXE!" >nul 2>&1
+    )
+    start "" "!OLD_EXE!"
+    echo [UPDATE_FALLBACK] Fallback yöntemi kullanıldı >> "!LOG_FILE!"
+)
 
-# Adım 2: Eski EXE'yi silmeyi dene (multiple retry)
-$$delete_ok = $$false
-for ($$i = 1; $$i -le 10; $$i++) {{
-    try {{
-        if (Test-Path $$old_exe) {{
-            Remove-Item $$old_exe -Force -ErrorAction Stop
-            $$delete_ok = $$true
-            break
-        }} else {{
-            $$delete_ok = $$true
-            break
-        }}
-    }}
-    catch {{
-        # Process'leri kapat ve tekrar dene
-        if ($$i -eq 5) {{
-            Close-FileHandles $$old_exe
-        }}
-        Start-Sleep -Milliseconds 500
-    }}
-}}
-
-# Adım 3: Yeni dosyayı taşı
-$$move_ok = $$false
-for ($$i = 1; $$i -le 10; $$i++) {{
-    try {{
-        if (Test-Path $$new_exe) {{
-            Move-Item $$new_exe $$old_exe -Force -ErrorAction Stop
-            $$move_ok = $$true
-            break
-        }}
-    }}
-    catch {{
-        Start-Sleep -Milliseconds 500
-    }}
-}}
-
-# Adım 4: Eğer taşıma başarısız olursa, kopyala ve sil
-if (-not $$move_ok) {{
-    try {{
-        if (Test-Path $$new_exe) {{
-            Copy-Item $$new_exe $$old_exe -Force -ErrorAction Stop
-            Remove-Item $$new_exe -Force -ErrorAction SilentlyContinue
-        }}
-    }} catch {{}}
-}}
-
-# Adım 5: Backup'u sil
-try {{
-    if (Test-Path $$backup_exe) {{
-        Remove-Item $$backup_exe -Force -ErrorAction SilentlyContinue
-    }}
-}} catch {{}}
-
-# Adım 6: Yeni programı başlat
-if (Test-Path $$old_exe) {{
-    try {{
-        & $$old_exe
-    }} catch {{
-        # Fallback: start komutu ile başlat
-        Start-Process $$old_exe
-    }}
-}}
+:done
+exit /b
 """
             
-            ps_file = os.path.join(tmp_dir, "update_apply.ps1")
+            batch_file = os.path.join(tmp_dir, "update_apply.bat")
             try:
-                with open(ps_file, 'w', encoding='utf-8') as f:
-                    f.write(ps_script)
-                log_msg(f"POWERSHELL_SCRIPT_OLUSTURULDU: {ps_file}")
+                with open(batch_file, 'w', encoding='utf-8') as f:
+                    f.write(batch_script)
+                log_msg(f"BATCH_SCRIPT_OLUSTURULDU: {batch_file}")
             except Exception as e:
-                log_msg(f"POWERSHELL_SCRIPT_OLUSTURMA_HATA: {str(e)}")
+                log_msg(f"BATCH_SCRIPT_OLUSTURMA_HATA: {str(e)}")
                 QMessageBox.critical(parent, "HATA", f"Update script oluşturulamadı:\n{e}")
                 return
             
-            # PowerShell script'i başlat (parent process'ten completely bağımsız - detached)
+            # Batch script'i başlat (parent process'ten completely bağımsız - detached)
             try:
-                log_msg(f"POWERSHELL_SCRIPT_BASLANIYOR: {ps_file}")
-                # Windows'ta CREATE_NEW_PROCESS_GROUP ile script parent'ten detach olur
+                log_msg(f"BATCH_SCRIPT_BASLANIYOR: {batch_file}")
                 if sys.platform == "win32":
+                    # Batch dosyasını başlat - detached process
                     subprocess.Popen(
-                        [
-                            "powershell.exe",
-                            "-NoProfile",
-                            "-ExecutionPolicy", "Bypass",
-                            "-File", ps_file
-                        ],
+                        f'start /b "{batch_file}"',
+                        shell=True,
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
                     )
-                else:
-                    # Linux/Mac için (fallback)
-                    subprocess.Popen(
-                        ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_file],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                log_msg("POWERSHELL_SCRIPT_BASLATILDI_OK")
+                log_msg("BATCH_SCRIPT_BASLATILDI_OK")
             except Exception as e:
-                log_msg(f"POWERSHELL_SCRIPT_BASLATMA_HATA: {str(e)}")
+                log_msg(f"BATCH_SCRIPT_BASLATMA_HATA: {str(e)}")
                 QMessageBox.critical(parent, "HATA", f"Update script başlatılamadı:\n{e}")
                 return
             
             log_msg("UYGULAMADAN_CIKILIYOR")
-            # Python process'ini kapat - PowerShell script parent'ten bağımsız olarak çalışacak
+            # Python process'ini kapat - Batch script parent'ten bağımsız olarak çalışacak
             os._exit(0)
         else:
             log_msg("SCRIPT_MODUNDA_CALISILIYOR")

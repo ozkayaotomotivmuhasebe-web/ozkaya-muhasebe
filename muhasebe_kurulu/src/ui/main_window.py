@@ -925,9 +925,13 @@ class MainWindow(QMainWindow):
                 Loan.status == 'AKTIF'
             ).all()
             for loan in loans_due_today:
-                due_day = _parse_due_day(loan.due_day)
-                if due_day is None or due_day != today.day:
+                # get_next_payment_date() kullanarak iş günü ayarlamasını al
+                next_payment_date = LoanService.get_next_payment_date(loan.id)
+                
+                # Eğer sonraki ödeme tarihi bugün ise göster
+                if next_payment_date is None or next_payment_date != today:
                     continue
+                
                 remaining_amount = self._get_loan_remaining_amount(loan)
                 if remaining_amount <= 0:
                     continue
@@ -951,8 +955,10 @@ class MainWindow(QMainWindow):
                 CreditCard.current_debt > 0
             ).all()
             for card in credit_cards_due_today:
-                due_day = _parse_due_day(card.due_day)
-                if due_day is None or due_day != today.day:
+                # get_next_payment_date() kullanarak iş günü ayarlamasını al
+                next_payment_date = CreditCardService.get_next_payment_date(card.id)
+                # Eğer sonraki ödeme tarihi bugün ise göster
+                if next_payment_date is None or next_payment_date != today:
                     continue
                 pending_rows.append({
                     'row_type': 'credit_card_due',
