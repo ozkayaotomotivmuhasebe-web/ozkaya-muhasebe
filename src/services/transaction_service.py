@@ -204,8 +204,23 @@ class TransactionService:
                         loan.status = 'KAPATILDI'
     
     @staticmethod
-    def get_all_transactions(user_id, start_date=None, end_date=None):
-        """Tüm işlemleri getir (filtrelenebilir)"""
+    def get_all_transactions(user_id, start_date=None, end_date=None, offset=0, limit=None):
+        """Tüm işlemleri getir (filtrelenebilir ve offset/limit destekli)
+        
+        Args:
+            user_id: Kullanıcı ID
+            start_date: Başlangıç tarihi (opsiyonel)
+            end_date: Bitiş tarihi (opsiyonel)
+            offset: Kaç kayıt atla (default: 0)
+            limit: Kaç kayıt getir (None = tümü)
+        
+        Returns: {
+            'transactions': Transaction listesi,
+            'total': toplam kayıt sayısı,
+            'offset': kullanılan offset,
+            'limit': kullanılan limit
+        }
+        """
         session = SessionLocal()
         try:
             query = session.query(Transaction).filter(Transaction.user_id == user_id)
@@ -215,8 +230,92 @@ class TransactionService:
             if end_date:
                 query = query.filter(Transaction.transaction_date <= end_date)
             
-            transactions = query.order_by(Transaction.transaction_date.desc()).all()
-            return transactions
+            # Toplam sayısını al
+            total = query.count()
+            
+            # Sorguyu sırala
+            query = query.order_by(Transaction.transaction_date.desc())
+            
+            # Offset ve limit uygula
+            if offset > 0:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+            
+            transactions = query.all()
+            
+            return {
+                'transactions': transactions,
+                'total': total,
+                'offset': offset,
+                'limit': limit
+            }
+        finally:
+            session.close()
+    
+    @staticmethod
+    def search_transactions(user_id, search_text, start_date=None, end_date=None, offset=0, limit=None):
+        """Veritabanında işlem ara (offset/limit destekli)
+        
+        Arama şu sütunlarda yapılır:
+        - Müşteri adı (customer_name)
+        - Açıklama (description)
+        - Konu (subject)
+        - Kişi (person)
+        - Tutar (amount)
+        
+        Args:
+            user_id: Kullanıcı ID
+            search_text: Aranacak metin
+            start_date: Başlangıç tarihi (opsiyonel)
+            end_date: Bitiş tarihi (opsiyonel)
+            offset: Kaç kayıt atla
+            limit: Kaç kayıt getir (None = tümü)
+        
+        Returns: {transactions, total, offset, limit}
+        """
+        from sqlalchemy import or_
+        session = SessionLocal()
+        try:
+            # Arama metnini prepare et
+            search_pattern = f"%{search_text}%"
+            
+            query = session.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                or_(
+                    Transaction.customer_name.ilike(search_pattern),
+                    Transaction.description.ilike(search_pattern),
+                    Transaction.subject.ilike(search_pattern),
+                    Transaction.person.ilike(search_pattern),
+                    Transaction.amount == float(search_text) if search_text.replace('.', '').replace(',', '').isdigit() else False
+                )
+            )
+            
+            if start_date:
+                query = query.filter(Transaction.transaction_date >= start_date)
+            if end_date:
+                query = query.filter(Transaction.transaction_date <= end_date)
+            
+            # Toplam sayısını al
+            total = query.count()
+            
+            # Sorguyu sırala
+            query = query.order_by(Transaction.transaction_date.desc())
+            
+            # Offset ve limit uygula
+            if offset > 0:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+            
+            transactions = query.all()
+            
+            return {
+                'transactions': transactions,
+                'total': total,
+                'offset': offset,
+                'limit': limit
+            }
         finally:
             session.close()
     

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, Enum, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, Enum, Date, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, backref
 from datetime import datetime
@@ -314,6 +314,13 @@ class Transaction(Base):
     bank_account = relationship('BankAccount', back_populates='all_transactions', foreign_keys='Transaction.bank_account_id')
     destination_bank_account = relationship('BankAccount', back_populates='destination_transactions', foreign_keys='Transaction.destination_bank_account_id')
     credit_card = relationship('CreditCard', back_populates='transactions')
+    
+    __table_args__ = (
+        # Tarih sorgularında performans artırımı için index
+        # (user_id, transaction_date DESC) şeklinde sorgulandığı için
+        Index('idx_transaction_user_date', 'user_id', 'transaction_date'),
+        Index('idx_transaction_customer_name', 'customer_name'),  # Arama performansı için
+    )
 
 
 class Employee(Base):

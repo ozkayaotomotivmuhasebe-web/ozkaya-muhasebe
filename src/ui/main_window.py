@@ -1355,6 +1355,24 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(filter_layout)
         
+        # Infinite scroll bilgisi (alt panelde)
+        info_layout = QHBoxLayout()
+        self.label_scroll_info = QLabel("İşlemler yükleniyor...")
+        self.label_scroll_info.setStyleSheet("color: #666; font-size: 10pt;")
+        info_layout.addWidget(self.label_scroll_info)
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
+        
+        # Infinite scroll state'i initialize et
+        self._transaction_loaded_data = []  # Tüm yüklü veri
+        self._transaction_offset = 0  # Kaç kayıt çekildi
+        self._transaction_total = 0  # Toplam kayıt sayısı
+        self._transaction_is_loading = False  # Veri yükleniyor mu?
+        self._transaction_search_mode = False  # Arama modu açık mı?
+        self._transaction_page_size = 50  # Her seferde 50 kayıt
+        self._transaction_scroll_timer = None  # Scroll throttle timer
+        self._transaction_scroll_last_check = 0  # Son kontrol zamanı
+        
         # İşlemler tablosu - Excel tarzı
         self.table_transactions = QTableWidget()
         self.table_transactions.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1407,6 +1425,10 @@ class MainWindow(QMainWindow):
                 color: black;
             }
         """)
+        
+        # Scroll event'i bind et (infinite scroll için)
+        # valueChanged: wheel + drag + arrow tuşları tüm hallerde tetiklenir
+        self.table_transactions.verticalScrollBar().valueChanged.connect(self._on_transaction_table_scroll)
         
         layout.addWidget(self.table_transactions)
         
@@ -1574,36 +1596,140 @@ class MainWindow(QMainWindow):
             self.table_transactions.setUpdatesEnabled(True)
     
     def apply_transaction_filter(self):
-        """Tarih filtresini uygula"""
+        """Tarih filtresini uygula (infinite scroll başlat)"""
+        # Veri sıfırla
+        self._transaction_loaded_data = []
+        self._transaction_offset = 0
+        self._transaction_total = 0
+        self._transaction_is_loading = False
+        self._transaction_search_mode = False
+        self.search_customer_input.clear()
+        
+        # Tabloyu temizle
+        self.table_transactions.setRowCount(0)
+        self.label_scroll_info.setText("İşlemler yükleniyor...")
+        
+        print("✓ apply_transaction_filter: Infinite scroll başlatıldı")
+        # İlk 50 kaydı yükle
+        self._load_more_transactions()
+    
+    def _load_more_transactions(self):
+        """Daha fazla işlem yükle (infinite scroll)"""
+        if self._transaction_is_loading:
+            print(f"⚠️ _load_more_transactions: Zaten yükleniyor, return")
+            return
+        
+        if self._transaction_offset > 0 and self._transaction_offset >= self._transaction_total:
+            print(f"✓ _load_more_transactions: Tüm veriler yüklendi ({self._transaction_total} toplam)")
+            self.label_scroll_info.setText(f"✓ Tüm işlemler yüklendi ({self._transaction_total} toplam)")
+            return
+        
+        self._transaction_is_loading = True
+        self.label_scroll_info.setText("⏳ Yükleniyor...")
+        print(f"📥 _load_more_transactions başladı: offset={self._transaction_offset}, total={self._transaction_total}, page_size={self._transaction_page_size}")
+        
         try:
-            self.table_transactions.setUpdatesEnabled(False)
             start_date = self.start_date_filter.date().toPyDate()
             end_date = self.end_date_filter.date().toPyDate()
             
-            transactions = TransactionService.get_all_transactions(
-                self.user.id, start_date, end_date
-            )
-            # Yeni işlemler üstte olsun (descending sort)
-            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
+            # Arama modu açık mı kontrol et
+            search_text = self.search_customer_input.text().strip()
             
-            # Tabloyu güncelle (aynı kod yukarıdaki gibi)
-            self.table_transactions.setRowCount(len(transactions))
-            for i, trans in enumerate(transactions):
+            if search_text and self._transaction_search_mode:
+                # Database search kullan
+                print(f"🔍 Arama modu: '{search_text}'")
+                result = TransactionService.search_transactions(
+                    self.user.id, search_text, start_date, end_date,
+                    offset=self._transaction_offset, limit=self._transaction_page_size
+                )
+            else:
+                # Normal filtre
+                result = TransactionService.get_all_transactions(
+                    self.user.id, start_date, end_date,
+                    offset=self._transaction_offset, limit=self._transaction_page_size
+                )
+            
+            transactions = result['transactions']
+            total = result['total']
+            
+            print(f"📦 DB'den {len(transactions)} kayıt geldi. Toplam: {total}")
+            
+            # Total'ı bir kez set et
+            if self._transaction_offset == 0:
+                self._transaction_total = total
+                print(f"📊 Total ayarlandı: {self._transaction_total}")
+            
+            # Yeni veriyi listeye ekle
+            self._transaction_loaded_data.extend(transactions)
+            old_offset = self._transaction_offset
+            self._transaction_offset += len(transactions)
+            print(f"➕ Data extend: {old_offset} → {self._transaction_offset}")
+            
+            # Tabloyu güncelle
+            self._refresh_transaction_table_display()
+            
+            # Bilgi güncellemeleri
+            if self._transaction_search_mode and search_text:
+                info_text = f"Arama sonucu: {total} kayıt | Yüklenen: {self._transaction_offset}/{total}"
+            else:
+                info_text = f"Toplam: {total} kayıt | Yüklenen: {self._transaction_offset}/{total}"
+            self.label_scroll_info.setText(info_text)
+            print(f"📋 Info: {info_text}")
+            
+        except Exception as e:
+            print(f"❌ İşlem yükleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            self.label_scroll_info.setText(f"❌ Hata: {str(e)}")
+        finally:
+            self._transaction_is_loading = False
+            print(f"🏁 _load_more_transactions tamamlandı")
+    
+    def _refresh_transaction_table_display(self):
+        """Tabloyu yüklü verilerle göster"""
+        try:
+            # Scroll event'i geçici olarak disconnect et (table update sırasında tetiklenmesini önle)
+            try:
+                self.table_transactions.verticalScrollBar().valueChanged.disconnect(self._on_transaction_table_scroll)
+                print("✓ Scroll listener disconnected")
+            except TypeError:
+                pass  # Already disconnected
+            
+            self.table_transactions.setUpdatesEnabled(False)
+            self.table_transactions.setRowCount(len(self._transaction_loaded_data))
+            print(f"📋 Tablo güncelleniyor: {len(self._transaction_loaded_data)} satır")
+            
+            for i, trans in enumerate(self._transaction_loaded_data):
+                # Tarih
                 _d_item = QTableWidgetItem(str(trans.transaction_date))
                 _d_item.setData(Qt.UserRole, trans.id)
                 self.table_transactions.setItem(i, 0, _d_item)
+                
+                # Tür
                 type_item = QTableWidgetItem(trans.transaction_type.value)
                 if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
                     type_item.setBackground(Qt.green)
                 elif trans.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
                     type_item.setBackground(Qt.red)
                 self.table_transactions.setItem(i, 1, type_item)
+                
+                # Müşteri
                 self.table_transactions.setItem(i, 2, QTableWidgetItem(trans.customer_name))
+                
+                # Açıklama
                 self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
+                
+                # Ödeme Şekli
                 payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type)
                 self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
+                
+                # Konu
                 self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
+                
+                # Kişi
                 self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
+                
+                # Tutar
                 amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
                 amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table_transactions.setItem(i, 7, amount_item)
@@ -1654,16 +1780,54 @@ class MainWindow(QMainWindow):
                 """)
                 btn_delete.clicked.connect(lambda checked, tid=trans.id: self.delete_transaction(tid))
                 action_layout.addWidget(btn_delete)
-                
+
                 self.table_transactions.setCellWidget(i, 8, action_widget)
-            
+
             self._resize_table(self.table_transactions, stretch_col=3, min_row_height=48)
             self.table_transactions.setColumnWidth(8, 160)
             self.load_transaction_column_widths()
         except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Filtreleme hatası: {str(e)}")
+            print(f"Tablo görüntüleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.table_transactions.setUpdatesEnabled(True)
+            # Scroll event'i yeniden bağla
+            self.table_transactions.verticalScrollBar().valueChanged.connect(self._on_transaction_table_scroll)
+            print(f"✓ Tablo refresh tamamlandı, scroll listener reconnected")
+    
+    def _on_transaction_table_scroll(self, value):
+        """Scroll event - sayfanın altına gelince daha fazla veri yükle (throttled)"""
+        import time
+        
+        # Çok sık tetiklenmesini önle - 100ms throttle
+        current_time = time.time()
+        if current_time - self._transaction_scroll_last_check < 0.1:
+            return
+        self._transaction_scroll_last_check = current_time
+        
+        # Çok sık tetiklenmesini önle - direkt kontrol et
+        if self._transaction_is_loading:
+            print(f"⚠️ Zaten yükleniyor, skip scroll event")
+            return
+        
+        scrollbar = self.table_transactions.verticalScrollBar()
+        max_val = scrollbar.maximum()
+        current_val = scrollbar.value()
+        
+        # Debug output
+        scroll_percent = int(current_val * 100 / max_val) if max_val > 0 else 0
+        print(f"📊 Scroll: {current_val}/{max_val} (%{scroll_percent}) | Offset: {self._transaction_offset}/{self._transaction_total}")
+        
+        # Eğer en alta yakınsa (% 85'inden sonra) veya son sayfaysa daha fazla yükle
+        if max_val > 0 and current_val >= max_val * 0.85:
+            # Tüm veriler yüklendi mi kontrol et
+            if self._transaction_offset < self._transaction_total:
+                print(f"✅ Scroll threshold geçildi, loading başlat")
+                self._load_more_transactions()
+            else:
+                print(f"✅ Tüm veriler zaten yüklendi")
+                self.label_scroll_info.setText(f"✓ Tüm {self._transaction_total} işlem yüklendi")
 
     def show_all_transactions(self):
         """Tarih filtrelerini kaldırarak tüm işlemleri göster"""
@@ -1676,116 +1840,44 @@ class MainWindow(QMainWindow):
         self.apply_transaction_filter()
     
     def search_customer_transactions(self):
-        """Tüm sütunlarda ara"""
-        search_text = self.search_customer_input.text().strip().lower()
+        """Veritabanında ara (infinite scroll)"""
+        search_text = self.search_customer_input.text().strip()
         
         if not search_text:
-            # Eğer arama boşsa tümünü göster
-            self.refresh_transactions_table()
+            # Eğer arama boşsa filtreyi uygula
+            self._transaction_search_mode = False
+            self._transaction_loaded_data = []
+            self._transaction_offset = 0
+            self._transaction_total = 0
+            self._transaction_is_loading = False
+            self.table_transactions.setRowCount(0)
+            self._load_more_transactions()
             return
         
-        try:
-            start_date = self.start_date_filter.date().toPyDate()
-            end_date = self.end_date_filter.date().toPyDate()
-            transactions = TransactionService.get_all_transactions(self.user.id, start_date, end_date)
-            # Yeni işlemler üstte olsun (descending sort)
-            transactions = sorted(transactions, key=lambda x: x.transaction_date, reverse=True)
-            
-            # Tüm sütunlarda ara: tarih, tip, müşteri, açıklama, ödeme yöntemi, konu, kişi, tutar
-            filtered = []
-            for t in transactions:
-                search_in = [
-                    str(t.transaction_date),  # Tarih
-                    t.transaction_type.value if t.transaction_type else "",  # İşlem türü
-                    t.customer_name or "",  # Müşteri adı
-                    t.description or "",  # Açıklama
-                    t.payment_method.value if t.payment_method else "",  # Ödeme yöntemi
-                    t.subject or "",  # Konu
-                    t.person or "",  # Kişi
-                    str(format_tr(t.amount)),  # Tutar (formatlı)
-                    str(t.amount)  # Tutar (normal)
-                ]
-                # Eğer arama metni herhangi bir sütunda varsa ekle
-                if any(search_text in field.lower() for field in search_in):
-                    filtered.append(t)
-            
-            # Tabloyu güncelle
-            self.table_transactions.setRowCount(len(filtered))
-            for i, trans in enumerate(filtered):
-                _s_item = QTableWidgetItem(str(trans.transaction_date))
-                _s_item.setData(Qt.UserRole, trans.id)
-                self.table_transactions.setItem(i, 0, _s_item)
-                type_item = QTableWidgetItem(trans.transaction_type.value)
-                if trans.transaction_type in [TransactionType.GELIR, TransactionType.KESILEN_FATURA]:
-                    type_item.setBackground(Qt.green)
-                elif trans.transaction_type in [TransactionType.GIDER, TransactionType.GELEN_FATURA]:
-                    type_item.setBackground(Qt.red)
-                self.table_transactions.setItem(i, 1, type_item)
-                self.table_transactions.setItem(i, 2, QTableWidgetItem(trans.customer_name))
-                self.table_transactions.setItem(i, 3, QTableWidgetItem(trans.description))
-                payment_text = self._get_payment_method_display_text(trans.payment_method.value, trans.payment_type)
-                self.table_transactions.setItem(i, 4, QTableWidgetItem(payment_text))
-                self.table_transactions.setItem(i, 5, QTableWidgetItem(trans.subject or ""))
-                self.table_transactions.setItem(i, 6, QTableWidgetItem(trans.person or ""))
-                amount_item = QTableWidgetItem(f"{format_tr(trans.amount)} ₺")
-                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table_transactions.setItem(i, 7, amount_item)
-                
-                # İşlemler butonları
-                action_widget = QWidget()
-                action_layout = QHBoxLayout(action_widget)
-                action_layout.setContentsMargins(4, 3, 4, 3)
-                action_layout.setSpacing(6)
-                action_layout.setAlignment(Qt.AlignCenter)
-                action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                action_widget.setMinimumHeight(36)
-                
-                btn_edit = QPushButton("Düzenle")
-                btn_edit.setMinimumWidth(130)
-                btn_edit.setMinimumHeight(36)
-                btn_edit.setMaximumWidth(140)
-                btn_edit.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2196F3;
-                        color: white;
-                        border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover { background-color: #1976D2; }
-                """)
-                btn_edit.setProperty('transaction_id', trans.id)
-                btn_edit.clicked.connect(lambda checked, tid=trans.id: self.edit_transaction(tid))
-                action_layout.addWidget(btn_edit)
-                
-                btn_delete = QPushButton("Sil")
-                btn_delete.setMinimumWidth(100)
-                btn_delete.setMinimumHeight(36)
-                btn_delete.setMaximumWidth(110)
-                btn_delete.setStyleSheet("""
-                    QPushButton {
-                        background-color: #f44336;
-                        color: white;
-                        border: none;
-                        border-radius: 5px;
-                        padding: 7px 14px;
-                        font-size: 12pt;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover { background-color: #da190b; }
-                """)
-                btn_delete.setProperty('transaction_id', trans.id)
-                btn_delete.clicked.connect(lambda checked, tid=trans.id: self.delete_transaction(tid))
-                action_layout.addWidget(btn_delete)
-                
-                self.table_transactions.setCellWidget(i, 8, action_widget)
-            
-            self._resize_table(self.table_transactions, stretch_col=3, min_row_height=48)
-            self.table_transactions.setColumnWidth(8, 200)
-        except Exception as e:
-            QMessageBox.warning(self, "Hata", f"Arama hatası: {str(e)}")
+        # Arama modunu aç ve ilk 50 kaydı yükle
+        self._transaction_search_mode = True
+        self._transaction_loaded_data = []
+        self._transaction_offset = 0
+        self._transaction_total = 0
+        self._transaction_is_loading = False
+        self.table_transactions.setRowCount(0)
+        self._load_more_transactions()
+    
+    def prev_transaction_page(self):
+        """Eski: Pagination kontrolü - artık kullanılmıyor"""
+        pass
+    
+    def next_transaction_page(self):
+        """Eski: Pagination kontrolü - artık kullanılmıyor"""
+        pass
+    
+    def go_to_transaction_page(self):
+        """Eski: Pagination kontrolü - artık kullanılmıyor"""
+        pass
+    
+    def on_per_page_changed(self):
+        """Eski: Pagination kontrolü - artık kullanılmıyor"""
+        pass
     
     def show_new_transaction_dialog(self):
         """Yeni işlem ekleme dialog'unu göster"""
