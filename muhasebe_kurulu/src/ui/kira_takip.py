@@ -1020,7 +1020,7 @@ class KiraTakipWidget(QWidget):
                 )
                 pay_map    = {}
                 pay_detail = {}
-                for t in txns:
+                for t in txns['transactions']:
                     subj = self._tr_lower(t.subject or "")
                     desc = self._tr_lower(t.description or "")
                     cn   = self._tr_lower(t.customer_name.strip())

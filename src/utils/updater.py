@@ -311,8 +311,7 @@ def _do_update(parent, download_url, new_ver):
             
             # Batch script kullanarak dosyayı güncelle (OneDrive bypass)
             batch_script = f"""@echo off
-REM Batch script OneDrive cloud sync'i bypass eder
-REM ve dosyayı günceller
+REM Batch script OneDrive cloud sync'i bypass eder ve dosyayı günceller
 setlocal enabledelayedexpansion
 
 set "OLD_EXE={current_exe}"
@@ -320,8 +319,10 @@ set "NEW_EXE={new_exe}"
 set "BACKUP_EXE=!OLD_EXE!.backup"
 set "LOG_FILE={log_path}"
 
-REM 5 saniye bekle - Python process kapatılması için
+REM 5 saniye bekle - Python process kapatılması ve OneDrive sync'in çözülmesi için
 timeout /t 5 /nobreak
+
+echo [BATCH_BASLATILDI] %date% %time% >> "!LOG_FILE!"
 
 REM Deneme loop - 30 kez dene
 for /L %%i in (1,1,30) do (
@@ -347,12 +348,19 @@ for /L %%i in (1,1,30) do (
                         del "!BACKUP_EXE!" >nul 2>&1
                     )
                     
+                    REM 2 saniye bekle OneDrive sync'in dosyayı kaydetmesi için
+                    timeout /t 2 /nobreak >nul
+                    
                     REM Yeni uygulamayı başlat
-                    start "" "!OLD_EXE!"
+                    echo [APP_STARTING] "!OLD_EXE!" >> "!LOG_FILE!"
+                    "!OLD_EXE!"
                     goto :done
                 )
             )
         )
+    ) else (
+        echo [ERROR] Eski exe bulunamadı: !OLD_EXE! >> "!LOG_FILE!"
+        goto :done
     )
     
     REM Bir sonraki deneme öncesi bekle
@@ -361,16 +369,26 @@ for /L %%i in (1,1,30) do (
 
 REM Başarısız olursa fallback - kopyala
 if exist "!NEW_EXE!" (
+    echo [FALLBACK_COPY] Fallback copy yöntemi başlatılıyor >> "!LOG_FILE!"
     copy "!NEW_EXE!" "!OLD_EXE!" /Y >nul 2>&1
-    del "!NEW_EXE!" >nul 2>&1
-    if exist "!BACKUP_EXE!" (
-        del "!BACKUP_EXE!" >nul 2>&1
+    if errorlevel 1 (
+        echo [FALLBACK_COPY_FAILED] Copy başarısız oldu >> "!LOG_FILE!"
+    ) else (
+        echo [FALLBACK_COPY_OK] Copy başarılı >> "!LOG_FILE!"
+        del "!NEW_EXE!" >nul 2>&1
+        if exist "!BACKUP_EXE!" (
+            del "!BACKUP_EXE!" >nul 2>&1
+        )
+        timeout /t 2 /nobreak >nul
+        echo [APP_STARTING_FALLBACK] "!OLD_EXE!" >> "!LOG_FILE!"
+        "!OLD_EXE!"
     )
-    start "" "!OLD_EXE!"
-    echo [UPDATE_FALLBACK] Fallback yöntemi kullanıldı >> "!LOG_FILE!"
+) else (
+    echo [ERROR] Yeni exe bulunamadı: !NEW_EXE! >> "!LOG_FILE!"
 )
 
 :done
+echo [BATCH_TAMAMLANDI] %date% %time% >> "!LOG_FILE!"
 exit /b
 """
             
