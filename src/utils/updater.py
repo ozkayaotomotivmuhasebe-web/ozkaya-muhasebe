@@ -309,52 +309,48 @@ def _do_update(parent, download_url, new_ver):
             
             log_msg("MESSAGE_BOX_KAPATILDI")
             
-            # Eski program'ın lock'ı kalksın diye bekle
-            time.sleep(2)
-            log_msg("WAIT_2_SEC_BITTI")
+            # Windows'ta kilitli dosyayı değiştirmek için batch script kullan
+            # 1. Python process'i kapatılıyor (lock kalkıyor)
+            # 2. Batch script bekliyor
+            # 3. Eski dosyayı siliyor / yenisini yazıyor
+            # 4. Yeni programı başlatıyor
             
-            # Dosyayı kopyala - 20 deneme (dosya lock'ı için)
-            copy_ok = False
-            for attempt in range(1, 21):
-                try:
-                    log_msg(f"DENEME_{attempt}_BASLADI")
-                    shutil.copy2(new_exe, current_exe)
-                    copy_ok = True
-                    log_msg(f"DENEME_{attempt}_BASARILI")
-                    break
-                except Exception as copy_err:
-                    log_msg(f"DENEME_{attempt}_HATA: {str(copy_err)}")
-                    if attempt < 20:
-                        time.sleep(1)
-                    else:
-                        log_msg(f"20_DENEME_BASARISIZ_FINAL_HATA: {str(copy_err)}")
-                        raise copy_err
+            batch_script = f"""@echo off
+REM Eski Python process'i kapatılması için 3 saniye bekle
+timeout /t 3 /nobreak
+
+REM Eski EXE'yi sil
+del "{current_exe}" 2>nul
+
+REM Yeni EXE'yi taşı
+move /Y "{new_exe}" "{current_exe}" >nul 2>&1
+
+REM Yeni programı başlat
+start "" "{current_exe}"
+"""
             
-            if copy_ok:
-                log_msg("KOPYALAMA_TAMAMLANDI")
-                
-                # Temp dosyasını sil
-                try:
-                    os.remove(new_exe)
-                    log_msg(f"TEMP_DOSYA_SILINDI: {new_exe}")
-                except Exception as del_err:
-                    log_msg(f"TEMP_SILME_HATA: {str(del_err)}")
-                
-                # Yeni programı başlat
-                try:
-                    log_msg(f"YENI_PROGRAM_BASLANIYOR: {current_exe}")
-                    subprocess.Popen([current_exe])
-                    log_msg("YENI_PROGRAM_BASLATILDI_OK")
-                except Exception as e:
-                    log_msg(f"YENI_PROGRAM_HATA: {str(e)}")
-                    QMessageBox.critical(parent, "HATA", f"Yeni sürüm başlatılamadı:\n{e}")
-                    return
-                
-                log_msg("UYGULAMADAN_CIKILIYOR")
-            else:
-                log_msg("COPY_OK_FALSE_ERROR")
+            batch_file = os.path.join(tmp_dir, "update_apply.bat")
+            try:
+                with open(batch_file, 'w', encoding='utf-8') as f:
+                    f.write(batch_script)
+                log_msg(f"BATCH_SCRIPT_OLUSTURULDU: {batch_file}")
+            except Exception as e:
+                log_msg(f"BATCH_SCRIPT_OLUSTURMA_HATA: {str(e)}")
+                QMessageBox.critical(parent, "HATA", f"Update batch oluşturulamadı:\n{e}")
+                return
             
-            # Uygulamayı çıkış yap
+            # Batch script'i başlat (non-blocking)
+            try:
+                log_msg(f"BATCH_SCRIPT_BASLANIYOR: {batch_file}")
+                subprocess.Popen([batch_file], shell=True)
+                log_msg("BATCH_SCRIPT_BASLATILDI_OK")
+            except Exception as e:
+                log_msg(f"BATCH_SCRIPT_BASLATMA_HATA: {str(e)}")
+                QMessageBox.critical(parent, "HATA", f"Update batch başlatılamadı:\n{e}")
+                return
+            
+            log_msg("UYGULAMADAN_CIKILIYOR")
+            # Python process'ini kapat - batch script devam edecek
             os._exit(0)
         else:
             log_msg("SCRIPT_MODUNDA_CALISILIYOR")
