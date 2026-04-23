@@ -309,56 +309,111 @@ def _do_update(parent, download_url, new_ver):
             
             log_msg("MESSAGE_BOX_KAPATILDI")
             
-            # Windows'ta kilitli dosyayı değiştirmek için PowerShell script kullan
-            # PowerShell, batch'ten daha flexible ve error handling daha iyi
+            # Windows'ta kilitli dosyayı değiştirmek için geliştirilmiş PowerShell script
+            # Tüm klasörlerde (Desktop, Program Files, Network drives vs) çalışacak şekilde
             
             ps_script = f"""
-$old_exe = "{current_exe}"
-$new_exe = "{new_exe}"
+# Parametreleri al - path'lerden bağımsız çalış
+$$old_exe = "{current_exe}"
+$$new_exe = "{new_exe}"
+$$backup_exe = $$old_exe + ".backup"
+
+# Path'leri normalize et - UNC, network drives vb. için
+$$old_exe = [System.IO.Path]::GetFullPath($$old_exe)
+$$new_exe = [System.IO.Path]::GetFullPath($$new_exe)
 
 # 3 saniye bekle - Python process kapatılması için
 Start-Sleep -Seconds 3
 
-# Retry logic ile dosya silme
-$retry_count = 0
-while ($retry_count -lt 5) {{
+# Fonksiyon: Dosya ile ilgilenen process'leri kapat
+function Close-FileHandles {{
+    param([string]$$file_path)
+    
+    if (Test-Path $$file_path) {{
+        try {{
+            # WMI üzerinden açık dosyaları bul ve kapat
+            Get-Process | Where-Object {{
+                $$_.Handles -gt 0
+            }} | ForEach-Object {{
+                try {{
+                    $$_ | Stop-Process -Force -ErrorAction SilentlyContinue
+                }} catch {{}}
+            }}
+        }} catch {{}}
+    }}
+}}
+
+# Adım 1: Eski EXE'yi backup'la (fallback için)
+$$backup_ok = $$false
+try {{
+    if (Test-Path $$old_exe) {{
+        Copy-Item $$old_exe $$backup_exe -Force -ErrorAction SilentlyContinue
+        $$backup_ok = $$true
+    }}
+}} catch {{}}
+
+# Adım 2: Eski EXE'yi silmeyi dene (multiple retry)
+$$delete_ok = $$false
+for ($$i = 1; $$i -le 10; $$i++) {{
     try {{
-        if (Test-Path "$old_exe") {{
-            Remove-Item "$old_exe" -Force -ErrorAction Stop
+        if (Test-Path $$old_exe) {{
+            Remove-Item $$old_exe -Force -ErrorAction Stop
+            $$delete_ok = $$true
             break
-        }}
-        else {{
+        }} else {{
+            $$delete_ok = $$true
             break
         }}
     }}
     catch {{
-        $retry_count++
-        if ($retry_count -lt 5) {{
-            Start-Sleep -Milliseconds 500
+        # Process'leri kapat ve tekrar dene
+        if ($$i -eq 5) {{
+            Close-FileHandles $$old_exe
         }}
+        Start-Sleep -Milliseconds 500
     }}
 }}
 
-# Yeni dosyayı taşı
-$retry_count = 0
-while ($retry_count -lt 5) {{
+# Adım 3: Yeni dosyayı taşı
+$$move_ok = $$false
+for ($$i = 1; $$i -le 10; $$i++) {{
     try {{
-        if (Test-Path "$new_exe") {{
-            Move-Item "$new_exe" "$old_exe" -Force -ErrorAction Stop
+        if (Test-Path $$new_exe) {{
+            Move-Item $$new_exe $$old_exe -Force -ErrorAction Stop
+            $$move_ok = $$true
             break
         }}
     }}
     catch {{
-        $retry_count++
-        if ($retry_count -lt 5) {{
-            Start-Sleep -Milliseconds 500
-        }}
+        Start-Sleep -Milliseconds 500
     }}
 }}
 
-# Yeni programı başlat
-if (Test-Path "$old_exe") {{
-    & "$old_exe"
+# Adım 4: Eğer taşıma başarısız olursa, kopyala ve sil
+if (-not $$move_ok) {{
+    try {{
+        if (Test-Path $$new_exe) {{
+            Copy-Item $$new_exe $$old_exe -Force -ErrorAction Stop
+            Remove-Item $$new_exe -Force -ErrorAction SilentlyContinue
+        }}
+    }} catch {{}}
+}}
+
+# Adım 5: Backup'u sil
+try {{
+    if (Test-Path $$backup_exe) {{
+        Remove-Item $$backup_exe -Force -ErrorAction SilentlyContinue
+    }}
+}} catch {{}}
+
+# Adım 6: Yeni programı başlat
+if (Test-Path $$old_exe) {{
+    try {{
+        & $$old_exe
+    }} catch {{
+        # Fallback: start komutu ile başlat
+        Start-Process $$old_exe
+    }}
 }}
 """
             
