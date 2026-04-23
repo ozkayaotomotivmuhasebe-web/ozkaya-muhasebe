@@ -309,48 +309,100 @@ def _do_update(parent, download_url, new_ver):
             
             log_msg("MESSAGE_BOX_KAPATILDI")
             
-            # Windows'ta kilitli dosyayı değiştirmek için batch script kullan
-            # 1. Python process'i kapatılıyor (lock kalkıyor)
-            # 2. Batch script bekliyor
-            # 3. Eski dosyayı siliyor / yenisini yazıyor
-            # 4. Yeni programı başlatıyor
+            # Windows'ta kilitli dosyayı değiştirmek için PowerShell script kullan
+            # PowerShell, batch'ten daha flexible ve error handling daha iyi
             
-            batch_script = f"""@echo off
-REM Eski Python process'i kapatılması için 3 saniye bekle
-timeout /t 3 /nobreak
+            ps_script = f"""
+$old_exe = "{current_exe}"
+$new_exe = "{new_exe}"
 
-REM Eski EXE'yi sil
-del "{current_exe}" 2>nul
+# 3 saniye bekle - Python process kapatılması için
+Start-Sleep -Seconds 3
 
-REM Yeni EXE'yi taşı
-move /Y "{new_exe}" "{current_exe}" >nul 2>&1
+# Retry logic ile dosya silme
+$retry_count = 0
+while ($retry_count -lt 5) {{
+    try {{
+        if (Test-Path "$old_exe") {{
+            Remove-Item "$old_exe" -Force -ErrorAction Stop
+            break
+        }}
+        else {{
+            break
+        }}
+    }}
+    catch {{
+        $retry_count++
+        if ($retry_count -lt 5) {{
+            Start-Sleep -Milliseconds 500
+        }}
+    }}
+}}
 
-REM Yeni programı başlat
-start "" "{current_exe}"
+# Yeni dosyayı taşı
+$retry_count = 0
+while ($retry_count -lt 5) {{
+    try {{
+        if (Test-Path "$new_exe") {{
+            Move-Item "$new_exe" "$old_exe" -Force -ErrorAction Stop
+            break
+        }}
+    }}
+    catch {{
+        $retry_count++
+        if ($retry_count -lt 5) {{
+            Start-Sleep -Milliseconds 500
+        }}
+    }}
+}}
+
+# Yeni programı başlat
+if (Test-Path "$old_exe") {{
+    & "$old_exe"
+}}
 """
             
-            batch_file = os.path.join(tmp_dir, "update_apply.bat")
+            ps_file = os.path.join(tmp_dir, "update_apply.ps1")
             try:
-                with open(batch_file, 'w', encoding='utf-8') as f:
-                    f.write(batch_script)
-                log_msg(f"BATCH_SCRIPT_OLUSTURULDU: {batch_file}")
+                with open(ps_file, 'w', encoding='utf-8') as f:
+                    f.write(ps_script)
+                log_msg(f"POWERSHELL_SCRIPT_OLUSTURULDU: {ps_file}")
             except Exception as e:
-                log_msg(f"BATCH_SCRIPT_OLUSTURMA_HATA: {str(e)}")
-                QMessageBox.critical(parent, "HATA", f"Update batch oluşturulamadı:\n{e}")
+                log_msg(f"POWERSHELL_SCRIPT_OLUSTURMA_HATA: {str(e)}")
+                QMessageBox.critical(parent, "HATA", f"Update script oluşturulamadı:\n{e}")
                 return
             
-            # Batch script'i başlat (non-blocking)
+            # PowerShell script'i başlat (parent process'ten completely bağımsız - detached)
             try:
-                log_msg(f"BATCH_SCRIPT_BASLANIYOR: {batch_file}")
-                subprocess.Popen([batch_file], shell=True)
-                log_msg("BATCH_SCRIPT_BASLATILDI_OK")
+                log_msg(f"POWERSHELL_SCRIPT_BASLANIYOR: {ps_file}")
+                # Windows'ta CREATE_NEW_PROCESS_GROUP ile script parent'ten detach olur
+                if sys.platform == "win32":
+                    subprocess.Popen(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-ExecutionPolicy", "Bypass",
+                            "-File", ps_file
+                        ],
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                else:
+                    # Linux/Mac için (fallback)
+                    subprocess.Popen(
+                        ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_file],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                log_msg("POWERSHELL_SCRIPT_BASLATILDI_OK")
             except Exception as e:
-                log_msg(f"BATCH_SCRIPT_BASLATMA_HATA: {str(e)}")
-                QMessageBox.critical(parent, "HATA", f"Update batch başlatılamadı:\n{e}")
+                log_msg(f"POWERSHELL_SCRIPT_BASLATMA_HATA: {str(e)}")
+                QMessageBox.critical(parent, "HATA", f"Update script başlatılamadı:\n{e}")
                 return
             
             log_msg("UYGULAMADAN_CIKILIYOR")
-            # Python process'ini kapat - batch script devam edecek
+            # Python process'ini kapat - PowerShell script parent'ten bağımsız olarak çalışacak
             os._exit(0)
         else:
             log_msg("SCRIPT_MODUNDA_CALISILIYOR")
