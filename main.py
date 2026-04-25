@@ -4,8 +4,13 @@ import os
 # Windows'ta UTF-8 encoding'i aktif et
 if sys.platform == "win32":
     os.environ["PYTHONIOENCODING"] = "utf-8"
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    try:
+        if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
 
 from PyQt5.QtWidgets import QApplication, QMessageBox, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer

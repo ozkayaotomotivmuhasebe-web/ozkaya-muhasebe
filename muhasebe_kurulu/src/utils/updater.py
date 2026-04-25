@@ -319,8 +319,8 @@ set "NEW_EXE={new_exe}"
 set "BACKUP_EXE=!OLD_EXE!.backup"
 set "LOG_FILE={log_path}"
 
-REM 5 saniye bekle - Python process kapatılması ve OneDrive sync'in çözülmesi için
-timeout /t 5 /nobreak
+REM 5 saniye bekle - Python process kapatilmasi icin (ping konsol gerektirmez)
+ping -n 6 127.0.0.1 >nul 2>&1
 
 echo [BATCH_BASLATILDI] %date% %time% >> "!LOG_FILE!"
 
@@ -348,8 +348,8 @@ for /L %%i in (1,1,30) do (
                         del "!BACKUP_EXE!" >nul 2>&1
                     )
                     
-                    REM 2 saniye bekle OneDrive sync'in dosyayı kaydetmesi için
-                    timeout /t 2 /nobreak >nul
+                    REM 2 saniye bekle - ping ile
+                    ping -n 3 127.0.0.1 >nul 2>&1
                     
                     REM Yeni uygulamayı başlat
                     echo [APP_STARTING] "!OLD_EXE!" >> "!LOG_FILE!"
@@ -363,8 +363,8 @@ for /L %%i in (1,1,30) do (
         goto :done
     )
     
-    REM Bir sonraki deneme öncesi bekle
-    timeout /t 1 /nobreak >nul
+    REM Bir sonraki deneme oncesi bekle - ping konsol gerektirmez
+    ping -n 2 127.0.0.1 >nul 2>&1
 )
 
 REM Başarısız olursa fallback - kopyala
@@ -379,7 +379,7 @@ if exist "!NEW_EXE!" (
         if exist "!BACKUP_EXE!" (
             del "!BACKUP_EXE!" >nul 2>&1
         )
-        timeout /t 2 /nobreak >nul
+        ping -n 3 127.0.0.1 >nul 2>&1
         echo [APP_STARTING_FALLBACK] "!OLD_EXE!" >> "!LOG_FILE!"
         "!OLD_EXE!"
     )
