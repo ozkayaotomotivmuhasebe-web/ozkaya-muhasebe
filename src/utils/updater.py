@@ -406,11 +406,13 @@ exit /b
             try:
                 log_msg(f"BATCH_SCRIPT_BASLANIYOR: {batch_file}")
                 if sys.platform == "win32":
-                    # Batch dosyasını başlat - detached process
+                    # Batch dosyasını başlat - tamamen bağımsız detached process
+                    # NOT: 'start /b "{path}"' hatalı - tırnaklı ilk arg title olarak yorumlanır!
+                    # Çözüm: cmd.exe /c + DETACHED_PROCESS
                     subprocess.Popen(
-                        f'start /b "{batch_file}"',
-                        shell=True,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+                        ['cmd.exe', '/c', batch_file],
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+                        close_fds=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
                     )
