@@ -1,6 +1,7 @@
 from src.database.db import SessionLocal
 from src.database.models import Loan
 from src.utils.helpers import adjust_to_business_day
+from sqlalchemy import func
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 
@@ -51,6 +52,12 @@ class LoanService:
             query = session.query(Loan).filter(Loan.user_id == user_id)
             if active_only:
                 query = query.filter(Loan.is_active == True, Loan.status == 'AKTIF')
+            query = query.order_by(
+                func.lower(func.coalesce(Loan.bank_name, '')),
+                func.lower(func.coalesce(Loan.company_name, '')),
+                func.lower(func.coalesce(Loan.loan_name, '')),
+                Loan.id
+            )
             return query.all()
         except Exception as e:
             print(f"Kredi getirme hatası: {e}")
@@ -157,23 +164,31 @@ class LoanService:
             today = date.today()
             next_payment_day = loan.due_day
             
-            # Eğer bu aydaki gün geçtiyse, gelecek aya kaydır
-            if today.day >= next_payment_day:
-                next_date = today + relativedelta(months=1)
-            else:
-                next_date = today
-            
-            # Gün ayarla
+            # Bu ay için ödeme tarihini hesapla
             try:
-                next_date = next_date.replace(day=next_payment_day)
+                current_month_date = date(today.year, today.month, next_payment_day)
             except ValueError:
                 # Ay sonunda gün sayısı daha az ise
-                next_date = next_date.replace(day=28)
+                current_month_date = date(today.year, today.month, 28)
             
             # Hafta sonu veya tatil günü ise, sonraki iş gününü bul
-            next_date = adjust_to_business_day(next_date, forward=True)
+            current_month_date = adjust_to_business_day(current_month_date, forward=True)
             
-            return next_date
+            # Eğer bu ayın düzeltilmiş tarihi bugün veya gelecekte ise, onu döndür
+            if current_month_date >= today:
+                return current_month_date
+            
+            # Aksi takdirde, sonraki ay için hesapla
+            next_month = today + relativedelta(months=1)
+            try:
+                next_month_date = date(next_month.year, next_month.month, next_payment_day)
+            except ValueError:
+                next_month_date = date(next_month.year, next_month.month, 28)
+            
+            # Hafta sonu veya tatil günü ise, sonraki iş gününü bul
+            next_month_date = adjust_to_business_day(next_month_date, forward=True)
+            
+            return next_month_date
         except Exception as e:
             print(f"Sonraki ödeme tarihi hesaplama hatası: {e}")
             return None
